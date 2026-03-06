@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/Elementos de la solución/">
+    <File Path=".github/PROJECT.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/TradingBot.API/TradingBot.API.csproj" />
+    <Project Path="src/TradingBot.Application/TradingBot.Application.csproj" />
+    <Project Path="src/TradingBot.Core/TradingBot.Core.csproj" />
+    <Project Path="src/TradingBot.Frontend/TradingBot.Frontend.csproj" />
+    <Project Path="src/TradingBot.Infrastructure/TradingBot.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TradingBot.Application.Tests/TradingBot.Application.Tests.csproj" />
+    <Project Path="tests/TradingBot.Core.Tests/TradingBot.Core.Tests.csproj" />
+    <Project Path="tests/TradingBot.Integration.Tests/TradingBot.Integration.Tests.csproj" />
+  </Folder>
+</Solution>
