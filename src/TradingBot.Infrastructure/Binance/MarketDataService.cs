@@ -81,12 +81,12 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
 
         _channels[sv] = channel;
 
-        var result = await _socketClient.SpotApi.SubscribeToTickerUpdatesAsync(
+        var result = await _socketClient.SpotApi.ExchangeData.SubscribeToTickerUpdatesAsync(
             sv,
             update =>
             {
                 var d    = update.Data;
-                var tick = BuildTick(sv, d.LastPrice, d.BestBidPrice, d.BestAskPrice, d.TotalTradedBaseAssetVolume);
+                var tick = BuildTick(sv, d.LastPrice, d.BestBidPrice, d.BestAskPrice, d.Volume);
                 if (tick is not null)
                     channel.Writer.TryWrite(tick);
             },

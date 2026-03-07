@@ -1,4 +1,4 @@
-using Binance.Net.Extensions;
+using Binance.Net;
 using CryptoExchange.Net.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -92,20 +92,13 @@ public static class InfrastructureServiceExtensions
             // ApiKey y ApiSecret NO se almacenan en IOptions por seguridad
         });
 
-        services.AddBinance((restOpts, socketOpts) =>
+        services.AddBinance(opts =>
         {
             if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(apiSecret))
-            {
-                var credentials = new ApiCredentials(apiKey, apiSecret);
-                restOpts.ApiCredentials   = credentials;
-                socketOpts.ApiCredentials = credentials;
-            }
+                opts.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
 
             if (useTestnet)
-            {
-                restOpts.Environment   = global::Binance.Net.BinanceEnvironment.Testnet;
-                socketOpts.Environment = global::Binance.Net.BinanceEnvironment.Testnet;
-            }
+                opts.Environment = BinanceEnvironment.Testnet;
         });
 
         // MarketDataService es Singleton porque mantiene conexiones WebSocket persistentes

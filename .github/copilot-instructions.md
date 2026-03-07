@@ -110,6 +110,21 @@ TradingBot/
 
 ---
 
+## Documentación oficial de Binance API
+
+- Documentación general: https://developers.binance.com/docs/
+- Binance Developer Portal: https://developers.binance.com/en
+- Spot Trading API: https://developers.binance.com/docs/binance-spot-api-docs
+- Margin Trading API: https://developers.binance.com/docs/margin_trading/Introduction
+- Derivatives Trading: https://developers.binance.com/docs/derivatives/change-log
+- Alpha API: https://developers.binance.com/docs/alpha/change-log
+- Algo Trading: https://developers.binance.com/docs/algo/change-log
+- Wallet: https://developers.binance.com/docs/wallet/change-log
+- Convert: https://developers.binance.com/docs/convert/change-log
+- Binance Open API: https://developers.binance.com/docs/binance-open-api/apis
+- Institutional Loan: https://developers.binance.com/docs/institutional_loan/change-log
+---
+
 ## 🚫 Lo que NO hacer
 
 - No usar `Thread.Sleep` — siempre `await Task.Delay`
