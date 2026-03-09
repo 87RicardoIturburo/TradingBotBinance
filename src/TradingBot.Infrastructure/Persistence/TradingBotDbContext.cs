@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Interfaces;
+using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Infrastructure.Persistence;
 
@@ -14,6 +15,10 @@ public sealed class TradingBotDbContext(DbContextOptions<TradingBotDbContext> op
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // IndicatorConfig se serializa a JSON via value converter en TradingStrategyConfiguration.
+        // Se ignora como tipo para evitar que EF Core intente mapear IReadOnlyDictionary<string, decimal>.
+        modelBuilder.Ignore<IndicatorConfig>();
+
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(TradingBotDbContext).Assembly);
         base.OnModelCreating(modelBuilder);
     }

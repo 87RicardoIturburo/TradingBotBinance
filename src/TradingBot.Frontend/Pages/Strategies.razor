@@ -1,0 +1,261 @@
+@page "/strategies"
+@inject TradingApiClient Api
+
+<PageTitle>Estrategias — TradingBot</PageTitle>
+
+<h1>🎯 Estrategias</h1>
+
+@* ── Formulario de creación ──────────────────────────────────────────── *@
+<div class="card mb-4">
+    <div class="card-header" role="button" @onclick="() => showForm = !showForm">
+        ➕ Nueva estrategia @(showForm ? "▲" : "▼")
+    </div>
+    @if (showForm)
+    {
+        <div class="card-body">
+            <EditForm Model="newStrategy" OnValidSubmit="CreateStrategyAsync" FormName="createStrategy">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Nombre</label>
+                        <InputText class="form-control" @bind-Value="newStrategy.Name" />
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Símbolo</label>
+                        <InputText class="form-control" @bind-Value="newStrategy.Symbol" placeholder="BTCUSDT" />
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Modo</label>
+                        <InputSelect class="form-select" @bind-Value="newStrategy.Mode">
+                            <option value="PaperTrading">Paper Trading</option>
+                            <option value="Testnet">Testnet</option>
+                            <option value="Live">Live</option>
+                        </InputSelect>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Orden (USDT)</label>
+                        <InputNumber class="form-control" @bind-Value="newStrategy.MaxOrderAmountUsdt" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Pérdida Diaria</label>
+                        <InputNumber class="form-control" @bind-Value="newStrategy.MaxDailyLossUsdt" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Stop Loss %</label>
+                        <InputNumber class="form-control" @bind-Value="newStrategy.StopLossPercent" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Take Profit %</label>
+                        <InputNumber class="form-control" @bind-Value="newStrategy.TakeProfitPercent" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Posiciones</label>
+                        <InputNumber class="form-control" @bind-Value="newStrategy.MaxOpenPositions" />
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Descripción</label>
+                        <InputText class="form-control" @bind-Value="newStrategy.Description" />
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary mt-3" disabled="@isSubmitting">
+                    @(isSubmitting ? "Creando…" : "Crear estrategia")
+                </button>
+            </EditForm>
+        </div>
+    }
+</div>
+
+@* ── Lista de estrategias ────────────────────────────────────────────── *@
+@if (isLoading)
+{
+    <p class="text-muted">Cargando estrategias…</p>
+}
+else if (strategies is null || strategies.Count == 0)
+{
+    <div class="alert alert-info">No hay estrategias configuradas. Crea una arriba.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Nombre</th>
+                    <th>Símbolo</th>
+                    <th>Estado</th>
+                    <th>Modo</th>
+                    <th>Max Orden</th>
+                    <th>SL / TP</th>
+                    <th>Reglas</th>
+                    <th>Creada</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in strategies)
+                {
+                    <tr>
+                        <td>
+                            <strong>@s.Name</strong>
+                            @if (!string.IsNullOrEmpty(s.Description))
+                            {
+                                <br /><small class="text-muted">@s.Description</small>
+                            }
+                        </td>
+                        <td>@s.Symbol</td>
+                        <td>
+                            <span class="badge @GetStatusBadgeClass(s.Status)">@s.Status</span>
+                        </td>
+                        <td><span class="badge bg-info">@s.Mode</span></td>
+                        <td>@s.RiskConfig.MaxOrderAmountUsdt.ToString("N2") USDT</td>
+                        <td>@s.RiskConfig.StopLossPercent% / @s.RiskConfig.TakeProfitPercent%</td>
+                        <td>@s.Rules.Count</td>
+                        <td>@s.CreatedAt.ToLocalTime().ToString("dd/MM HH:mm")</td>
+                        <td>
+                            @if (s.Status == "Active")
+                            {
+                                <button class="btn btn-sm btn-outline-warning" @onclick="() => DeactivateAsync(s.Id)">
+                                    ⏸ Desactivar
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-sm btn-outline-success" @onclick="() => ActivateAsync(s.Id)">
+                                    ▶ Activar
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => DeleteAsync(s.Id)">
+                                    🗑
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger mt-3">@errorMessage</div>
+}
+
+@code {
+    private List<StrategyDto>? strategies;
+    private bool isLoading = true;
+    private bool isSubmitting;
+    private bool showForm;
+    private string? errorMessage;
+
+    private StrategyFormModel newStrategy = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStrategiesAsync();
+    }
+
+    private async Task LoadStrategiesAsync()
+    {
+        isLoading = true;
+        try
+        {
+            strategies = await Api.GetStrategiesAsync();
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al cargar estrategias: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task CreateStrategyAsync()
+    {
+        isSubmitting = true;
+        errorMessage = null;
+        try
+        {
+            var request = new CreateStrategyRequest(
+                newStrategy.Name, newStrategy.Symbol, newStrategy.Mode,
+                newStrategy.MaxOrderAmountUsdt, newStrategy.MaxDailyLossUsdt,
+                newStrategy.StopLossPercent, newStrategy.TakeProfitPercent,
+                newStrategy.MaxOpenPositions, newStrategy.Description);
+
+            await Api.CreateStrategyAsync(request);
+            newStrategy = new();
+            showForm = false;
+            await LoadStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al crear: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task ActivateAsync(Guid id)
+    {
+        try
+        {
+            await Api.ActivateStrategyAsync(id);
+            await LoadStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al activar: {ex.Message}";
+        }
+    }
+
+    private async Task DeactivateAsync(Guid id)
+    {
+        try
+        {
+            await Api.DeactivateStrategyAsync(id);
+            await LoadStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al desactivar: {ex.Message}";
+        }
+    }
+
+    private async Task DeleteAsync(Guid id)
+    {
+        try
+        {
+            await Api.DeleteStrategyAsync(id);
+            await LoadStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al eliminar: {ex.Message}";
+        }
+    }
+
+    private static string GetStatusBadgeClass(string status) => status switch
+    {
+        "Active"   => "bg-success",
+        "Inactive" => "bg-secondary",
+        "Paused"   => "bg-warning text-dark",
+        "Error"    => "bg-danger",
+        _          => "bg-secondary"
+    };
+
+    private sealed class StrategyFormModel
+    {
+        public string  Name                = string.Empty;
+        public string  Symbol              = "BTCUSDT";
+        public string  Mode                = "PaperTrading";
+        public decimal MaxOrderAmountUsdt  = 100m;
+        public decimal MaxDailyLossUsdt    = 500m;
+        public decimal StopLossPercent     = 2m;
+        public decimal TakeProfitPercent   = 4m;
+        public int     MaxOpenPositions    = 3;
+        public string? Description;
+    }
+}

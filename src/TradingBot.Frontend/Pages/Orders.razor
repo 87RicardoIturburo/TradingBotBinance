@@ -1,0 +1,180 @@
+@page "/orders"
+@inject TradingApiClient Api
+
+<PageTitle>Órdenes — TradingBot</PageTitle>
+
+<h1>📋 Historial de órdenes</h1>
+
+@* ── Filtros ─────────────────────────────────────────────────────────── *@
+<div class="row mb-3">
+    <div class="col-md-3">
+        <label class="form-label">Desde</label>
+        <InputDate class="form-control" @bind-Value="fromDate" />
+    </div>
+    <div class="col-md-3">
+        <label class="form-label">Hasta</label>
+        <InputDate class="form-control" @bind-Value="toDate" />
+    </div>
+    <div class="col-md-3 d-flex align-items-end">
+        <button class="btn btn-primary me-2" @onclick="LoadOrdersAsync">🔍 Buscar</button>
+        <button class="btn btn-outline-info" @onclick="LoadOpenOrdersAsync">📂 Solo abiertas</button>
+    </div>
+</div>
+
+@* ── Tabla ───────────────────────────────────────────────────────────── *@
+@if (isLoading)
+{
+    <p class="text-muted">Cargando órdenes…</p>
+}
+else if (orders is null || orders.Count == 0)
+{
+    <div class="alert alert-info">No hay órdenes en el rango seleccionado.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm table-striped">
+            <thead>
+                <tr>
+                    <th>Fecha</th>
+                    <th>Símbolo</th>
+                    <th>Lado</th>
+                    <th>Tipo</th>
+                    <th>Cantidad</th>
+                    <th>Precio</th>
+                    <th>Estado</th>
+                    <th>Modo</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var o in orders)
+                {
+                    <tr>
+                        <td>@o.CreatedAt.ToLocalTime().ToString("dd/MM HH:mm:ss")</td>
+                        <td><strong>@o.Symbol</strong></td>
+                        <td>
+                            <span class="badge @(o.Side == "Buy" ? "bg-success" : "bg-danger")">
+                                @o.Side
+                            </span>
+                        </td>
+                        <td>@o.Type</td>
+                        <td>@o.Quantity.ToString("N6")</td>
+                        <td>
+                            @if (o.ExecutedPrice.HasValue)
+                            {
+                                @o.ExecutedPrice.Value.ToString("N2")
+                            }
+                            else if (o.LimitPrice.HasValue)
+                            {
+                                <span class="text-muted">@o.LimitPrice.Value.ToString("N2") (limit)</span>
+                            }
+                            else
+                            {
+                                <span class="text-muted">Market</span>
+                            }
+                        </td>
+                        <td>
+                            <span class="badge @GetOrderStatusClass(o.Status)">@o.Status</span>
+                        </td>
+                        <td>
+                            <span class="badge bg-info">@o.Mode</span>
+                        </td>
+                        <td>
+                            @if (o.Status is "Pending" or "Submitted" or "PartiallyFilled")
+                            {
+                                <button class="btn btn-sm btn-outline-danger"
+                                        @onclick="() => CancelOrderAsync(o.Id)">
+                                    ✕ Cancelar
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p class="text-muted">@orders.Count órdenes encontradas</p>
+}
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger mt-3">@errorMessage</div>
+}
+
+@code {
+    private List<OrderDto>? orders;
+    private bool isLoading = true;
+    private string? errorMessage;
+    private DateTime fromDate = DateTime.UtcNow.AddDays(-7).Date;
+    private DateTime toDate = DateTime.UtcNow.Date.AddDays(1);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadOrdersAsync();
+    }
+
+    private async Task LoadOrdersAsync()
+    {
+        isLoading = true;
+        try
+        {
+            orders = await Api.GetOrdersAsync(
+                new DateTimeOffset(fromDate, TimeSpan.Zero),
+                new DateTimeOffset(toDate, TimeSpan.Zero));
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al cargar órdenes: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadOpenOrdersAsync()
+    {
+        isLoading = true;
+        try
+        {
+            orders = await Api.GetOpenOrdersAsync();
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task CancelOrderAsync(Guid id)
+    {
+        try
+        {
+            await Api.CancelOrderAsync(id);
+            await LoadOrdersAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al cancelar: {ex.Message}";
+        }
+    }
+
+    private static string GetOrderStatusClass(string status) => status switch
+    {
+        "Filled"           => "bg-success",
+        "Submitted"        => "bg-primary",
+        "PartiallyFilled"  => "bg-info",
+        "Pending"          => "bg-secondary",
+        "Cancelled"        => "bg-warning text-dark",
+        "Rejected"         => "bg-danger",
+        "Expired"          => "bg-dark",
+        _                  => "bg-secondary"
+    };
+}

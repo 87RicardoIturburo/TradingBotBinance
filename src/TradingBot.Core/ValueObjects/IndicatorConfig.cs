@@ -9,7 +9,7 @@ namespace TradingBot.Core.ValueObjects;
 /// </summary>
 public sealed record IndicatorConfig
 {
-    public IndicatorType Type { get; }
+    public IndicatorType Type { get; init; }
 
     /// <summary>
     /// Parámetros específicos del indicador.
@@ -18,13 +18,18 @@ public sealed record IndicatorConfig
     /// EMA / SMA → period
     /// Bollinger → period, stdDev
     /// </summary>
-    public IReadOnlyDictionary<string, decimal> Parameters { get; }
+    public IReadOnlyDictionary<string, decimal> Parameters { get; init; }
 
     private IndicatorConfig(IndicatorType type, IReadOnlyDictionary<string, decimal> parameters)
     {
         Type       = type;
         Parameters = parameters;
     }
+
+    /// <summary>Constructor parameterless para EF Core design-time y deserialización JSON.</summary>
+#pragma warning disable CS8618 // Parameters se inicializa vía init o fábrica Create
+    private IndicatorConfig() { }
+#pragma warning restore CS8618
 
     public static Result<IndicatorConfig, DomainError> Create(
         IndicatorType type,

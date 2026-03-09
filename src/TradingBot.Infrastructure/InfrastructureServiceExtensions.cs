@@ -6,7 +6,9 @@ using Microsoft.Extensions.DependencyInjection;
 using TradingBot.Core.Interfaces;
 using TradingBot.Core.Interfaces.Repositories;
 using TradingBot.Core.Interfaces.Services;
+using StackExchange.Redis;
 using TradingBot.Infrastructure.Binance;
+using TradingBot.Infrastructure.Caching;
 using TradingBot.Infrastructure.Persistence;
 using TradingBot.Infrastructure.Persistence.Repositories;
 
@@ -21,9 +23,8 @@ public static class InfrastructureServiceExtensions
         services
             .AddPostgres(configuration)
             .AddRepositories()
+            .AddRedisCache(configuration)
             .AddBinanceClients(configuration);
-
-        // Redis y Serilog se registran en sub-paso 3.4
 
         return services;
     }
@@ -62,6 +63,26 @@ public static class InfrastructureServiceExtensions
         services.AddScoped<IStrategyRepository, StrategyRepository>();
         services.AddScoped<IOrderRepository,    OrderRepository>();
         services.AddScoped<IPositionRepository, PositionRepository>();
+
+        return services;
+    }
+
+    // ── Redis ─────────────────────────────────────────────────────────────
+
+    private static IServiceCollection AddRedisCache(
+        this IServiceCollection services,
+        IConfiguration          configuration)
+    {
+        var connectionString = Environment.GetEnvironmentVariable("REDIS_CONNECTION")
+                               ?? configuration.GetConnectionString("Redis")
+                               ?? "localhost:6379";
+
+        services.Configure<RedisOptions>(configuration.GetSection(RedisOptions.SectionName));
+
+        services.AddSingleton<IConnectionMultiplexer>(_ =>
+            ConnectionMultiplexer.Connect(connectionString));
+
+        services.AddSingleton<ICacheService, RedisCacheService>();
 
         return services;
     }

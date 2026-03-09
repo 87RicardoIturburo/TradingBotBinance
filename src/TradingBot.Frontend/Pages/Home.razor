@@ -1,7 +1,258 @@
 ﻿@page "/"
+@inject TradingApiClient Api
+@inject IConfiguration Config
+@implements IAsyncDisposable
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Dashboard — TradingBot</PageTitle>
 
-<h1>Hello, world!</h1>
+<h1>📊 Dashboard</h1>
 
-Welcome to your new app.
+@* ── Estado del sistema ──────────────────────────────────────────────── *@
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h5 class="card-title">Motor</h5>
+                @if (systemStatus is null)
+                {
+                    <p class="text-muted">Cargando…</p>
+                }
+                else
+                {
+                    <span class="badge @(systemStatus.IsRunning ? "bg-success" : "bg-warning") fs-6">
+                        @(systemStatus.IsRunning ? "🟢 Running" : "🟡 Paused")
+                    </span>
+                    <div class="mt-2">
+                        <button class="btn btn-sm @(systemStatus.IsRunning ? "btn-outline-warning" : "btn-outline-success")"
+                                @onclick="ToggleEngineAsync">
+                            @(systemStatus.IsRunning ? "⏸ Pausar" : "▶ Reanudar")
+                        </button>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h5 class="card-title">Binance WebSocket</h5>
+                @if (systemStatus is null)
+                {
+                    <p class="text-muted">Cargando…</p>
+                }
+                else
+                {
+                    <span class="badge @(systemStatus.IsConnected ? "bg-success" : "bg-danger") fs-6">
+                        @(systemStatus.IsConnected ? "🟢 Conectado" : "🔴 Desconectado")
+                    </span>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body text-center">
+                <h5 class="card-title">Estrategias activas</h5>
+                <span class="fs-3 fw-bold">@(systemStatus?.Strategies?.Count ?? 0)</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+@* ── Ticks en tiempo real (SignalR) ──────────────────────────────────── *@
+<h4>📡 Ticks en tiempo real</h4>
+@if (hubState == "Connected")
+{
+    <span class="badge bg-success mb-2">SignalR conectado</span>
+}
+else
+{
+    <span class="badge bg-secondary mb-2">SignalR: @hubState</span>
+}
+
+@if (recentTicks.Count == 0)
+{
+    <p class="text-muted">Esperando ticks…</p>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm table-striped">
+            <thead>
+                <tr>
+                    <th>Hora</th>
+                    <th>Símbolo</th>
+                    <th>Precio</th>
+                    <th>Bid</th>
+                    <th>Ask</th>
+                    <th>Volumen</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var tick in recentTicks)
+                {
+                    <tr>
+                        <td>@tick.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")</td>
+                        <td><strong>@tick.Symbol</strong></td>
+                        <td>@tick.LastPrice.ToString("N2")</td>
+                        <td>@tick.BidPrice.ToString("N2")</td>
+                        <td>@tick.AskPrice.ToString("N2")</td>
+                        <td>@tick.Volume.ToString("N4")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@* ── Estrategias activas ────────────────────────────────────────────── *@
+@if (systemStatus?.Strategies?.Any() == true)
+{
+    <h4 class="mt-4">🎯 Estado por estrategia</h4>
+    <div class="table-responsive">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Estrategia</th>
+                    <th>Símbolo</th>
+                    <th>Estado</th>
+                    <th>Ticks</th>
+                    <th>Señales</th>
+                    <th>Órdenes</th>
+                    <th>Último tick</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var kv in systemStatus.Strategies)
+                {
+                    var s = kv.Value;
+                    <tr>
+                        <td>@s.StrategyName</td>
+                        <td>@s.Symbol</td>
+                        <td>
+                            <span class="badge @(s.IsProcessing ? "bg-success" : "bg-secondary")">
+                                @(s.IsProcessing ? "Procesando" : "Detenida")
+                            </span>
+                        </td>
+                        <td>@s.TicksProcessed.ToString("N0")</td>
+                        <td>@s.SignalsGenerated</td>
+                        <td>@s.OrdersPlaced</td>
+                        <td>@(s.LastTickAt == default ? "—" : s.LastTickAt.ToLocalTime().ToString("HH:mm:ss"))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger mt-3">@errorMessage</div>
+}
+
+@code {
+    private SystemStatusDto? systemStatus;
+    private HubConnection? hubConnection;
+    private string hubState = "Disconnected";
+    private string? errorMessage;
+    private readonly List<MarketTickDto> recentTicks = [];
+    private const int MaxTicks = 20;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStatusAsync();
+        await StartSignalRAsync();
+    }
+
+    private async Task LoadStatusAsync()
+    {
+        try
+        {
+            systemStatus = await Api.GetSystemStatusAsync();
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al obtener estado: {ex.Message}";
+        }
+    }
+
+    private async Task StartSignalRAsync()
+    {
+        try
+        {
+            var apiUrl = Config["ApiBaseUrl"] ?? "https://localhost:7114";
+
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl($"{apiUrl}/hubs/trading")
+                .WithAutomaticReconnect()
+                .Build();
+
+            hubConnection.On<MarketTickDto>("OnMarketTick", tick =>
+            {
+                recentTicks.Insert(0, tick);
+                if (recentTicks.Count > MaxTicks)
+                    recentTicks.RemoveAt(recentTicks.Count - 1);
+                InvokeAsync(StateHasChanged);
+            });
+
+            hubConnection.On<string>("OnAlert", message =>
+            {
+                errorMessage = $"⚠ {message}";
+                InvokeAsync(StateHasChanged);
+            });
+
+            hubConnection.Reconnecting += _ =>
+            {
+                hubState = "Reconnecting…";
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            hubConnection.Reconnected += _ =>
+            {
+                hubState = "Connected";
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            hubConnection.Closed += _ =>
+            {
+                hubState = "Disconnected";
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            await hubConnection.StartAsync();
+            hubState = "Connected";
+        }
+        catch (Exception ex)
+        {
+            hubState = "Error";
+            errorMessage = $"SignalR: {ex.Message}";
+        }
+    }
+
+    private async Task ToggleEngineAsync()
+    {
+        try
+        {
+            if (systemStatus?.IsRunning == true)
+                await Api.PauseAsync();
+            else
+                await Api.ResumeAsync();
+
+            await LoadStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+            await hubConnection.DisposeAsync();
+    }
+}
