@@ -28,7 +28,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
     private volatile bool _isPaused;
 
-    public bool IsRunning => !_isPaused && _runners.Values.Any(r => r.IsProcessing);
+    public bool IsRunning => !_isPaused && !_runners.IsEmpty;
 
     public StrategyEngine(
         IServiceScopeFactory scopeFactory,
@@ -50,6 +50,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         _logger.LogInformation(
             "StrategyEngine iniciado con {Count} estrategias activas", _runners.Count);
+
+        // Watchdog: verificar periódicamente que todas las estrategias reciben ticks
+        _ = RunTickWatchdogAsync(stoppingToken);
 
         // Mantener vivo hasta que se detenga el host
         try
@@ -75,6 +78,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             .Select(r => r.ProcessingTask!);
 
         await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        foreach (var runner in _runners.Values)
+            runner.Dispose();
 
         _runners.Clear();
         _logger.LogInformation("StrategyEngine detenido");
@@ -116,6 +122,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             if (_runners.TryRemove(strategyId, out var removed))
             {
                 removed.Cancel();
+                removed.Dispose();
                 _logger.LogInformation("Runner para estrategia {Id} detenido (desactivada)", strategyId);
             }
             return;
@@ -175,6 +182,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         // Precalentar indicadores con datos históricos
         await WarmUpIndicatorsAsync(tradingStrategy, config, cancellationToken);
 
+        // Evaluar posiciones abiertas inmediatamente al arrancar
+        await EvaluateOpenPositionsOnStartupAsync(config, cancellationToken);
+
         // Suscribir al WebSocket
         await _marketDataService.SubscribeAsync(config.Symbol, cancellationToken);
 
@@ -231,6 +241,134 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         _logger.LogDebug(
             "Warm-up completado para '{Name}': {Count} cierres históricos procesados",
             config.Name, closesResult.Value.Count);
+    }
+
+    // ── Evaluación de posiciones huérfanas al reiniciar ──────────────────
+
+    /// <summary>
+    /// Al reiniciar, evalúa stop-loss/take-profit de posiciones abiertas de la estrategia
+    /// con el precio actual de mercado. Protege contra movimientos de precio durante el downtime.
+    /// </summary>
+    private async Task EvaluateOpenPositionsOnStartupAsync(
+        TradingStrategy config,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope     = _scopeFactory.CreateScope();
+            var positionRepo    = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
+            var ruleEngine      = scope.ServiceProvider.GetRequiredService<IRuleEngine>();
+            var orderService    = scope.ServiceProvider.GetRequiredService<IOrderService>();
+            var notifier        = scope.ServiceProvider.GetService<ITradingNotifier>();
+
+            var openPositions = await positionRepo.GetOpenByStrategyIdAsync(config.Id, cancellationToken);
+            if (openPositions.Count == 0) return;
+
+            _logger.LogInformation(
+                "Evaluando {Count} posiciones abiertas de '{Name}' al reiniciar",
+                openPositions.Count, config.Name);
+
+            // Obtener precio actual para evaluar stop-loss/take-profit
+            var priceResult = await _marketDataService.GetCurrentPriceAsync(config.Symbol, cancellationToken);
+            if (priceResult.IsFailure)
+            {
+                _logger.LogWarning(
+                    "No se pudo obtener precio actual para evaluar posiciones de '{Name}': {Error}",
+                    config.Name, priceResult.Error.Message);
+                return;
+            }
+
+            var currentPrice = priceResult.Value;
+
+            foreach (var position in openPositions)
+            {
+                position.UpdatePrice(currentPrice);
+
+                var exitResult = await ruleEngine.EvaluateExitRulesAsync(
+                    config, position, currentPrice, cancellationToken);
+
+                if (exitResult.IsSuccess && exitResult.Value is { } exitOrder)
+                {
+                    var placeResult = await orderService.PlaceOrderAsync(exitOrder, cancellationToken);
+                    if (placeResult.IsSuccess)
+                    {
+                        _logger.LogWarning(
+                            "🚨 Posición {PosId} cerrada al reiniciar por stop-loss/take-profit: {Side} {Symbol}",
+                            position.Id, exitOrder.Side, exitOrder.Symbol.Value);
+
+                        if (notifier is not null)
+                        {
+                            await notifier.NotifyOrderExecutedAsync(
+                                new OrderPlacedEvent(
+                                    exitOrder.Id, exitOrder.StrategyId, exitOrder.Symbol,
+                                    exitOrder.Side, exitOrder.Type, exitOrder.Quantity,
+                                    exitOrder.LimitPrice, exitOrder.IsPaperTrade),
+                                cancellationToken);
+
+                            await notifier.NotifyAlertAsync(
+                                $"Posición de '{config.Name}' cerrada automáticamente al reiniciar (SL/TP durante downtime)",
+                                cancellationToken);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error evaluando posiciones abiertas al reiniciar para '{Name}'", config.Name);
+        }
+    }
+
+    // ── Tick Watchdog ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Verifica periódicamente que las estrategias activas reciban ticks.
+    /// Si una estrategia no recibe ticks por más de 5 minutos, genera una alerta.
+    /// </summary>
+    private async Task RunTickWatchdogAsync(CancellationToken cancellationToken)
+    {
+        const int checkIntervalSeconds = 60;
+        const int maxSilenceMinutes    = 5;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(checkIntervalSeconds), cancellationToken);
+
+                var now = DateTimeOffset.UtcNow;
+
+                foreach (var runner in _runners.Values)
+                {
+                    if (runner.LastTickAt == default) continue;
+
+                    var silence = now - runner.LastTickAt;
+                    if (silence <= TimeSpan.FromMinutes(maxSilenceMinutes)) continue;
+
+                    _logger.LogWarning(
+                        "⚠ Watchdog: estrategia '{Name}' ({Id}) sin ticks por {Minutes:F1} minutos",
+                        runner.StrategyName, runner.StrategyId, silence.TotalMinutes);
+
+                    try
+                    {
+                        using var scope  = _scopeFactory.CreateScope();
+                        var notifier     = scope.ServiceProvider.GetService<ITradingNotifier>();
+                        if (notifier is not null)
+                            await notifier.NotifyAlertAsync(
+                                $"⚠ Estrategia '{runner.StrategyName}' sin recibir ticks por {silence.TotalMinutes:F0} minutos. Verifique la conexión WebSocket.",
+                                cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error enviando alerta de watchdog");
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown normal
+        }
     }
 
     // ── Loop principal por estrategia ──────────────────────────────────────
@@ -326,6 +464,11 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var orderService      = scope.ServiceProvider.GetRequiredService<IOrderService>();
         var strategyRepo      = scope.ServiceProvider.GetRequiredService<IStrategyRepository>();
         var positionRepo      = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
+        var notifier          = scope.ServiceProvider.GetService<ITradingNotifier>();
+
+        // Notificar tick al frontend vía SignalR
+        if (notifier is not null)
+            await notifier.NotifyMarketTickAsync(tick, cancellationToken);
 
         // Cargar la config fresca para tener reglas actualizadas
         var strategy = await strategyRepo.GetWithRulesAsync(runner.StrategyId, cancellationToken);
@@ -335,6 +478,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         if (signalResult.Value is { } signal)
         {
             runner.SignalsGenerated++;
+
+            if (notifier is not null)
+                await notifier.NotifySignalGeneratedAsync(signal, cancellationToken);
 
             var orderResult = await ruleEngine.EvaluateAsync(strategy, signal, cancellationToken);
             if (orderResult.IsSuccess && orderResult.Value is { } order)
@@ -346,12 +492,25 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                     _logger.LogInformation(
                         "Orden colocada por '{Name}': {Side} {Qty} {Symbol}",
                         runner.StrategyName, order.Side, order.Quantity.Value, order.Symbol.Value);
+
+                    if (notifier is not null)
+                        await notifier.NotifyOrderExecutedAsync(
+                            new OrderPlacedEvent(
+                                order.Id, order.StrategyId, order.Symbol,
+                                order.Side, order.Type, order.Quantity,
+                                order.LimitPrice, order.IsPaperTrade),
+                            cancellationToken);
                 }
                 else
                 {
                     _logger.LogWarning(
                         "Orden rechazada para '{Name}': {Error}",
                         runner.StrategyName, placeResult.Error.Message);
+
+                    if (notifier is not null)
+                        await notifier.NotifyAlertAsync(
+                            $"Orden rechazada para '{runner.StrategyName}': {placeResult.Error.Message}",
+                            cancellationToken);
                 }
             }
         }
@@ -376,6 +535,14 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                     _logger.LogInformation(
                         "Orden de salida colocada por '{Name}': {Side} {Symbol} (posición {PosId})",
                         runner.StrategyName, exitOrder.Side, exitOrder.Symbol.Value, position.Id);
+
+                    if (notifier is not null)
+                        await notifier.NotifyOrderExecutedAsync(
+                            new OrderPlacedEvent(
+                                exitOrder.Id, exitOrder.StrategyId, exitOrder.Symbol,
+                                exitOrder.Side, exitOrder.Type, exitOrder.Quantity,
+                                exitOrder.LimitPrice, exitOrder.IsPaperTrade),
+                            cancellationToken);
                 }
             }
         }
@@ -404,7 +571,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
     // ── Estado interno por estrategia ──────────────────────────────────────
 
-    private sealed class StrategyRunnerState
+    private sealed class StrategyRunnerState : IDisposable
     {
         public Guid                       StrategyId             { get; }
         public string                     StrategyName           { get; }
@@ -429,7 +596,15 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             CancellationTokenSource = cts;
         }
 
-        public void Cancel() => CancellationTokenSource.Cancel();
+        public void Cancel()
+        {
+            CancellationTokenSource.Cancel();
+        }
+
+        public void Dispose()
+        {
+            CancellationTokenSource.Dispose();
+        }
 
         public StrategyEngineStatus ToStatus() => new(
             StrategyId, StrategyName, Symbol,

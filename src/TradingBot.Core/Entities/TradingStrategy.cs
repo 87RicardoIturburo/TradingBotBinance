@@ -14,6 +14,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
 {
     private List<IndicatorConfig> _indicators = [];
     private List<TradingRule>     _rules      = [];
+    private List<SavedParameterRange> _savedOptimizationRanges = [];
 
     public string          Name             { get; private set; } = string.Empty;
     public string?         Description      { get; private set; }
@@ -27,6 +28,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
 
     public IReadOnlyList<IndicatorConfig> Indicators => _indicators.AsReadOnly();
     public IReadOnlyList<TradingRule>     Rules      => _rules.AsReadOnly();
+    public IReadOnlyList<SavedParameterRange> SavedOptimizationRanges => _savedOptimizationRanges.AsReadOnly();
 
     public bool IsActive => Status == StrategyStatus.Active;
 
@@ -117,7 +119,8 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
     // ── Hot-reload ────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Actualiza nombre, descripción y configuración de riesgo en tiempo de ejecución.
+    /// Actualiza nombre, descripción, modo y configuración de riesgo en tiempo de ejecución.
+    /// El símbolo solo puede cambiarse si la estrategia está inactiva.
     /// Si la estrategia estaba activa, publica <see cref="StrategyUpdatedEvent"/> para
     /// que todos los motores recarguen su estado.
     /// </summary>
@@ -144,6 +147,36 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         return Result<TradingStrategy, DomainError>.Success(this);
     }
 
+    /// <summary>
+    /// Actualiza el símbolo de la estrategia. Solo permitido cuando está inactiva.
+    /// </summary>
+    public Result<TradingStrategy, DomainError> UpdateSymbol(Symbol newSymbol)
+    {
+        if (IsActive)
+            return Result<TradingStrategy, DomainError>.Failure(
+                DomainError.InvalidOperation("No se puede cambiar el símbolo de una estrategia activa."));
+
+        Symbol    = newSymbol;
+        UpdatedAt = DateTimeOffset.UtcNow;
+        Version++;
+        return Result<TradingStrategy, DomainError>.Success(this);
+    }
+
+    /// <summary>
+    /// Actualiza el modo de trading. Solo permitido cuando está inactiva.
+    /// </summary>
+    public Result<TradingStrategy, DomainError> UpdateMode(TradingMode newMode)
+    {
+        if (IsActive)
+            return Result<TradingStrategy, DomainError>.Failure(
+                DomainError.InvalidOperation("No se puede cambiar el modo de una estrategia activa."));
+
+        Mode      = newMode;
+        UpdatedAt = DateTimeOffset.UtcNow;
+        Version++;
+        return Result<TradingStrategy, DomainError>.Success(this);
+    }
+
     // ── Indicadores ───────────────────────────────────────────────────────
 
     public void AddIndicator(IndicatorConfig indicator)
@@ -161,6 +194,21 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         _indicators.Remove(indicator);
         UpdatedAt = DateTimeOffset.UtcNow;
         Version++;
+    }
+
+    /// <summary>Reemplaza la configuración de un indicador existente.</summary>
+    public Result<IndicatorConfig, DomainError> UpdateIndicator(IndicatorConfig updated)
+    {
+        var index = _indicators.FindIndex(i => i.Type == updated.Type);
+        if (index < 0)
+            return Result<IndicatorConfig, DomainError>.Failure(
+                DomainError.NotFound($"Indicador '{updated.Type}'"));
+
+        _indicators[index] = updated;
+        UpdatedAt = DateTimeOffset.UtcNow;
+        Version++;
+
+        return Result<IndicatorConfig, DomainError>.Success(updated);
     }
 
     // ── Reglas ────────────────────────────────────────────────────────────
@@ -198,5 +246,17 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         return rule is not null
             ? Result<TradingRule, DomainError>.Success(rule)
             : Result<TradingRule, DomainError>.Failure(DomainError.NotFound($"Regla '{ruleId}'"));
+    }
+
+    // ── Optimization profile ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Guarda los rangos de optimización para reutilizar en futuras ejecuciones.
+    /// </summary>
+    public void UpdateOptimizationRanges(IReadOnlyList<SavedParameterRange> ranges)
+    {
+        _savedOptimizationRanges = [.. ranges];
+        UpdatedAt = DateTimeOffset.UtcNow;
+        Version++;
     }
 }

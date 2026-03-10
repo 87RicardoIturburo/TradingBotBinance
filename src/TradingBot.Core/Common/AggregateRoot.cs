@@ -11,7 +11,7 @@ public abstract class AggregateRoot<TId> : Entity<TId> where TId : notnull
     /// Versión del agregado. EF Core la usa como row-version para
     /// detectar conflictos de concurrencia optimista.
     /// </summary>
-    public uint Version { get; protected set; }
+    public int Version { get; protected set; }
 
     protected AggregateRoot(TId id) : base(id) { }
 }

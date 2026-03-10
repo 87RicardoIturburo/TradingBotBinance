@@ -7,6 +7,7 @@ y reglas configuradas por el usuario. Opera 24/7 procesando datos de mercado en 
 real vía WebSocket, tomando decisiones de compra/venta basadas en reglas configurables
 que pueden modificarse **sin reiniciar el sistema** (hot-reload).
 
+
 ---
 
 ## 🎯 Objetivos del Sistema
@@ -417,7 +418,143 @@ El componente central del bot. Implementa `IStrategyEngine` + `BackgroundService
 
 | Paso | Capa | Contenido |
 |------|------|-----------|
-| **7** | Tests | Unit tests `Core` + `Application` · Integration tests API |
+| **13** | Infrastructure + Application | Ejecución real de órdenes en Binance Testnet, sincronización de estado |
+
+#### Paso 8B — Edición de indicadores/reglas + Plantillas predefinidas ✅
+
+- [x] **Dominio**: `TradingStrategy.UpdateIndicator(IndicatorConfig)` — reemplaza indicador existente por tipo
+- [x] **MediatR Commands** (2 nuevos): `UpdateIndicatorCommand`, `UpdateRuleCommand`
+- [x] **API Endpoints** (3 nuevos): `PUT /api/strategies/{id}/indicators`, `PUT /api/strategies/{id}/rules/{ruleId}`, `GET /api/strategies/templates`
+- [x] **Request DTOs**: `UpdateRuleRequest` (API + Frontend)
+- [x] **`RuleDto` expandido**: ahora incluye `Operator`, `Conditions`, `ActionType`, `AmountUsdt` (antes solo Id/Name/Type/IsEnabled)
+- [x] **Backend `ConditionDto`**: nuevo DTO para serializar condiciones individuales de reglas
+- [x] **Plantillas predefinidas** (4 templates en `StrategyTemplates.cs`):
+  - RSI Oversold/Overbought — reversión a la media (BTCUSDT)
+  - MACD Crossover — seguimiento de tendencia (BTCUSDT)
+  - Bollinger Bands + RSI Bounce — volatilidad + momentum (ETHUSDT)
+  - EMA Crossover (9/21) — tendencia + RSI (BTCUSDT)
+- [x] **Frontend StrategyDetail**: edición in-place de indicadores (✏ → pre-populate form → PUT) y reglas (✏ → pre-populate con condiciones/acción → PUT)
+- [x] **Frontend Strategies**: sección "Crear desde plantilla" con cards de las 4 templates → crea estrategia + indicadores + reglas automáticamente
+- [x] **Frontend DTOs**: `UpdateRuleRequest`, `StrategyTemplateDto`, `TemplateIndicatorDto`, `TemplateRuleDto`, `TemplateConditionDto`, `TemplateRiskConfigDto`, `RuleConditionDto`
+- [x] **Tabla de reglas mejorada**: muestra condiciones con símbolos (< > ≤ ≥ = ≠ ↗ ↘), acción, monto y operador
+
+**Archivos creados:**
+- `src/TradingBot.API/Dtos/StrategyTemplates.cs`
+
+**Archivos modificados:**
+- `src/TradingBot.Core/Entities/TradingStrategy.cs` — `UpdateIndicator()`
+- `src/TradingBot.Application/Commands/Strategies/IndicatorAndRuleCommands.cs` — `UpdateIndicatorCommand`, `UpdateRuleCommand`
+- `src/TradingBot.API/Controllers/StrategiesController.cs` — 3 endpoints nuevos + `UpdateRuleRequest` DTO
+- `src/TradingBot.API/Dtos/Dtos.cs` — `RuleDto` expandido, `ConditionDto` nuevo
+- `src/TradingBot.Frontend/Services/TradingApiClient.cs` — `UpdateIndicatorAsync`, `UpdateRuleAsync`, `GetTemplatesAsync`
+- `src/TradingBot.Frontend/Models/Dtos.cs` — `UpdateRuleRequest`, `RuleConditionDto`, 5 template DTOs
+- `src/TradingBot.Frontend/Pages/StrategyDetail.razor` — edit indicator/rule UI, comparator symbols
+- `src/TradingBot.Frontend/Pages/Strategies.razor` — template cards + `ApplyTemplateAsync`
+
+#### Paso 12 — Indicadores MACD + Bollinger Bands ✅
+
+- [x] **`MacdIndicator`**: MACD Line (EMA fast − EMA slow), Signal Line (EMA del MACD), Histogram (MACD − Signal). Compone internamente dos `EmaIndicator`.
+- [x] **`BollingerBandsIndicator`**: Middle Band (SMA), Upper/Lower Bands (±stdDev × σ), `BandWidth` (volatilidad relativa). Usa `CultureInfo.InvariantCulture` en `Name` para evitar problemas de locale.
+- [x] **`IndicatorFactory`**: registrados ambos indicadores nuevos (`MACD` → `MacdIndicator`, `BollingerBands` → `BollingerBandsIndicator`)
+- [x] **Tests `MacdIndicatorTests`** (16): constructor validation, IsReady, Calculate (ascending/descending/flat), SignalLine, Histogram = MACD − Signal, Reset
+- [x] **Tests `BollingerBandsIndicatorTests`** (21): constructor validation, IsReady, Calculate (SMA), bands symmetry, upper ≥ middle ≥ lower, wider with higher stdDev, BandWidth, sliding window, Reset
+- [x] **Tests `IndicatorFactoryTests`** (6): Create para RSI, EMA, SMA, MACD, BollingerBands, unsupported type
+- [x] **Tests totales: 169/169 passing** — Core (43) + Application (118) + Integration (8)
+
+**Archivos creados:**
+- `src/TradingBot.Application/Strategies/Indicators/MacdIndicator.cs`
+- `src/TradingBot.Application/Strategies/Indicators/BollingerBandsIndicator.cs`
+- `tests/TradingBot.Application.Tests/Indicators/MacdIndicatorTests.cs`
+- `tests/TradingBot.Application.Tests/Indicators/BollingerBandsIndicatorTests.cs`
+- `tests/TradingBot.Application.Tests/Indicators/IndicatorFactoryTests.cs`
+
+**Archivos modificados:**
+- `src/TradingBot.Application/Strategies/Indicators/IndicatorFactory.cs` — agregados MACD y BollingerBands al switch
+
+#### Paso 11 — Tests unitarios Application layer ✅
+
+- [x] **`RuleEngine`** (33 tests): AND/OR/NOT conditions, 12 comparadores vía Theory, stop-loss, take-profit, exit rules habilitadas/deshabilitadas, parsing de snapshot con múltiples indicadores
+- [x] **`DefaultTradingStrategy`** (11 tests): inicialización, RSI oversold→Buy, overbought→Sell, zona neutra, snapshot con nombre del indicador, cruce único (no re-señala), reset, hot-reload config
+- [x] **`OrderService`** (13 tests): paper trade fill inmediato, limit price, fallo de precio de mercado→Submitted, buy→crea posición, sell→cierra posición, live→submit sin fill, cancel pending/filled/not found, sync status, open orders
+- [x] **MediatR Commands** (13 tests): `AddIndicatorCommandHandler` (3), `RemoveIndicatorCommandHandler` (3), `AddRuleCommandHandler` (4), `RemoveRuleCommandHandler` (3) — not found, valid CRUD, validation errors
+- [x] **Tests totales: 126/126 passing** — Core (43) + Application (75) + Integration (8)
+
+**Archivos creados:**
+- `tests/TradingBot.Application.Tests/Rules/RuleEngineTests.cs`
+- `tests/TradingBot.Application.Tests/Strategies/DefaultTradingStrategyTests.cs`
+- `tests/TradingBot.Application.Tests/Services/OrderServiceTests.cs`
+- `tests/TradingBot.Application.Tests/Commands/IndicatorAndRuleCommandHandlerTests.cs`
+
+#### Paso 10 — Primera prueba end-to-end + Fixes Dashboard ✅
+
+- [x] **E2E funcional**: `docker compose up` → migrar BD → API+Frontend → crear estrategia → agregar indicador/regla → activar → ver ticks
+- [x] **CRUD de estrategias**: crear, agregar indicadores/reglas, activar/desactivar, eliminar — todo funcional desde frontend
+- [x] **SignalR**: conectado y trayendo ticks en tiempo real al Dashboard
+- [x] **Fix `SystemStatusDto`**: creado `StrategyEngineStatusDto` con `Symbol` como `string` (antes era `ValueObjects.Symbol` que serializaba como `{"value":"BTCUSDT"}` y el frontend no podía deserializar → `systemStatus` quedaba `null` → cards mostraban "Cargando…")
+- [x] **Fix `IsRunning`**: cambiado de `_runners.Values.Any(r => r.IsProcessing)` a `!_runners.IsEmpty` (antes devolvía `false` si ningún runner tenía un tick activo en ese instante)
+- [x] **Fix `SystemController.GetStatus`**: mapea `StrategyEngineStatus` → `StrategyEngineStatusDto` con `FromDomain()` antes de serializar
+- [x] Tests: 56/56 passing
+
+#### Paso 9 — Integration Tests + Fixes de producción ✅
+
+- [x] **Integration tests (8/8 passing)**: `SystemControllerTests` (3), `StrategiesControllerTests` (3), `OrdersControllerTests` (2)
+- [x] **`TradingBotWebFactory`**: reemplaza Postgres → InMemory, Redis → mock, Binance → mock, StrategyEngine → mock
+- [x] **`SharedFactoryCollection`**: una sola instancia del server compartida entre todos los test classes (evita `HostAbortedException`)
+- [x] **Fix EF Core InMemory**: remover TODAS las registraciones EF/Npgsql (no solo `DbContextOptions`) para evitar `FileNotFoundException: Microsoft.EntityFrameworkCore.Relational`
+- [x] **Fix `IStrategyEngine` en tests**: registrar como singleton mock (no scoped) para que `StrategyConfigService` no falle al resolver
+- [x] **Paquete `Microsoft.EntityFrameworkCore.Relational`** agregado a Integration.Tests para que las configurations de EF Core funcionen con InMemory
+- [x] **`ErrorHandlingMiddleware`**: mostrar `ex.ToString()` en cualquier entorno no-Production (antes solo en Development)
+- [x] **Migraciones adicionales**: `UseXminConcurrencyToken` y `FixVersionColumnType` (int en vez de bigint para `Version`)
+- [x] **Fix `TradingBotDbContext.SaveChangesAsync`**: `FixNewOwnedEntitiesTrackedAsModified()` — corrige bug donde EF Core marca owned entities nuevas como Modified en vez de Added
+- [x] **Fix JSON serialización `IResult`**: configurar `JsonStringEnumConverter` en `Microsoft.AspNetCore.Http.Json.JsonOptions` además de MVC (los controllers devuelven `IResult`)
+- [x] **Tests totales: 56/56 passing** — Core (43) + Application (5) + Integration (8)
+
+#### Paso 8 — Indicadores y Reglas (Backend + Frontend) ✅
+
+- [x] **MediatR Commands** (4): `AddIndicatorCommand`, `RemoveIndicatorCommand`, `AddRuleCommand`, `RemoveRuleCommand`
+- [x] **API Endpoints**: `POST/DELETE /api/strategies/{id}/indicators`, `POST/DELETE /api/strategies/{id}/rules/{ruleId}`
+- [x] **Request DTOs**: `AddIndicatorRequest`, `AddRuleRequest`, `AddRuleConditionRequest`
+- [x] **Frontend API Client**: `AddIndicatorAsync`, `RemoveIndicatorAsync`, `AddRuleAsync`, `RemoveRuleAsync`
+- [x] **Frontend DTOs**: `AddIndicatorRequest`, `AddRuleRequest`, `AddRuleConditionRequest`
+- [x] **Página `StrategyDetail` (`/strategies/{id}`)**: vista de detalle con:
+  - Formulario dinámico para agregar indicadores (RSI, EMA, SMA, MACD, Bollinger) con parámetros contextuales
+  - Formulario para agregar reglas con N condiciones (indicador + comparador + valor), acción y monto
+  - Tabla de indicadores con eliminación
+  - Tabla de reglas con eliminación
+  - Vista de RiskConfig readonly
+- [x] **Estrategias list**: nombres ahora son links clickeables a la página de detalle
+
+> **Nota**: Paso 8B agregó edición de indicadores/reglas existentes + plantillas predefinidas (ver arriba)
+
+**Archivos creados:**
+- `src/TradingBot.Application/Commands/Strategies/IndicatorAndRuleCommands.cs`
+- `src/TradingBot.Frontend/Pages/StrategyDetail.razor`
+
+**Archivos modificados:**
+- `src/TradingBot.API/Controllers/StrategiesController.cs` — 4 endpoints nuevos + 3 request DTOs
+- `src/TradingBot.Frontend/Services/TradingApiClient.cs` — 4 métodos nuevos
+- `src/TradingBot.Frontend/Models/Dtos.cs` — 3 request DTOs
+- `src/TradingBot.Frontend/Pages/Strategies.razor` — nombres como links
+
+#### Paso 7A — MVP Gaps (Config + SignalR Bridge + Hot-Reload) ✅
+
+- [x] **`ITradingNotifier`**: interfaz en Core para notificación en tiempo real (desacoplado de SignalR)
+- [x] **`SignalRTradingNotifier`**: implementación en API — pushea `OnMarketTick`, `OnOrderExecuted`, `OnSignalGenerated`, `OnAlert`, `OnStrategyUpdated` vía `IHubContext<TradingHub>`
+- [x] **StrategyEngine ↔ SignalR**: cada tick/señal/orden se notifica al frontend en tiempo real
+- [x] **Hot-reload completo**: `StrategyConfigService` llama `IStrategyEngine.ReloadStrategyAsync` en `Update`, `Activate` y `Deactivate`
+- [x] **`appsettings.json`**: agregado `FrontendUrl` para CORS con URLs reales del frontend (`https://localhost:7017`, `http://localhost:5179`)
+- [x] **CORS actualizado**: URLs del frontend Blazor WASM reales en vez de placeholders
+- [x] Tests (48/48 passing): Core (43) + Application (5)
+
+**Archivos creados:**
+- `src/TradingBot.Core/Interfaces/Services/ITradingNotifier.cs`
+- `src/TradingBot.API/Services/SignalRTradingNotifier.cs`
+
+**Archivos modificados:**
+- `src/TradingBot.Application/Strategies/StrategyEngine.cs` — notifica ticks y señales vía `ITradingNotifier`
+- `src/TradingBot.Application/Services/StrategyConfigService.cs` — inyecta `IStrategyEngine`, llama `ReloadStrategyAsync`
+- `src/TradingBot.API/Program.cs` — registra `ITradingNotifier` + CORS con URLs reales
+- `src/TradingBot.API/appsettings.json` — `FrontendUrl` configurado
 
 #### Paso 6 — `TradingBot.Frontend` (Blazor WebAssembly) ✅
 

@@ -29,6 +29,8 @@ public sealed class TradingBotDbContext(DbContextOptions<TradingBotDbContext> op
     /// </summary>
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        FixNewOwnedEntitiesTrackedAsModified();
+
         var result = await base.SaveChangesAsync(cancellationToken);
 
         // Limpiar los domain events tras persistir (el despacho se hace en el Application layer)
@@ -42,5 +44,32 @@ public sealed class TradingBotDbContext(DbContextOptions<TradingBotDbContext> op
             aggregate.ClearDomainEvents();
 
         return result;
+    }
+
+    /// <summary>
+    /// Cuando DetectChanges() descubre una owned entity nueva en una colección
+    /// OwnsMany cuya PK tiene ValueGeneratedOnAdd y un valor non-default
+    /// (p. ej. Guid.NewGuid()), EF Core la marca como Modified en vez de Added.
+    /// Esto genera un UPDATE sobre una fila inexistente → DbUpdateConcurrencyException.
+    ///
+    /// La firma es inequívoca: todas las propiedades tienen Original == Current
+    /// porque la entidad nunca fue cargada de la BD.
+    /// </summary>
+    private void FixNewOwnedEntitiesTrackedAsModified()
+    {
+        ChangeTracker.DetectChanges();
+
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State != EntityState.Modified || !entry.Metadata.IsOwned())
+                continue;
+
+            var allOriginalEqualsCurrent = entry.Properties
+                .Where(p => !p.Metadata.IsPrimaryKey())
+                .All(p => Equals(p.OriginalValue, p.CurrentValue));
+
+            if (allOriginalEqualsCurrent)
+                entry.State = EntityState.Added;
+        }
     }
 }

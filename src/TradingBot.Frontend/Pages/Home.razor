@@ -7,15 +7,28 @@
 
 <h1>📊 Dashboard</h1>
 
+@* ── Banner de desconexión ────────────────────────────────────────────── *@
+@if (!apiReachable || hubState != "Connected")
+{
+    <div class="alert alert-danger py-2 mb-3 d-flex align-items-center">
+        <strong class="me-2">⛔ Sin conexión</strong>
+        <span>
+            @if (!apiReachable) { <span class="badge bg-dark me-1">API inalcanzable</span> }
+            @if (hubState != "Connected") { <span class="badge bg-dark">SignalR: @hubState</span> }
+        </span>
+        <span class="ms-auto small text-muted">Los datos mostrados pueden estar desactualizados</span>
+    </div>
+}
+
 @* ── Estado del sistema ──────────────────────────────────────────────── *@
 <div class="row mb-4">
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card">
             <div class="card-body text-center">
                 <h5 class="card-title">Motor</h5>
                 @if (systemStatus is null)
                 {
-                    <p class="text-muted">Cargando…</p>
+                    <p class="text-muted">@(!apiReachable ? "Sin conexión" : "Cargando…")</p>
                 }
                 else
                 {
@@ -24,7 +37,8 @@
                     </span>
                     <div class="mt-2">
                         <button class="btn btn-sm @(systemStatus.IsRunning ? "btn-outline-warning" : "btn-outline-success")"
-                                @onclick="ToggleEngineAsync">
+                                @onclick="ToggleEngineAsync"
+                                disabled="@(!apiReachable)">
                             @(systemStatus.IsRunning ? "⏸ Pausar" : "▶ Reanudar")
                         </button>
                     </div>
@@ -32,45 +46,174 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card">
             <div class="card-body text-center">
-                <h5 class="card-title">Binance WebSocket</h5>
-                @if (systemStatus is null)
+                <h5 class="card-title">Conexión</h5>
+                @{
+                    // La conexión real se determina por: API alcanzable + SignalR conectado + backend reporta WS conectado
+                    var wsConnected = apiReachable && hubState == "Connected" && (systemStatus?.IsConnected ?? false);
+                    var signalRIssue = hubState != "Connected";
+                    var apiIssue = !apiReachable;
+                }
+                @if (apiIssue)
                 {
-                    <p class="text-muted">Cargando…</p>
+                    <span class="badge bg-danger fs-6">🔴 API off</span>
+                }
+                else if (signalRIssue)
+                {
+                    <span class="badge bg-warning fs-6">🟡 @hubState</span>
+                }
+                else if (!wsConnected)
+                {
+                    <span class="badge bg-warning fs-6">🟡 WS off</span>
                 }
                 else
                 {
-                    <span class="badge @(systemStatus.IsConnected ? "bg-success" : "bg-danger") fs-6">
-                        @(systemStatus.IsConnected ? "🟢 Conectado" : "🔴 Desconectado")
-                    </span>
+                    <span class="badge bg-success fs-6">🟢 OK</span>
                 }
+                <div class="small text-muted mt-1">
+                    API: @(apiReachable ? "✓" : "✗") |
+                    SR: @(hubState == "Connected" ? "✓" : "✗") |
+                    WS: @(systemStatus?.IsConnected == true ? "✓" : "✗")
+                </div>
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card">
             <div class="card-body text-center">
-                <h5 class="card-title">Estrategias activas</h5>
+                <h5 class="card-title">Estrategias</h5>
                 <span class="fs-3 fw-bold">@(systemStatus?.Strategies?.Count ?? 0)</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body text-center">
+                <h5 class="card-title">P&amp;L diario</h5>
+                @if (pnlSummaries is null)
+                {
+                    <p class="text-muted">—</p>
+                }
+                else
+                {
+                    var totalDaily = pnlSummaries.Sum(p => p.DailyRealizedPnL);
+                    var totalUnrealized = pnlSummaries.Sum(p => p.UnrealizedPnL);
+                    <span class="fs-4 fw-bold @(totalDaily >= 0 ? "text-success" : "text-danger")">
+                        @totalDaily.ToString("F2") USDT
+                    </span>
+                    <div class="small text-muted mt-1">
+                        No realizado: <span class="@(totalUnrealized >= 0 ? "text-success" : "text-danger")">
+                            @totalUnrealized.ToString("F2")
+                        </span>
+                    </div>
+                }
             </div>
         </div>
     </div>
 </div>
 
-@* ── Ticks en tiempo real (SignalR) ──────────────────────────────────── *@
-<h4>📡 Ticks en tiempo real</h4>
-@if (hubState == "Connected")
+@* ── P&L por estrategia ─────────────────────────────────────────────── *@
+@if (pnlSummaries?.Count > 0)
 {
-    <span class="badge bg-success mb-2">SignalR conectado</span>
-}
-else
-{
-    <span class="badge bg-secondary mb-2">SignalR: @hubState</span>
+    <div class="row mb-4">
+        @foreach (var pnl in pnlSummaries)
+        {
+            <div class="col-md-4 mb-2">
+                <div class="card">
+                    <div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>@pnl.StrategyName</strong>
+                                <span class="text-muted small ms-1">@pnl.Symbol</span>
+                            </div>
+                            <span class="badge bg-secondary">@pnl.OpenPositions pos</span>
+                        </div>
+                        <div class="d-flex justify-content-between mt-1 small">
+                            <span>Hoy: <strong class="@(pnl.DailyRealizedPnL >= 0 ? "text-success" : "text-danger")">@pnl.DailyRealizedPnL.ToString("F2")</strong></span>
+                            <span>Total: <strong class="@(pnl.TotalRealizedPnL >= 0 ? "text-success" : "text-danger")">@pnl.TotalRealizedPnL.ToString("F2")</strong></span>
+                            <span>Open: <strong class="@(pnl.UnrealizedPnL >= 0 ? "text-success" : "text-danger")">@pnl.UnrealizedPnL.ToString("F2")</strong></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
 }
 
-@if (recentTicks.Count == 0)
+@* ── Eventos recientes (SignalR) ─────────────────────────────────────── *@
+<div class="row mb-4">
+    <div class="col-md-6">
+        <h5>📡 Señales recientes</h5>
+        @if (recentSignals.Count == 0)
+        {
+            <p class="text-muted small">Esperando señales…</p>
+        }
+        else
+        {
+            <div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto">
+                @foreach (var sig in recentSignals)
+                {
+                    <div class="list-group-item py-1 px-2 small d-flex justify-content-between">
+                        <span>
+                            <span class="badge @(sig.Side == "Buy" ? "bg-success" : "bg-danger") me-1">@sig.Side</span>
+                            <strong>@sig.Symbol</strong>
+                        </span>
+                        <span class="text-muted">@sig.Time</span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+    <div class="col-md-6">
+        <h5>📋 Órdenes recientes</h5>
+        @if (recentOrders.Count == 0)
+        {
+            <p class="text-muted small">Esperando órdenes…</p>
+        }
+        else
+        {
+            <div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto">
+                @foreach (var ord in recentOrders)
+                {
+                    <div class="list-group-item py-1 px-2 small d-flex justify-content-between">
+                        <span>
+                            <span class="badge @(ord.Side == "Buy" ? "bg-success" : "bg-danger") me-1">@ord.Side</span>
+                            <strong>@ord.Symbol</strong>
+                            <span class="text-muted ms-1">@ord.Quantity qty</span>
+                            @if (ord.IsPaper) { <span class="badge bg-info ms-1">Paper</span> }
+                        </span>
+                        <span class="text-muted">@ord.Time</span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@* ── Ticks en tiempo real ────────────────────────────────────────────── *@
+<h5>
+    📡 Ticks en tiempo real
+    @if (hubState == "Connected")
+    {
+        <span class="badge bg-success ms-2 small">SignalR ✓</span>
+    }
+    else if (hubState == "Reconnecting…")
+    {
+        <span class="badge bg-warning ms-2 small">Reconectando…</span>
+    }
+    else
+    {
+        <span class="badge bg-danger ms-2 small">@hubState</span>
+    }
+</h5>
+
+@if (hubState != "Connected")
+{
+    <p class="text-muted">⚠ Sin conexión SignalR — los ticks se reanudarán al reconectar.</p>
+}
+else if (recentTicks.Count == 0)
 {
     <p class="text-muted">Esperando ticks…</p>
 }
@@ -108,7 +251,7 @@ else
 @* ── Estrategias activas ────────────────────────────────────────────── *@
 @if (systemStatus?.Strategies?.Any() == true)
 {
-    <h4 class="mt-4">🎯 Estado por estrategia</h4>
+    <h5 class="mt-3">🎯 Estado por estrategia</h5>
     <div class="table-responsive">
         <table class="table table-sm">
             <thead>
@@ -145,6 +288,20 @@ else
     </div>
 }
 
+@* ── Toast de alertas ────────────────────────────────────────────────── *@
+@if (toastMessages.Count > 0)
+{
+    <div style="position:fixed;bottom:20px;right:20px;z-index:9999;max-width:400px">
+        @foreach (var toast in toastMessages)
+        {
+            <div class="alert @toast.CssClass alert-dismissible fade show py-2 mb-2 shadow" role="alert">
+                <small>@toast.Message</small>
+                <button type="button" class="btn-close btn-sm" @onclick="() => DismissToast(toast)"></button>
+            </div>
+        }
+    </div>
+}
+
 @if (errorMessage is not null)
 {
     <div class="alert alert-danger mt-3">@errorMessage</div>
@@ -152,16 +309,40 @@ else
 
 @code {
     private SystemStatusDto? systemStatus;
+    private List<PnLSummaryDto>? pnlSummaries;
     private HubConnection? hubConnection;
     private string hubState = "Disconnected";
     private string? errorMessage;
+    private bool apiReachable = true;
+    private int _consecutiveApiFailures;
     private readonly List<MarketTickDto> recentTicks = [];
+    private readonly List<SignalEntry> recentSignals = [];
+    private readonly List<OrderEntry> recentOrders = [];
+    private readonly List<ToastMessage> toastMessages = [];
     private const int MaxTicks = 20;
+    private const int MaxEvents = 10;
+    private System.Threading.Timer? _refreshTimer;
+
+    /// <summary>Computed: true si tanto la API como SignalR están conectados.</summary>
+    private bool IsFullyConnected => apiReachable && hubState == "Connected";
 
     protected override async Task OnInitializedAsync()
     {
         await LoadStatusAsync();
+        await LoadPnLAsync();
         await StartSignalRAsync();
+
+        // Refrescar P&L y status cada 15 segundos (antes 30)
+        _refreshTimer = new System.Threading.Timer(
+            async _ => await InvokeAsync(async () =>
+            {
+                await LoadStatusAsync();
+                await LoadPnLAsync();
+                StateHasChanged();
+            }),
+            null,
+            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(15));
     }
 
     private async Task LoadStatusAsync()
@@ -170,10 +351,35 @@ else
         {
             systemStatus = await Api.GetSystemStatusAsync();
             errorMessage = null;
+            apiReachable = true;
+            _consecutiveApiFailures = 0;
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error al obtener estado: {ex.Message}";
+            _consecutiveApiFailures++;
+            apiReachable = false;
+
+            // Limpiar estado para no mostrar datos obsoletos
+            systemStatus = null;
+            pnlSummaries = null;
+
+            if (_consecutiveApiFailures >= 2)
+                errorMessage = $"⛔ Sin conexión con la API ({_consecutiveApiFailures} intentos fallidos). Último error: {ex.Message}";
+            else
+                errorMessage = $"Error al obtener estado: {ex.Message}";
+        }
+    }
+
+    private async Task LoadPnLAsync()
+    {
+        try
+        {
+            if (!apiReachable) return;
+            pnlSummaries = await Api.GetPnLSummaryAsync();
+        }
+        catch
+        {
+            // P&L es informativo; no bloquear la UI si falla
         }
     }
 
@@ -196,15 +402,42 @@ else
                 InvokeAsync(StateHasChanged);
             });
 
+            hubConnection.On<SignalDto>("OnSignalGenerated", signal =>
+            {
+                recentSignals.Insert(0, new SignalEntry(
+                    signal.Symbol, signal.Direction,
+                    DateTimeOffset.Now.ToLocalTime().ToString("HH:mm:ss")));
+                if (recentSignals.Count > MaxEvents)
+                    recentSignals.RemoveAt(recentSignals.Count - 1);
+                AddToast($"📈 Señal {signal.Direction} en {signal.Symbol}", "alert-info");
+                InvokeAsync(StateHasChanged);
+            });
+
+            hubConnection.On<OrderExecutedDto>("OnOrderExecuted", order =>
+            {
+                recentOrders.Insert(0, new OrderEntry(
+                    order.Symbol, order.Side, order.Quantity,
+                    order.IsPaperTrade,
+                    DateTimeOffset.Now.ToLocalTime().ToString("HH:mm:ss")));
+                if (recentOrders.Count > MaxEvents)
+                    recentOrders.RemoveAt(recentOrders.Count - 1);
+                AddToast(
+                    $"✅ Orden {order.Side} {order.Quantity} {order.Symbol}" +
+                    (order.IsPaperTrade ? " (Paper)" : ""),
+                    "alert-success");
+                InvokeAsync(StateHasChanged);
+            });
+
             hubConnection.On<string>("OnAlert", message =>
             {
-                errorMessage = $"⚠ {message}";
+                AddToast($"⚠ {message}", "alert-warning");
                 InvokeAsync(StateHasChanged);
             });
 
             hubConnection.Reconnecting += _ =>
             {
                 hubState = "Reconnecting…";
+                AddToast("🔄 SignalR reconectando…", "alert-warning");
                 InvokeAsync(StateHasChanged);
                 return Task.CompletedTask;
             };
@@ -212,6 +445,7 @@ else
             hubConnection.Reconnected += _ =>
             {
                 hubState = "Connected";
+                AddToast("✅ SignalR reconectado", "alert-success");
                 InvokeAsync(StateHasChanged);
                 return Task.CompletedTask;
             };
@@ -219,6 +453,8 @@ else
             hubConnection.Closed += _ =>
             {
                 hubState = "Disconnected";
+                recentTicks.Clear();
+                AddToast("❌ SignalR desconectado — los ticks se detendrán", "alert-danger");
                 InvokeAsync(StateHasChanged);
                 return Task.CompletedTask;
             };
@@ -250,9 +486,36 @@ else
         }
     }
 
+    private void AddToast(string message, string cssClass)
+    {
+        var toast = new ToastMessage(message, cssClass);
+        toastMessages.Insert(0, toast);
+        if (toastMessages.Count > 5)
+            toastMessages.RemoveAt(toastMessages.Count - 1);
+
+        // Auto-dismiss after 8 seconds
+        _ = Task.Delay(8000).ContinueWith(_ => InvokeAsync(() =>
+        {
+            toastMessages.Remove(toast);
+            StateHasChanged();
+        }));
+    }
+
+    private void DismissToast(ToastMessage toast) => toastMessages.Remove(toast);
+
     public async ValueTask DisposeAsync()
     {
+        _refreshTimer?.Dispose();
         if (hubConnection is not null)
             await hubConnection.DisposeAsync();
     }
+
+    // ── DTOs internos para SignalR ────────────────────────────────────────
+
+    private sealed record SignalEntry(string Symbol, string Side, string Time);
+    private sealed record OrderEntry(string Symbol, string Side, decimal Quantity, bool IsPaper, string Time);
+    private sealed record ToastMessage(string Message, string CssClass);
+
+    private sealed record SignalDto(string Symbol, string Direction);
+    private sealed record OrderExecutedDto(string Symbol, string Side, decimal Quantity, bool IsPaperTrade);
 }

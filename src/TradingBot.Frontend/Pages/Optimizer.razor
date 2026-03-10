@@ -1,0 +1,415 @@
+@page "/optimizer"
+@inject TradingApiClient Api
+
+<PageTitle>Optimizador — TradingBot</PageTitle>
+
+<h1>⚡ Optimizador de Parámetros</h1>
+<p class="text-muted">Probá múltiples combinaciones de parámetros y encontrá la configuración óptima.</p>
+
+@* ── Configuración ──────────────────────────────────────────────────── *@
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label">Estrategia base</label>
+                <select class="form-select" @bind="selectedStrategyId" @bind:after="OnStrategyChanged">
+                    <option value="">— Seleccionar —</option>
+                    @if (strategies is not null)
+                    {
+                        @foreach (var s in strategies)
+                        {
+                            <option value="@s.Id">@s.Name (@s.Symbol)</option>
+                        }
+                    }
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Desde</label>
+                <InputDate class="form-control" @bind-Value="fromDate" />
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Hasta</label>
+                <InputDate class="form-control" @bind-Value="toDate" />
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <span class="badge bg-secondary fs-6">
+                    @totalCombinations combinaciones
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+@* ── Rangos de parámetros ────────────────────────────────────────────── *@
+@if (selectedStrategy is not null)
+{
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>🎛️ Parámetros a optimizar</strong>
+            <div>
+                <button class="btn btn-sm btn-outline-success me-1" @onclick="SaveProfileAsync"
+                        disabled="@(isSavingProfile || parameterRanges.Count == 0)">
+                    @(isSavingProfile ? "⏳" : "💾") Guardar perfil
+                </button>
+                <button class="btn btn-sm btn-outline-primary" @onclick="AddParameterRange">➕ Agregar</button>
+            </div>
+        </div>
+        <div class="card-body">
+            @if (parameterRanges.Count == 0)
+            {
+                <p class="text-muted">Agregá rangos de parámetros para optimizar. Ejemplos:</p>
+                <div class="row g-2">
+                    @foreach (var suggestion in GetSuggestions())
+                    {
+                        <div class="col-auto">
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => AddSuggestion(suggestion)">
+                                + @suggestion.Name
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                @for (var idx = 0; idx < parameterRanges.Count; idx++)
+                {
+                    var i = idx;
+                    var range = parameterRanges[i];
+                    <div class="row g-2 mb-2 align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label small">Parámetro</label>
+                            <select class="form-select form-select-sm" @bind="range.Name">
+                                @foreach (var opt in GetAvailableParameters())
+                                {
+                                    <option value="@opt">@opt</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Min</label>
+                            <input type="number" class="form-control form-control-sm" @bind="range.Min" step="any" @bind:after="RecalculateCombinations" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Max</label>
+                            <input type="number" class="form-control form-control-sm" @bind="range.Max" step="any" @bind:after="RecalculateCombinations" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Paso</label>
+                            <input type="number" class="form-control form-control-sm" @bind="range.Step" step="any" @bind:after="RecalculateCombinations" />
+                        </div>
+                        <div class="col-md-1">
+                            <span class="badge bg-info">@range.ValueCount vals</span>
+                        </div>
+                        <div class="col-md-1">
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => parameterRanges.RemoveAt(i)">🗑</button>
+                        </div>
+                    </div>
+                }
+            }
+
+            @if (totalCombinations > 500)
+            {
+                <div class="alert alert-warning mt-2 mb-0">
+                    ⚠️ @totalCombinations combinaciones superan el límite de 500. Reducí los rangos o aumentá el paso.
+                </div>
+            }
+        </div>
+    </div>
+
+    <button class="btn btn-primary btn-lg mb-4" @onclick="RunOptimizationAsync"
+            disabled="@(isRunning || parameterRanges.Count == 0 || totalCombinations > 500)">
+        @if (isRunning)
+        {
+            <span class="spinner-border spinner-border-sm me-1"></span>
+            @:Optimizando (@totalCombinations combinaciones)…
+        }
+        else
+        {
+            @:⚡ Ejecutar optimización (@totalCombinations combinaciones)
+        }
+    </button>
+}
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger">@errorMessage</div>
+}
+
+@* ── Resultados ──────────────────────────────────────────────────────── *@
+@if (optimizationResult is not null)
+{
+    <h4>📊 Resultados: @optimizationResult.StrategyName</h4>
+    <p class="text-muted">
+        @optimizationResult.Symbol —
+        @optimizationResult.CompletedCombinations/@optimizationResult.TotalCombinations combinaciones
+        en @optimizationResult.DurationSeconds.ToString("N1")s
+    </p>
+
+    @if (optimizationResult.Results.Count > 0)
+    {
+        @* ── Top 3 ──────────────────────────────────────────────────── *@
+        <h5>🏆 Top 3</h5>
+        <div class="row mb-4">
+            @foreach (var top in optimizationResult.Results.Take(3))
+            {
+                var medal = top.Rank switch { 1 => "🥇", 2 => "🥈", 3 => "🥉", _ => "" };
+                <div class="col-md-4">
+                    <div class="card @(top.Rank == 1 ? "border-success" : "")">
+                        <div class="card-body">
+                            <h6>@medal #@top.Rank</h6>
+                            <div class="mb-2">
+                                @foreach (var (key, value) in top.Parameters)
+                                {
+                                    <span class="badge bg-primary me-1">@key=@value</span>
+                                }
+                            </div>
+                            <div>
+                                <strong class="@GetPnLClass(top.TotalPnL)">@FormatPnL(top.TotalPnL)</strong>
+                            </div>
+                            <small class="text-muted">
+                                Invertido: @top.TotalInvested.ToString("N2") USDT · ROI: <span class="@GetPnLClass(top.ReturnOnInvestment)">@top.ReturnOnInvestment.ToString("N2")%</span>
+                            </small>
+                            <br />
+                            <small class="text-muted">
+                                @top.TotalTrades trades · @top.WinRate.ToString("N1")% win · @top.MaxDrawdownPercent.ToString("N1")% DD
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @* ── Tabla completa ─────────────────────────────────────────── *@
+        <h5>📋 Todas las combinaciones (@optimizationResult.Results.Count)</h5>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        @if (optimizationResult.Results.Count > 0)
+                        {
+                            @foreach (var key in optimizationResult.Results[0].Parameters.Keys)
+                            {
+                                <th>@key</th>
+                            }
+                        }
+                        <th>P&amp;L</th>
+                        <th>Invertido</th>
+                        <th>ROI</th>
+                        <th>Trades</th>
+                        <th>Win Rate</th>
+                        <th>Drawdown</th>
+                        <th>P&amp;L/Trade</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in optimizationResult.Results)
+                    {
+                        <tr class="@(row.Rank <= 3 ? "table-success" : row.TotalPnL < 0 ? "table-danger" : "")">
+                            <td>@row.Rank</td>
+                            @foreach (var value in row.Parameters.Values)
+                            {
+                                <td>@value</td>
+                            }
+                            <td class="fw-bold @GetPnLClass(row.TotalPnL)">@FormatPnL(row.TotalPnL)</td>
+                            <td>@row.TotalInvested.ToString("N2")</td>
+                            <td class="@GetPnLClass(row.ReturnOnInvestment)">@row.ReturnOnInvestment.ToString("N2")%</td>
+                            <td>@row.TotalTrades</td>
+                            <td>@row.WinRate.ToString("N1")%</td>
+                            <td>@row.MaxDrawdownPercent.ToString("N1")%</td>
+                            <td class="@GetPnLClass(row.AveragePnLPerTrade)">@FormatPnL(row.AveragePnLPerTrade)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-info">No se generaron trades con ninguna combinación.</div>
+    }
+}
+
+@code {
+    private List<StrategyDto>? strategies;
+    private StrategyDto? selectedStrategy;
+    private string selectedStrategyId = "";
+    private DateTime fromDate = DateTime.UtcNow.AddDays(-7).Date;
+    private DateTime toDate = DateTime.UtcNow.Date;
+    private bool isRunning;
+    private string? errorMessage;
+    private OptimizationResultDto? optimizationResult;
+
+    private List<ParameterRangeModel> parameterRanges = [];
+    private int totalCombinations;
+
+    private bool isSavingProfile;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { strategies = await Api.GetStrategiesAsync(); }
+        catch (Exception ex) { errorMessage = $"Error al cargar estrategias: {ex.Message}"; }
+    }
+
+    private void OnStrategyChanged()
+    {
+        selectedStrategy = strategies?.FirstOrDefault(s => s.Id.ToString() == selectedStrategyId);
+        parameterRanges.Clear();
+        optimizationResult = null;
+
+        // Cargar rangos guardados si existen
+        if (selectedStrategy?.SavedOptimizationRanges is { Count: > 0 } saved)
+        {
+            foreach (var r in saved)
+            {
+                parameterRanges.Add(new ParameterRangeModel
+                {
+                    Name = r.Name, Min = r.Min, Max = r.Max, Step = r.Step
+                });
+            }
+        }
+
+        RecalculateCombinations();
+    }
+
+    private void AddParameterRange()
+    {
+        var available = GetAvailableParameters();
+        parameterRanges.Add(new ParameterRangeModel
+        {
+            Name = available.FirstOrDefault() ?? "stopLossPercent",
+            Min = 1, Max = 5, Step = 1
+        });
+        RecalculateCombinations();
+    }
+
+    private void AddSuggestion(ParameterRangeModel suggestion)
+    {
+        parameterRanges.Add(suggestion);
+        RecalculateCombinations();
+    }
+
+    private void RecalculateCombinations()
+    {
+        if (parameterRanges.Count == 0) { totalCombinations = 0; return; }
+        totalCombinations = 1;
+        foreach (var r in parameterRanges)
+            totalCombinations *= r.ValueCount;
+    }
+
+    private List<string> GetAvailableParameters()
+    {
+        var result = new List<string>
+        {
+            "stopLossPercent", "takeProfitPercent",
+            "maxOrderAmountUsdt", "maxDailyLossUsdt",
+            "amountUsdt"
+        };
+
+        if (selectedStrategy is not null)
+        {
+            foreach (var ind in selectedStrategy.Indicators)
+            {
+                var prefix = ind.Type + ".";
+                foreach (var key in ind.Parameters.Keys)
+                    result.Add(prefix + key);
+            }
+        }
+
+        return result;
+    }
+
+    private List<ParameterRangeModel> GetSuggestions()
+    {
+        var suggestions = new List<ParameterRangeModel>
+        {
+            new() { Name = "stopLossPercent", Min = 1, Max = 5, Step = 1 },
+            new() { Name = "takeProfitPercent", Min = 2, Max = 8, Step = 1 },
+            new() { Name = "amountUsdt", Min = 20, Max = 100, Step = 20 },
+            new() { Name = "maxDailyLossUsdt", Min = 100, Max = 500, Step = 100 }
+        };
+
+        if (selectedStrategy is not null)
+        {
+            foreach (var ind in selectedStrategy.Indicators)
+            {
+                if (ind.Type == "RSI" && ind.Parameters.ContainsKey("period"))
+                    suggestions.Add(new() { Name = "RSI.period", Min = 10, Max = 20, Step = 2 });
+                if (ind.Type == "EMA" && ind.Parameters.ContainsKey("period"))
+                    suggestions.Add(new() { Name = "EMA.period", Min = 5, Max = 25, Step = 5 });
+                if (ind.Type == "SMA" && ind.Parameters.ContainsKey("period"))
+                    suggestions.Add(new() { Name = "SMA.period", Min = 10, Max = 30, Step = 5 });
+            }
+        }
+
+        return suggestions;
+    }
+
+    private async Task SaveProfileAsync()
+    {
+        if (selectedStrategy is null || parameterRanges.Count == 0) return;
+        isSavingProfile = true;
+        try
+        {
+            var dtos = parameterRanges
+                .Select(r => new SavedParameterRangeDto(r.Name, r.Min, r.Max, r.Step))
+                .ToList();
+            await Api.SaveOptimizationProfileAsync(selectedStrategy.Id, dtos);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al guardar perfil: {ex.Message}";
+        }
+        finally
+        {
+            isSavingProfile = false;
+        }
+    }
+
+    private async Task RunOptimizationAsync()
+    {
+        if (string.IsNullOrEmpty(selectedStrategyId) || parameterRanges.Count == 0) return;
+
+        isRunning = true;
+        errorMessage = null;
+        optimizationResult = null;
+
+        try
+        {
+            var request = new RunOptimizationRequest(
+                Guid.Parse(selectedStrategyId),
+                new DateTimeOffset(fromDate, TimeSpan.Zero),
+                new DateTimeOffset(toDate, TimeSpan.Zero),
+                parameterRanges.Select(r => new ParameterRangeDto(r.Name, r.Min, r.Max, r.Step)).ToList());
+
+            optimizationResult = await Api.RunOptimizationAsync(request);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error en optimización: {ex.Message}";
+        }
+        finally
+        {
+            isRunning = false;
+        }
+    }
+
+    private static string GetPnLClass(decimal value) => value switch
+    {
+        > 0 => "text-success",
+        < 0 => "text-danger",
+        _   => "text-muted"
+    };
+
+    private static string FormatPnL(decimal value) =>
+        $"{(value >= 0 ? "+" : "")}{value:N4} USDT";
+
+    private sealed class ParameterRangeModel
+    {
+        public string Name { get; set; } = "";
+        public decimal Min { get; set; }
+        public decimal Max { get; set; }
+        public decimal Step { get; set; } = 1;
+        public int ValueCount => Step <= 0 ? 0 : (int)((Max - Min) / Step) + 1;
+    }
+}

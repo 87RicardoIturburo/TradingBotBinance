@@ -20,6 +20,7 @@ internal sealed class OrderService : IOrderService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRiskManager _riskManager;
     private readonly IMarketDataService _marketDataService;
+    private readonly ISpotOrderExecutor _spotOrderExecutor;
     private readonly ILogger<OrderService> _logger;
 
     public OrderService(
@@ -28,6 +29,7 @@ internal sealed class OrderService : IOrderService
         IUnitOfWork unitOfWork,
         IRiskManager riskManager,
         IMarketDataService marketDataService,
+        ISpotOrderExecutor spotOrderExecutor,
         ILogger<OrderService> logger)
     {
         _orderRepository = orderRepository;
@@ -35,6 +37,7 @@ internal sealed class OrderService : IOrderService
         _unitOfWork = unitOfWork;
         _riskManager = riskManager;
         _marketDataService = marketDataService;
+        _spotOrderExecutor = spotOrderExecutor;
         _logger = logger;
     }
 
@@ -56,19 +59,8 @@ internal sealed class OrderService : IOrderService
             return await SimulatePaperTradeAsync(order, cancellationToken);
         }
 
-        // Para Live/Testnet, la orden se envía como Submitted
-        // La ejecución real se hará en Infrastructure vía Binance.Net
-        var submitResult = order.Submit();
-        if (submitResult.IsFailure)
-            return submitResult;
-
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Orden {OrderId} enviada: {Side} {Type} {Qty} {Symbol}",
-            order.Id, order.Side, order.Type, order.Quantity.Value, order.Symbol.Value);
-
-        return Result<Order, DomainError>.Success(order);
+        // Live/Testnet → ejecutar en Binance Spot
+        return await ExecuteSpotOrderAsync(order, cancellationToken);
     }
 
     public async Task<Result<Order, DomainError>> CancelOrderAsync(
@@ -79,6 +71,20 @@ internal sealed class OrderService : IOrderService
         if (order is null)
             return Result<Order, DomainError>.Failure(
                 DomainError.NotFound($"Orden '{orderId}'"));
+
+        // Si la orden tiene ID de Binance y no es paper trade, cancelar en el exchange primero
+        if (!order.IsPaperTrade && !string.IsNullOrEmpty(order.BinanceOrderId))
+        {
+            var cancelResult = await _spotOrderExecutor.CancelOrderAsync(
+                order.Symbol.Value, order.BinanceOrderId, cancellationToken);
+
+            if (cancelResult.IsFailure)
+            {
+                _logger.LogWarning(
+                    "No se pudo cancelar orden {OrderId} en Binance: {Error}. Cancelando localmente.",
+                    orderId, cancelResult.Error.Message);
+            }
+        }
 
         var result = order.Cancel("Cancelada por el usuario.");
         if (result.IsFailure)
@@ -100,9 +106,63 @@ internal sealed class OrderService : IOrderService
             return Result<Order, DomainError>.Failure(
                 DomainError.NotFound($"Orden '{orderId}'"));
 
-        // La sincronización con Binance REST se implementará en Infrastructure
-        // Por ahora devuelve la orden tal cual
-        _logger.LogDebug("Sync de estado para orden {OrderId} (pendiente integración REST)", orderId);
+        // Paper trades no necesitan sincronización
+        if (order.IsPaperTrade || order.IsTerminal || string.IsNullOrEmpty(order.BinanceOrderId))
+            return Result<Order, DomainError>.Success(order);
+
+        var statusResult = await _spotOrderExecutor.GetOrderStatusAsync(
+            order.Symbol.Value, order.BinanceOrderId, cancellationToken);
+
+        if (statusResult.IsFailure)
+        {
+            _logger.LogWarning(
+                "No se pudo sincronizar orden {OrderId}: {Error}",
+                orderId, statusResult.Error.Message);
+            return Result<Order, DomainError>.Success(order);
+        }
+
+        var status = statusResult.Value;
+        var changed = false;
+
+        if (status.IsCompletelyFilled && order.Status != OrderStatus.Filled)
+        {
+            var qty = Quantity.Create(status.ExecutedQuantity);
+            var price = Price.Create(status.ExecutedPrice);
+
+            if (qty.IsSuccess && price.IsSuccess)
+            {
+                order.Fill(qty.Value, price.Value);
+                await HandlePositionAsync(order, cancellationToken);
+                changed = true;
+
+                _logger.LogInformation(
+                    "Orden {OrderId} sincronizada: Filled @ {Price}",
+                    orderId, status.ExecutedPrice);
+            }
+        }
+        else if (status.IsCancelled && order.Status != OrderStatus.Cancelled)
+        {
+            order.Cancel($"Cancelada en Binance (status: {status.Status})");
+            changed = true;
+        }
+        else if (status.ExecutedQuantity > 0 && order.Status == OrderStatus.Submitted)
+        {
+            var qty = Quantity.Create(status.ExecutedQuantity);
+            var price = Price.Create(status.ExecutedPrice);
+
+            if (qty.IsSuccess && price.IsSuccess)
+            {
+                order.PartialFill(qty.Value, price.Value);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await _orderRepository.UpdateAsync(order, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+
         return Result<Order, DomainError>.Success(order);
     }
 
@@ -111,6 +171,69 @@ internal sealed class OrderService : IOrderService
     {
         var orders = await _orderRepository.GetOpenOrdersAsync(cancellationToken);
         return Result<IReadOnlyList<Order>, DomainError>.Success(orders);
+    }
+
+    private async Task<Result<Order, DomainError>> ExecuteSpotOrderAsync(
+        Order order,
+        CancellationToken cancellationToken)
+    {
+        // Enviar al exchange
+        var exchangeResult = await _spotOrderExecutor.PlaceOrderAsync(order, cancellationToken);
+
+        if (exchangeResult.IsFailure)
+        {
+            // El exchange rechazó la orden antes de aceptarla
+            order.Submit();
+            order.Reject(exchangeResult.Error.Message);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            _logger.LogWarning(
+                "Orden {OrderId} rechazada por Binance: {Error}",
+                order.Id, exchangeResult.Error.Message);
+
+            return Result<Order, DomainError>.Failure(exchangeResult.Error);
+        }
+
+        var spotResult = exchangeResult.Value;
+
+        // Marcar como Submitted con el ID de Binance
+        var submitResult = order.Submit(spotResult.ExchangeOrderId);
+        if (submitResult.IsFailure)
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return submitResult;
+        }
+
+        // Si la orden de Market se llenó inmediatamente (lo esperado)
+        if (spotResult.ExecutedQuantity > 0 && spotResult.Status is "Filled")
+        {
+            var qty = Quantity.Create(spotResult.ExecutedQuantity);
+            var price = Price.Create(spotResult.ExecutedPrice);
+
+            if (qty.IsSuccess && price.IsSuccess)
+            {
+                order.Fill(qty.Value, price.Value);
+                await HandlePositionAsync(order, cancellationToken);
+            }
+        }
+        else if (spotResult.ExecutedQuantity > 0)
+        {
+            // Fill parcial (raro en Market, posible en Limit)
+            var qty = Quantity.Create(spotResult.ExecutedQuantity);
+            var price = Price.Create(spotResult.ExecutedPrice);
+
+            if (qty.IsSuccess && price.IsSuccess)
+                order.PartialFill(qty.Value, price.Value);
+        }
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Orden {OrderId} ejecutada en Binance: {Side} {Qty} {Symbol} BinanceId={BinanceId} Status={Status}",
+            order.Id, order.Side, order.Quantity.Value, order.Symbol.Value,
+            spotResult.ExchangeOrderId, spotResult.Status);
+
+        return Result<Order, DomainError>.Success(order);
     }
 
     private async Task<Result<Order, DomainError>> SimulatePaperTradeAsync(
@@ -168,28 +291,32 @@ internal sealed class OrderService : IOrderService
 
     private async Task HandlePositionAsync(Order order, CancellationToken cancellationToken)
     {
-        if (order.Side == OrderSide.Buy)
+        // Buscar si hay posición abierta del lado opuesto para cerrarla
+        var oppositeSide = order.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+        var openPositions = await _positionRepository
+            .GetOpenByStrategyIdAsync(order.StrategyId, cancellationToken);
+
+        var positionToClose = openPositions
+            .FirstOrDefault(p => p.Symbol == order.Symbol && p.Side == oppositeSide);
+
+        if (positionToClose is not null && order.ExecutedPrice is not null)
         {
+            // Cerrar posición existente del lado opuesto
+            positionToClose.Close(order.ExecutedPrice);
+            await _positionRepository.UpdateAsync(positionToClose, cancellationToken);
+
+            _logger.LogInformation(
+                "Posición {PosId} cerrada: {Side} {Symbol} PnL={PnL:F2}",
+                positionToClose.Id, positionToClose.Side, order.Symbol.Value, positionToClose.RealizedPnL);
+        }
+        else
+        {
+            // Abrir nueva posición
             var position = Position.Open(
                 order.StrategyId, order.Symbol, order.Side,
                 order.ExecutedPrice!, order.FilledQuantity!);
 
             await _positionRepository.AddAsync(position, cancellationToken);
-        }
-        else
-        {
-            // Buscar posición abierta para cerrarla
-            var openPositions = await _positionRepository
-                .GetOpenByStrategyIdAsync(order.StrategyId, cancellationToken);
-
-            var position = openPositions
-                .FirstOrDefault(p => p.Symbol == order.Symbol && p.Side == OrderSide.Buy);
-
-            if (position is not null && order.ExecutedPrice is not null)
-            {
-                position.Close(order.ExecutedPrice);
-                await _positionRepository.UpdateAsync(position, cancellationToken);
-            }
         }
     }
 }

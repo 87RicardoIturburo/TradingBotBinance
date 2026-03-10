@@ -57,9 +57,9 @@ internal sealed class ErrorHandlingMiddleware(
                 type = "https://tools.ietf.org/html/rfc9110#section-15.6.1",
                 title = "Internal Server Error",
                 status = 500,
-                detail = context.RequestServices.GetRequiredService<IHostEnvironment>().IsDevelopment()
-                    ? ex.Message
-                    : "Ocurrió un error interno. Contacta al administrador."
+                detail = context.RequestServices.GetRequiredService<IHostEnvironment>().IsProduction()
+                    ? "Ocurrió un error interno. Contacta al administrador."
+                    : ex.ToString()
             }, JsonOptions);
         }
     }

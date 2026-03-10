@@ -37,4 +37,13 @@ public interface IRiskManager
     Task<int> GetOpenPositionCountAsync(
         Guid strategyId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Calcula la esperanza matemática de una estrategia:
+    /// <c>E = (WinRate × AvgWin) − (LossRate × AvgLoss)</c>.
+    /// Devuelve null si no hay suficientes trades cerrados.
+    /// </summary>
+    Task<decimal?> GetMathematicalExpectancyAsync(
+        Guid strategyId,
+        CancellationToken cancellationToken = default);
 }

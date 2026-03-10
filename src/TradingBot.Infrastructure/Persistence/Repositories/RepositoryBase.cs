@@ -28,7 +28,10 @@ internal abstract class RepositoryBase<TEntity, TId>(TradingBotDbContext context
 
     public virtual Task UpdateAsync(TEntity entity, CancellationToken cancellationToken = default)
     {
-        DbSet.Update(entity);
+        var entry = Context.Entry(entity);
+        if (entry.State == EntityState.Detached)
+            DbSet.Update(entity);
+
         return Task.CompletedTask;
     }
 

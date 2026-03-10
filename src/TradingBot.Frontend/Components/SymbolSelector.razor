@@ -1,0 +1,115 @@
+@inject TradingApiClient Api
+
+<div class="position-relative">
+    <input type="text"
+           class="form-control"
+           placeholder="@Placeholder"
+           value="@searchText"
+           @oninput="OnSearchInput"
+           @onfocus="() => showDropdown = true"
+           @onblur="OnBlurAsync" />
+
+    @if (showDropdown && filteredSymbols.Count > 0)
+    {
+        <div class="list-group position-absolute w-100 shadow-sm"
+             style="z-index: 1050; max-height: 250px; overflow-y: auto;">
+            @foreach (var s in filteredSymbols.Take(50))
+            {
+                <button type="button"
+                        class="list-group-item list-group-item-action py-1 px-2 small @(s.Symbol == Value ? "active" : "")"
+                        @onmousedown="() => SelectSymbol(s)"
+                        @onmousedown:preventDefault>
+                    <strong>@s.Symbol</strong>
+                    <span class="text-muted ms-1">@s.BaseAsset/@s.QuoteAsset</span>
+                </button>
+            }
+            @if (filteredSymbols.Count > 50)
+            {
+                <div class="list-group-item py-1 px-2 small text-muted text-center">
+                    +@(filteredSymbols.Count - 50) más — refiná la búsqueda
+                </div>
+            }
+        </div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="position-absolute end-0 top-50 translate-middle-y me-2">
+            <span class="spinner-border spinner-border-sm text-muted"></span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string Placeholder { get; set; } = "Buscar símbolo (ej: BTC)";
+
+    private List<SymbolInfoDto> allSymbols = [];
+    private List<SymbolInfoDto> filteredSymbols = [];
+    private string searchText = "";
+    private bool showDropdown;
+    private bool isLoading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        isLoading = true;
+        try
+        {
+            allSymbols = await Api.GetSymbolsAsync() ?? [];
+        }
+        catch
+        {
+            allSymbols = [];
+        }
+        finally
+        {
+            isLoading = false;
+        }
+
+        if (!string.IsNullOrEmpty(Value))
+            searchText = Value;
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (!string.IsNullOrEmpty(Value) && searchText != Value)
+            searchText = Value;
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? "";
+        showDropdown = true;
+        FilterSymbols();
+    }
+
+    private void FilterSymbols()
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            filteredSymbols = allSymbols.Take(50).ToList();
+            return;
+        }
+
+        var term = searchText.ToUpperInvariant();
+        filteredSymbols = allSymbols
+            .Where(s => s.Symbol.Contains(term, StringComparison.OrdinalIgnoreCase)
+                     || s.BaseAsset.Contains(term, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private async Task SelectSymbol(SymbolInfoDto symbol)
+    {
+        searchText = symbol.Symbol;
+        showDropdown = false;
+        await ValueChanged.InvokeAsync(symbol.Symbol);
+    }
+
+    private async Task OnBlurAsync()
+    {
+        // Delay to allow mousedown on dropdown item to fire first
+        await Task.Delay(200);
+        showDropdown = false;
+    }
+}

@@ -8,5 +8,7 @@ public enum IndicatorType
     SMA,
     BollingerBands,
     Price,
-    Volume
+    Volume,
+    Fibonacci,
+    LinearRegression
 }

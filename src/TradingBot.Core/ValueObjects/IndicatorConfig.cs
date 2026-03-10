@@ -37,12 +37,14 @@ public sealed record IndicatorConfig
     {
         var validationError = type switch
         {
-            IndicatorType.RSI            => ValidateRsi(parameters),
-            IndicatorType.MACD           => ValidateMacd(parameters),
-            IndicatorType.EMA            => ValidatePeriod(parameters, "EMA"),
-            IndicatorType.SMA            => ValidatePeriod(parameters, "SMA"),
-            IndicatorType.BollingerBands => ValidateBollingerBands(parameters),
-            _                            => null
+            IndicatorType.RSI              => ValidateRsi(parameters),
+            IndicatorType.MACD             => ValidateMacd(parameters),
+            IndicatorType.EMA              => ValidatePeriod(parameters, "EMA"),
+            IndicatorType.SMA              => ValidatePeriod(parameters, "SMA"),
+            IndicatorType.BollingerBands   => ValidateBollingerBands(parameters),
+            IndicatorType.Fibonacci        => ValidatePeriod(parameters, "Fibonacci"),
+            IndicatorType.LinearRegression => ValidatePeriod(parameters, "LinearRegression"),
+            _                              => null
         };
 
         if (validationError is not null)
@@ -72,6 +74,12 @@ public sealed record IndicatorConfig
 
     public static Result<IndicatorConfig, DomainError> Bollinger(int period = 20, decimal stdDev = 2m)
         => Create(IndicatorType.BollingerBands, new() { ["period"] = period, ["stdDev"] = stdDev });
+
+    public static Result<IndicatorConfig, DomainError> Fibonacci(int period = 50)
+        => Create(IndicatorType.Fibonacci, new() { ["period"] = period });
+
+    public static Result<IndicatorConfig, DomainError> LinearRegression(int period = 20)
+        => Create(IndicatorType.LinearRegression, new() { ["period"] = period });
 
     // ── Validaciones privadas ──────────────────────────────────────────────
 

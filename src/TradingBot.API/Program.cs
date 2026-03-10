@@ -1,7 +1,9 @@
 using Serilog;
 using TradingBot.API.Hubs;
 using TradingBot.API.Middleware;
+using TradingBot.API.Services;
 using TradingBot.Application;
+using TradingBot.Core.Interfaces.Services;
 using TradingBot.Infrastructure;
 
 // ── Serilog bootstrap ─────────────────────────────────────────────────────
@@ -31,7 +33,7 @@ try
             outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} | {Message:lj}{NewLine}{Exception}"));
 
     // ── Servicios ─────────────────────────────────────────────────────────
-    builder.Services.AddApplication();
+    builder.Services.AddApplication(builder.Configuration);
     builder.Services.AddInfrastructure(builder.Configuration);
 
     builder.Services.AddControllers()
@@ -41,7 +43,16 @@ try
                 new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
 
+    // Los controladores devuelven IResult (Results.Ok, etc.), que usa las opciones
+    // de JSON de minimal API, no las de MVC. Configuramos ambas para consistencia.
+    builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(opts =>
+    {
+        opts.SerializerOptions.Converters.Add(
+            new System.Text.Json.Serialization.JsonStringEnumConverter());
+    });
+
     builder.Services.AddSignalR();
+    builder.Services.AddSingleton<ITradingNotifier, SignalRTradingNotifier>();
     builder.Services.AddOpenApi();
 
     // CORS — permite al frontend Blazor WASM comunicarse con la API
@@ -51,9 +62,9 @@ try
         {
             policy
                 .WithOrigins(
-                    builder.Configuration.GetValue<string>("FrontendUrl") ?? "https://localhost:5002",
-                    "https://localhost:5001",
-                    "http://localhost:5000")
+                    builder.Configuration.GetValue<string>("FrontendUrl") ?? "https://localhost:7017",
+                    "https://localhost:7017",
+                    "http://localhost:5179")
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials(); // Requerido para SignalR

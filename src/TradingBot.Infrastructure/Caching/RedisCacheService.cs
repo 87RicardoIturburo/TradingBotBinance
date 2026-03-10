@@ -37,8 +37,18 @@ internal sealed class RedisCacheService : ICacheService, IAsyncDisposable
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
         where T : class
     {
+        RedisValue value;
         var fullKey = BuildKey(key);
-        var value   = await _database.StringGetAsync(fullKey);
+
+        try
+        {
+            value = await _database.StringGetAsync(fullKey);
+        }
+        catch (RedisException ex)
+        {
+            _logger.LogWarning(ex, "Error de Redis al leer {Key}; se trata como MISS", fullKey);
+            return null;
+        }
 
         if (value.IsNullOrEmpty)
         {
@@ -46,8 +56,27 @@ internal sealed class RedisCacheService : ICacheService, IAsyncDisposable
             return null;
         }
 
-        _logger.LogDebug("Cache HIT para {Key}", fullKey);
-        return JsonSerializer.Deserialize<T>((string)value!, JsonOptions);
+        try
+        {
+            _logger.LogDebug("Cache HIT para {Key}", fullKey);
+            return JsonSerializer.Deserialize<T>((string)value!, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex,
+                "No se pudo deserializar {Key} como {Type}; se elimina la entrada corrupta",
+                fullKey, typeof(T).Name);
+            await _database.KeyDeleteAsync(fullKey);
+            return null;
+        }
+        catch (NotSupportedException ex)
+        {
+            _logger.LogWarning(ex,
+                "El tipo {Type} no es compatible con la deserialización JSON; se elimina {Key}",
+                typeof(T).Name, fullKey);
+            await _database.KeyDeleteAsync(fullKey);
+            return null;
+        }
     }
 
     public async Task SetAsync<T>(
@@ -57,15 +86,24 @@ internal sealed class RedisCacheService : ICacheService, IAsyncDisposable
         CancellationToken cancellationToken = default)
         where T : class
     {
-        var fullKey    = BuildKey(key);
-        var serialized = JsonSerializer.Serialize(value, JsonOptions);
+        var fullKey = BuildKey(key);
 
-        if (expiration.HasValue)
-            await _database.StringSetAsync(fullKey, serialized, new Expiration(expiration.Value));
-        else
-            await _database.StringSetAsync(fullKey, serialized);
+        try
+        {
+            var serialized = JsonSerializer.Serialize(value, JsonOptions);
 
-        _logger.LogDebug("Cache SET {Key} (TTL: {Expiration})", fullKey, expiration?.ToString() ?? "∞");
+            if (expiration.HasValue)
+                await _database.StringSetAsync(fullKey, serialized, new Expiration(expiration.Value));
+            else
+                await _database.StringSetAsync(fullKey, serialized);
+
+            _logger.LogDebug("Cache SET {Key} (TTL: {Expiration})", fullKey, expiration?.ToString() ?? "∞");
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or RedisException)
+        {
+            _logger.LogWarning(ex, "Error al escribir en caché {Key} para {Type}; operación ignorada",
+                fullKey, typeof(T).Name);
+        }
     }
 
     public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)

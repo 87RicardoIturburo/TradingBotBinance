@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/Elementos de la solución/">
     <File Path=".github/copilot-instructions.md" />
+    <File Path=".github/Pasos_A_Seguir.md" />
     <File Path=".github/PROJECT.md" />
   </Folder>
   <Folder Name="/src/">

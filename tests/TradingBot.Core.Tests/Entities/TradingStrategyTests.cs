@@ -138,4 +138,58 @@ public sealed class TradingStrategyTests
 
         return TradingRule.Create(Guid.NewGuid(), "Buy Low RSI", RuleType.Entry, condition, action).Value;
     }
+
+    // ── UpdateSymbol ─────────────────────────────────────────────────
+
+    [Fact]
+    public void UpdateSymbol_WhenInactive_Succeeds()
+    {
+        var strategy = CreateStrategy();
+        var newSymbol = Symbol.Create("ETHUSDT").Value;
+
+        var result = strategy.UpdateSymbol(newSymbol);
+
+        result.IsSuccess.Should().BeTrue();
+        strategy.Symbol.Value.Should().Be("ETHUSDT");
+    }
+
+    [Fact]
+    public void UpdateSymbol_WhenActive_ReturnsFailure()
+    {
+        var strategy = CreateStrategy();
+        strategy.AddRule(CreateRule());
+        strategy.Activate();
+
+        var newSymbol = Symbol.Create("ETHUSDT").Value;
+        var result = strategy.UpdateSymbol(newSymbol);
+
+        result.IsFailure.Should().BeTrue();
+        strategy.Symbol.Value.Should().Be("BTCUSDT");
+    }
+
+    // ── UpdateMode ───────────────────────────────────────────────────
+
+    [Fact]
+    public void UpdateMode_WhenInactive_Succeeds()
+    {
+        var strategy = CreateStrategy();
+
+        var result = strategy.UpdateMode(TradingMode.Testnet);
+
+        result.IsSuccess.Should().BeTrue();
+        strategy.Mode.Should().Be(TradingMode.Testnet);
+    }
+
+    [Fact]
+    public void UpdateMode_WhenActive_ReturnsFailure()
+    {
+        var strategy = CreateStrategy();
+        strategy.AddRule(CreateRule());
+        strategy.Activate();
+
+        var result = strategy.UpdateMode(TradingMode.Live);
+
+        result.IsFailure.Should().BeTrue();
+        strategy.Mode.Should().Be(TradingMode.PaperTrading);
+    }
 }

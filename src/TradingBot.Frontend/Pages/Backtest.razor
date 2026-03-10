@@ -1,0 +1,283 @@
+@page "/backtest"
+@inject TradingApiClient Api
+
+<PageTitle>Backtest — TradingBot</PageTitle>
+
+<h1>🔬 Backtesting</h1>
+<p class="text-muted">Probá tu estrategia contra datos históricos reales de Binance.</p>
+
+@* ── Formulario ──────────────────────────────────────────────────────── *@
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <label class="form-label">Estrategia</label>
+                <select class="form-select" @bind="selectedStrategyId">
+                    <option value="">— Seleccionar —</option>
+                    @if (strategies is not null)
+                    {
+                        @foreach (var s in strategies)
+                        {
+                            <option value="@s.Id">@s.Name (@s.Symbol)</option>
+                        }
+                    }
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Desde</label>
+                <InputDate class="form-control" @bind-Value="fromDate" />
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Hasta</label>
+                <InputDate class="form-control" @bind-Value="toDate" />
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button class="btn btn-primary w-100" @onclick="RunBacktestAsync"
+                        disabled="@(isRunning || string.IsNullOrEmpty(selectedStrategyId))">
+                    @if (isRunning)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        @:Ejecutando…
+                    }
+                    else
+                    {
+                        @:▶ Ejecutar
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger">@errorMessage</div>
+}
+
+@* ── Resultados ──────────────────────────────────────────────────────── *@
+@if (result is not null)
+{
+    <h4>📊 Resultados: @result.StrategyName</h4>
+    <p class="text-muted">
+        @result.Symbol — @result.From.ToLocalTime().ToString("dd/MM/yyyy") →
+        @result.To.ToLocalTime().ToString("dd/MM/yyyy") — @result.TotalKlines.ToString("N0") velas
+    </p>
+
+    @* ── Métricas principales ─────────────────────────────────────── *@
+    <div class="row mb-4">
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">P&amp;L Total</h6>
+                    <span class="fs-4 fw-bold @GetPnLClass(result.TotalPnL)">
+                        @FormatPnL(result.TotalPnL)
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Invertido</h6>
+                    <span class="fs-4 fw-bold">@result.TotalInvested.ToString("N2") USDT</span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">ROI</h6>
+                    <span class="fs-4 fw-bold @GetPnLClass(result.ReturnOnInvestment)">
+                        @result.ReturnOnInvestment.ToString("N2")%
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Trades</h6>
+                    <span class="fs-4 fw-bold">@result.TotalTrades</span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Win Rate</h6>
+                    <span class="fs-4 fw-bold @(result.WinRate >= 50 ? "text-success" : "text-danger")">
+                        @result.WinRate.ToString("N1")%
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Max Drawdown</h6>
+                    <span class="fs-4 fw-bold text-danger">
+                        @result.MaxDrawdownPercent.ToString("N1")%
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 mt-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Mejor Trade</h6>
+                    <span class="fs-5 fw-bold text-success">@FormatPnL(result.BestTrade)</span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2 mt-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Peor Trade</h6>
+                    <span class="fs-5 fw-bold text-danger">@FormatPnL(result.WorstTrade)</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <strong>Ganadores:</strong> <span class="text-success">@result.WinningTrades</span>
+            &nbsp; <strong>Perdedores:</strong> <span class="text-danger">@result.LosingTrades</span>
+        </div>
+        <div class="col-md-4">
+            <strong>P&amp;L promedio/trade:</strong>
+            <span class="@GetPnLClass(result.AveragePnLPerTrade)">
+                @FormatPnL(result.AveragePnLPerTrade)
+            </span>
+        </div>
+    </div>
+
+    @* ── Equity Curve ─────────────────────────────────────────────── *@
+    @if (result.EquityCurve.Count > 1)
+    {
+        <h5>📈 Curva de Equity</h5>
+        <div class="card mb-4">
+            <div class="card-body" style="height: 200px; overflow-x: auto;">
+                <div style="display: flex; align-items: flex-end; height: 160px; gap: 1px; min-width: @(result.EquityCurve.Count * 3)px;">
+                    @{
+                        var minEq = result.EquityCurve.Min(e => e.Equity);
+                        var maxEq = result.EquityCurve.Max(e => e.Equity);
+                        var range = maxEq - minEq;
+                        if (range == 0) range = 1;
+                    }
+                    @foreach (var point in result.EquityCurve)
+                    {
+                        var heightPct = (int)((point.Equity - minEq) / range * 140) + 10;
+                        var color = point.Equity >= 0 ? "#198754" : "#dc3545";
+                        <div style="width: 3px; height: @(heightPct)px; background: @color;"
+                             title="@point.Timestamp.ToLocalTime().ToString("dd/MM HH:mm"): @point.Equity.ToString("N2") USDT">
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── Tabla de Trades ──────────────────────────────────────────── *@
+    @if (result.Trades.Count > 0)
+    {
+        <h5>📋 Trades (@result.Trades.Count)</h5>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Entrada</th>
+                        <th>Salida</th>
+                        <th>Lado</th>
+                        <th>Cantidad</th>
+                        <th>Precio Entrada</th>
+                        <th>Precio Salida</th>
+                        <th>P&amp;L</th>
+                        <th>Razón</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var i = 0; i < result.Trades.Count; i++)
+                    {
+                        var t = result.Trades[i];
+                        <tr>
+                            <td>@(i + 1)</td>
+                            <td>@t.EntryTime.ToLocalTime().ToString("dd/MM HH:mm")</td>
+                            <td>@t.ExitTime.ToLocalTime().ToString("dd/MM HH:mm")</td>
+                            <td>
+                                <span class="badge @(t.Side == "Buy" ? "bg-success" : "bg-danger")">
+                                    @t.Side
+                                </span>
+                            </td>
+                            <td>@t.Quantity.ToString("N6")</td>
+                            <td>@t.EntryPrice.ToString("N2")</td>
+                            <td>@t.ExitPrice.ToString("N2")</td>
+                            <td class="fw-bold @GetPnLClass(t.PnL)">@FormatPnL(t.PnL)</td>
+                            <td><span class="badge bg-secondary">@t.ExitReason</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+@code {
+    private List<StrategyDto>? strategies;
+    private string selectedStrategyId = "";
+    private DateTime fromDate = DateTime.UtcNow.AddDays(-7).Date;
+    private DateTime toDate = DateTime.UtcNow.Date;
+    private bool isRunning;
+    private string? errorMessage;
+    private BacktestResultDto? result;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            strategies = await Api.GetStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al cargar estrategias: {ex.Message}";
+        }
+    }
+
+    private async Task RunBacktestAsync()
+    {
+        if (string.IsNullOrEmpty(selectedStrategyId)) return;
+
+        isRunning = true;
+        errorMessage = null;
+        result = null;
+
+        try
+        {
+            var request = new RunBacktestRequest(
+                Guid.Parse(selectedStrategyId),
+                new DateTimeOffset(fromDate, TimeSpan.Zero),
+                new DateTimeOffset(toDate, TimeSpan.Zero));
+
+            result = await Api.RunBacktestAsync(request);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error en backtest: {ex.Message}";
+        }
+        finally
+        {
+            isRunning = false;
+        }
+    }
+
+    private static string GetPnLClass(decimal value) => value switch
+    {
+        > 0 => "text-success",
+        < 0 => "text-danger",
+        _   => "text-muted"
+    };
+
+    private static string FormatPnL(decimal value) =>
+        $"{(value >= 0 ? "+" : "")}{value:N4} USDT";
+}

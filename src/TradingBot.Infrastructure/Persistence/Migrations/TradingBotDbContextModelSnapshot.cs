@@ -76,9 +76,9 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<long>("Version")
+                    b.Property<int>("Version")
                         .IsConcurrencyToken()
-                        .HasColumnType("bigint");
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -131,9 +131,9 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
-                    b.Property<long>("Version")
+                    b.Property<int>("Version")
                         .IsConcurrencyToken()
-                        .HasColumnType("bigint");
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -187,14 +187,21 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<long>("Version")
+                    b.Property<int>("Version")
                         .IsConcurrencyToken()
-                        .HasColumnType("bigint");
+                        .HasColumnType("integer");
 
                     b.Property<string>("_indicators")
                         .IsRequired()
                         .HasColumnType("jsonb")
                         .HasColumnName("Indicators");
+
+                    b.Property<string>("_savedOptimizationRanges")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("SavedOptimizationRanges")
+                        .HasDefaultValueSql("'[]'::jsonb");
 
                     b.HasKey("Id");
 

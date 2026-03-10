@@ -40,7 +40,7 @@ internal sealed class PositionRepository(TradingBotDbContext context)
         Guid strategyId,
         CancellationToken cancellationToken = default)
     {
-        var today = DateTimeOffset.UtcNow.Date;
+        var today = new DateTimeOffset(DateTimeOffset.UtcNow.Date, TimeSpan.Zero);
         return await DbSet
             .Where(p => !p.IsOpen
                      && p.StrategyId == strategyId
@@ -57,4 +57,36 @@ internal sealed class PositionRepository(TradingBotDbContext context)
         CancellationToken cancellationToken = default)
         => await DbSet
             .CountAsync(p => p.IsOpen && p.StrategyId == strategyId, cancellationToken);
+
+    public async Task<decimal> GetTotalRealizedPnLAsync(
+        Guid strategyId,
+        CancellationToken cancellationToken = default)
+        => await DbSet
+            .Where(p => !p.IsOpen && p.StrategyId == strategyId)
+            .SumAsync(p => p.RealizedPnL ?? 0m, cancellationToken);
+
+    /// <summary>
+    /// Obtiene estadísticas de trades cerrados para calcular la esperanza matemática.
+    /// Ejecuta una sola query con GroupBy para eficiencia.
+    /// </summary>
+    public async Task<(int TotalTrades, int Wins, decimal TotalWinAmount, decimal TotalLossAmount)> GetTradeStatsAsync(
+        Guid strategyId,
+        CancellationToken cancellationToken = default)
+    {
+        var stats = await DbSet
+            .Where(p => !p.IsOpen && p.StrategyId == strategyId && p.RealizedPnL != null)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                TotalTrades    = g.Count(),
+                Wins           = g.Count(p => p.RealizedPnL > 0m),
+                TotalWinAmount = g.Where(p => p.RealizedPnL > 0m).Sum(p => p.RealizedPnL ?? 0m),
+                TotalLossAmount = g.Where(p => p.RealizedPnL <= 0m).Sum(p => -(p.RealizedPnL ?? 0m))
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return stats is null
+            ? (0, 0, 0m, 0m)
+            : (stats.TotalTrades, stats.Wins, stats.TotalWinAmount, stats.TotalLossAmount);
+    }
 }

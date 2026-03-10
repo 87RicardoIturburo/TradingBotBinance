@@ -17,6 +17,7 @@ internal sealed class StrategyConfigService : IStrategyConfigService
     private readonly IStrategyRepository              _repository;
     private readonly IUnitOfWork                      _unitOfWork;
     private readonly ICacheService                    _cache;
+    private readonly IStrategyEngine                  _strategyEngine;
     private readonly ILogger<StrategyConfigService>   _logger;
 
     private const string CachePrefix     = "strategy:";
@@ -26,12 +27,14 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         IStrategyRepository            repository,
         IUnitOfWork                    unitOfWork,
         ICacheService                  cache,
+        IStrategyEngine                strategyEngine,
         ILogger<StrategyConfigService> logger)
     {
-        _repository = repository;
-        _unitOfWork = unitOfWork;
-        _cache      = cache;
-        _logger     = logger;
+        _repository     = repository;
+        _unitOfWork     = unitOfWork;
+        _cache          = cache;
+        _strategyEngine = strategyEngine;
+        _logger         = logger;
     }
 
     public async Task<Result<TradingStrategy, DomainError>> GetByIdAsync(
@@ -84,6 +87,8 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         await _cache.SetAsync($"{CachePrefix}{strategy.Id}", strategy, CacheTtl, cancellationToken);
         _logger.LogInformation("Estrategia '{Name}' ({Id}) actualizada", strategy.Name, strategy.Id);
 
+        await _strategyEngine.ReloadStrategyAsync(strategy.Id, cancellationToken);
+
         return Result<TradingStrategy, DomainError>.Success(strategy);
     }
 
@@ -105,6 +110,9 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         await _cache.SetAsync($"{CachePrefix}{id}", strategy, CacheTtl, cancellationToken);
 
         _logger.LogInformation("Estrategia '{Name}' ({Id}) activada", strategy.Name, id);
+
+        await _strategyEngine.ReloadStrategyAsync(id, cancellationToken);
+
         return result;
     }
 
@@ -124,6 +132,9 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         await _cache.RemoveAsync($"{CachePrefix}{id}", cancellationToken);
 
         _logger.LogInformation("Estrategia '{Name}' ({Id}) desactivada", strategy.Name, id);
+
+        await _strategyEngine.ReloadStrategyAsync(id, cancellationToken);
+
         return Result<TradingStrategy, DomainError>.Success(strategy);
     }
 

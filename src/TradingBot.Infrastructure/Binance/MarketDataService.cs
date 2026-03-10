@@ -205,6 +205,110 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
         }
     }
 
+    // ── REST — klines para backtesting ────────────────────────────────────
+
+    public async Task<Result<IReadOnlyList<Kline>, DomainError>> GetKlinesAsync(
+        Symbol symbol,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var allKlines = new List<Kline>();
+            var currentFrom = from;
+
+            // Binance devuelve máx. 1000 klines por request — paginar
+            while (currentFrom < to)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var batch = await _retryPipeline.ExecuteAsync(async ct =>
+                {
+                    var result = await _restClient.SpotApi.ExchangeData.GetKlinesAsync(
+                        symbol.Value,
+                        KlineInterval.OneMinute,
+                        startTime: currentFrom.UtcDateTime,
+                        endTime: to.UtcDateTime,
+                        limit: 1000,
+                        ct: ct);
+
+                    if (!result.Success)
+                        throw new InvalidOperationException(
+                            result.Error?.Message ?? "Error obteniendo klines de Binance.");
+
+                    return result.Data
+                        .Select(k => new Kline(k.OpenTime, k.OpenPrice, k.HighPrice, k.LowPrice, k.ClosePrice, k.Volume))
+                        .ToList();
+                }, cancellationToken);
+
+                if (batch.Count == 0)
+                    break;
+
+                allKlines.AddRange(batch);
+                currentFrom = batch[^1].OpenTime.AddMinutes(1);
+
+                _logger.LogDebug(
+                    "Klines batch: {Count} velas para {Symbol} hasta {Until}",
+                    batch.Count, symbol.Value, currentFrom);
+            }
+
+            _logger.LogInformation(
+                "Klines descargadas: {Total} velas de {Symbol} ({From} → {To})",
+                allKlines.Count, symbol.Value, from, to);
+
+            return Result<IReadOnlyList<Kline>, DomainError>.Success(allKlines.AsReadOnly());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al obtener klines de {Symbol}", symbol.Value);
+            return Result<IReadOnlyList<Kline>, DomainError>.Failure(
+                DomainError.ExternalService(ex.Message));
+        }
+    }
+
+    // ── REST — symbols del exchange ───────────────────────────────────────
+
+    public async Task<Result<IReadOnlyList<TradingSymbolInfo>, DomainError>> GetTradingSymbolsAsync(
+        string quoteAsset = "USDT",
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var symbols = await _retryPipeline.ExecuteAsync(async ct =>
+            {
+                var result = await _restClient.SpotApi.ExchangeData.GetExchangeInfoAsync(ct: ct);
+
+                if (!result.Success)
+                    throw new InvalidOperationException(
+                        result.Error?.Message ?? "Error obteniendo exchange info de Binance.");
+
+                return result.Data.Symbols
+                    .Where(s => s.Status == SymbolStatus.Trading
+                             && s.QuoteAsset.Equals(quoteAsset, StringComparison.OrdinalIgnoreCase))
+                    .Select(s => new TradingSymbolInfo(s.Name, s.BaseAsset, s.QuoteAsset))
+                    .OrderBy(s => s.Symbol)
+                    .ToList();
+            }, cancellationToken);
+
+            _logger.LogInformation(
+                "Symbols cargados: {Count} pares con quote {Quote}",
+                symbols.Count, quoteAsset);
+
+            return Result<IReadOnlyList<TradingSymbolInfo>, DomainError>.Success(symbols.AsReadOnly());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al obtener symbols de Binance");
+            return Result<IReadOnlyList<TradingSymbolInfo>, DomainError>.Failure(
+                DomainError.ExternalService(ex.Message));
+        }
+    }
+
     // ── Helpers privados ──────────────────────────────────────────────────
 
     private static MarketTickReceivedEvent? BuildTick(

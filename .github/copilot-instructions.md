@@ -77,6 +77,7 @@ TradingBot/
 - **CQRS** con MediatR para operaciones de lectura y escritura
 - **Repository Pattern** con EF Core para persistencia
 - **Circuit Breaker** (Polly) para llamadas a Binance API
+- **Usar patrones de diseño SOLID** en toda la arquitectura 
 
 ---
 
@@ -124,7 +125,10 @@ TradingBot/
 - Binance Open API: https://developers.binance.com/docs/binance-open-api/apis
 - Institutional Loan: https://developers.binance.com/docs/institutional_loan/change-log
 ---
-
+## ✅ Lo que SI hacer
+- Actualizar `docs/PROJECT.md` con cualquier cambio relevante en la arquitectura o funcionalidades
+- Actualizar `.github/Pasos_A_Seguir.md` a medida que se cumplen hitos importantes del proyecto
+---
 ## 🚫 Lo que NO hacer
 
 - No usar `Thread.Sleep` — siempre `await Task.Delay`

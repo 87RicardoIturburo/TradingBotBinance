@@ -1,0 +1,94 @@
+using Microsoft.AspNetCore.SignalR;
+using TradingBot.API.Hubs;
+using TradingBot.Core.Events;
+using TradingBot.Core.Interfaces.Services;
+
+namespace TradingBot.API.Services;
+
+/// <summary>
+/// Implementación de <see cref="ITradingNotifier"/> que usa SignalR
+/// para enviar eventos en tiempo real al frontend Blazor WASM.
+/// </summary>
+internal sealed class SignalRTradingNotifier(
+    IHubContext<TradingHub> hubContext,
+    ILogger<SignalRTradingNotifier> logger) : ITradingNotifier
+{
+    public async Task NotifyMarketTickAsync(
+        MarketTickReceivedEvent tick, CancellationToken cancellationToken = default)
+    {
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnMarketTick,
+            new
+            {
+                Symbol    = tick.Symbol.Value,
+                BidPrice  = tick.BidPrice.Value,
+                AskPrice  = tick.AskPrice.Value,
+                LastPrice = tick.LastPrice.Value,
+                tick.Volume,
+                tick.Timestamp
+            },
+            cancellationToken);
+    }
+
+    public async Task NotifyOrderExecutedAsync(
+        OrderPlacedEvent order, CancellationToken cancellationToken = default)
+    {
+        logger.LogInformation(
+            "Notificando orden ejecutada: {Side} {Symbol}", order.Side, order.Symbol.Value);
+
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnOrderExecuted,
+            new
+            {
+                order.OrderId,
+                order.StrategyId,
+                Symbol = order.Symbol.Value,
+                Side   = order.Side.ToString(),
+                Type   = order.Type.ToString(),
+                Quantity = order.Quantity.Value,
+                order.IsPaperTrade
+            },
+            cancellationToken);
+    }
+
+    public async Task NotifySignalGeneratedAsync(
+        SignalGeneratedEvent signal, CancellationToken cancellationToken = default)
+    {
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnSignalGenerated,
+            new
+            {
+                signal.StrategyId,
+                Symbol    = signal.Symbol.Value,
+                Direction = signal.Direction.ToString(),
+                Price     = signal.CurrentPrice.Value,
+                signal.IndicatorSnapshot
+            },
+            cancellationToken);
+    }
+
+    public async Task NotifyAlertAsync(
+        string message, CancellationToken cancellationToken = default)
+    {
+        logger.LogWarning("Alerta enviada al frontend: {Message}", message);
+
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnAlert,
+            message,
+            cancellationToken);
+    }
+
+    public async Task NotifyStrategyUpdatedAsync(
+        StrategyUpdatedEvent update, CancellationToken cancellationToken = default)
+    {
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnStrategyUpdated,
+            new
+            {
+                update.StrategyId,
+                update.StrategyName,
+                update.IsHotReload
+            },
+            cancellationToken);
+    }
+}

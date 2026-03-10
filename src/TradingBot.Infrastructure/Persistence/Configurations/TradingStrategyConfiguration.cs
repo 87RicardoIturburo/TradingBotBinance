@@ -71,6 +71,23 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
                     v => v.Aggregate(0, (h, c) => HashCode.Combine(h, c.GetHashCode())),
                     v => v.ToList()));
 
+        // ── SavedOptimizationRanges → columna jsonb ─────────────────────────
+        builder.Ignore(x => x.SavedOptimizationRanges);
+
+        builder.Property<List<SavedParameterRange>>("_savedOptimizationRanges")
+            .HasColumnName("SavedOptimizationRanges")
+            .HasColumnType("jsonb")
+            .IsRequired()
+            .HasDefaultValueSql("'[]'::jsonb")
+            .HasConversion(
+                new ValueConverter<List<SavedParameterRange>, string>(
+                    list => JsonSerializer.Serialize(list, JsonOptions),
+                    json => JsonSerializer.Deserialize<List<SavedParameterRange>>(json, JsonOptions) ?? new List<SavedParameterRange>()),
+                new ValueComparer<List<SavedParameterRange>>(
+                    (a, b) => a != null && b != null && a.SequenceEqual(b),
+                    v => v.Aggregate(0, (h, c) => HashCode.Combine(h, c.GetHashCode())),
+                    v => v.ToList()));
+
         // ── Rules → tabla propia via OwnsMany ──────────────────────────────
         builder.OwnsMany(x => x.Rules, rule =>
         {

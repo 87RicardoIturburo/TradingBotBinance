@@ -1,0 +1,721 @@
+@page "/strategies/{Id:guid}"
+@inject TradingApiClient Api
+@inject NavigationManager Nav
+
+<PageTitle>Detalle de estrategia — TradingBot</PageTitle>
+
+@if (isLoading)
+{
+    <p class="text-muted">Cargando…</p>
+}
+else if (strategy is null)
+{
+    <div class="alert alert-warning">Estrategia no encontrada.</div>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h1 class="mb-0">🎯 @strategy.Name</h1>
+        <div>
+            <button class="btn btn-sm btn-outline-secondary me-1" @onclick="ToggleEditStrategy">
+                @(isEditingStrategy ? "✖ Cancelar" : "✏️ Editar")
+            </button>
+            <button class="btn btn-sm btn-outline-info" @onclick="DuplicateStrategyAsync" disabled="@isDuplicating">
+                @(isDuplicating ? "⏳" : "📋") Duplicar
+            </button>
+        </div>
+    </div>
+    <p class="text-muted">@strategy.Symbol · @strategy.Mode · <span class="badge @GetStatusClass(strategy.Status)">@strategy.Status</span></p>
+
+    @if (isEditingStrategy)
+    {
+        <div class="card mb-4 border-warning">
+            <div class="card-header bg-warning bg-opacity-10">✏️ Editar estrategia</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Nombre</label>
+                        <input type="text" class="form-control" @bind="editName" />
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Símbolo</label>
+                        <SymbolSelector Value="@editSymbol" ValueChanged="OnEditSymbolChanged" />
+                        @if (strategy.Status == "Active")
+                        {
+                            <small class="text-muted">No editable mientras está activa</small>
+                        }
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Modo</label>
+                        <select class="form-select" @bind="editMode" disabled="@(strategy.Status == "Active")">
+                            <option value="PaperTrading">Paper Trading</option>
+                            <option value="Testnet">Testnet</option>
+                            <option value="Live">Live</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Orden (USDT)</label>
+                        <input type="number" class="form-control" @bind="editMaxOrder" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Pérdida Diaria</label>
+                        <input type="number" class="form-control" @bind="editMaxDailyLoss" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Stop Loss %</label>
+                        <input type="number" class="form-control" @bind="editStopLoss" step="0.1" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Take Profit %</label>
+                        <input type="number" class="form-control" @bind="editTakeProfit" step="0.1" />
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Max Posiciones</label>
+                        <input type="number" class="form-control" @bind="editMaxPositions" />
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Descripción</label>
+                        <input type="text" class="form-control" @bind="editDescription" />
+                    </div>
+                </div>
+                @if (editError is not null)
+                {
+                    <div class="alert alert-danger mt-2 mb-0">@editError</div>
+                }
+                <button class="btn btn-warning mt-3" @onclick="SaveStrategyAsync" disabled="@isSavingStrategy">
+                    @(isSavingStrategy ? "Guardando…" : "💾 Guardar cambios")
+                </button>
+            </div>
+        </div>
+    }
+
+    @* ── Indicadores ────────────────────────────────────────────────── *@
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>📈 Indicadores (@strategy.Indicators.Count)</strong>
+            <button class="btn btn-sm btn-outline-primary" @onclick="() => showIndicatorForm = !showIndicatorForm">
+                ➕ Agregar
+            </button>
+        </div>
+        <div class="card-body">
+            @if (showIndicatorForm)
+            {
+                <div class="row g-2 mb-3 p-2 border rounded bg-light">
+                    <div class="col-md-3">
+                        <label class="form-label">Tipo</label>
+                        <select class="form-select" @bind="newIndicator.Type">
+                            <option value="RSI">RSI</option>
+                            <option value="EMA">EMA</option>
+                            <option value="SMA">SMA</option>
+                            <option value="MACD">MACD</option>
+                            <option value="BollingerBands">Bollinger Bands</option>
+                        </select>
+                    </div>
+                    @if (newIndicator.Type is "RSI")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Periodo</label>
+                            <input type="number" class="form-control" @bind="indicatorPeriod" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Overbought</label>
+                            <input type="number" class="form-control" @bind="indicatorOverbought" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Oversold</label>
+                            <input type="number" class="form-control" @bind="indicatorOversold" />
+                        </div>
+                    }
+                    else if (newIndicator.Type is "EMA" or "SMA")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Periodo</label>
+                            <input type="number" class="form-control" @bind="indicatorPeriod" />
+                        </div>
+                    }
+                    else if (newIndicator.Type is "MACD")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Fast</label>
+                            <input type="number" class="form-control" @bind="macdFast" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Slow</label>
+                            <input type="number" class="form-control" @bind="macdSlow" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Signal</label>
+                            <input type="number" class="form-control" @bind="macdSignal" />
+                        </div>
+                    }
+                    else if (newIndicator.Type is "BollingerBands")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Periodo</label>
+                            <input type="number" class="form-control" @bind="indicatorPeriod" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">StdDev</label>
+                            <input type="number" class="form-control" step="0.1" @bind="bollingerStdDev" />
+                        </div>
+                    }
+                    <div class="col-md-3 d-flex align-items-end">
+                        <button class="btn btn-primary btn-sm" @onclick="AddIndicatorAsync">@(isEditingIndicator ? "Guardar" : "Agregar")</button>
+                        <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="CancelIndicatorForm">Cancelar</button>
+                    </div>
+                </div>
+            }
+
+            @if (strategy.Indicators.Count == 0)
+            {
+                <p class="text-muted">Sin indicadores configurados.</p>
+            }
+            else
+            {
+                <table class="table table-sm">
+                    <thead><tr><th>Tipo</th><th>Parámetros</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var ind in strategy.Indicators)
+                        {
+                            <tr>
+                                <td><strong>@ind.Type</strong></td>
+                                <td>
+                                    @foreach (var p in ind.Parameters)
+                                    {
+                                        <span class="badge bg-secondary me-1">@p.Key=@p.Value</span>
+                                    }
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => StartEditIndicator(ind)">✏</button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveIndicatorAsync(ind.Type)">🗑</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+
+    @* ── Reglas ──────────────────────────────────────────────────────── *@
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>📋 Reglas (@strategy.Rules.Count)</strong>
+            <button class="btn btn-sm btn-outline-primary" @onclick="() => showRuleForm = !showRuleForm">
+                ➕ Agregar
+            </button>
+        </div>
+        <div class="card-body">
+            @if (showRuleForm)
+            {
+                <div class="p-2 border rounded bg-light mb-3">
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <label class="form-label">Nombre</label>
+                            <input type="text" class="form-control" @bind="newRule.Name" placeholder="Buy Low RSI" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Tipo</label>
+                            <select class="form-select" @bind="newRule.RuleType">
+                                <option value="Entry">Entry</option>
+                                <option value="Exit">Exit</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Operador</label>
+                            <select class="form-select" @bind="newRule.Operator">
+                                <option value="And">AND</option>
+                                <option value="Or">OR</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Acción</label>
+                            <select class="form-select" @bind="newRule.ActionType">
+                                <option value="BuyMarket">Buy Market</option>
+                                <option value="SellMarket">Sell Market</option>
+                                <option value="BuyLimit">Buy Limit</option>
+                                <option value="SellLimit">Sell Limit</option>
+                                <option value="ClosePosition">Close Position</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Monto USDT</label>
+                            <input type="number" class="form-control" @bind="newRule.AmountUsdt" />
+                        </div>
+                    </div>
+
+                    <h6 class="mt-3">Condiciones</h6>
+                    @for (var i = 0; i < ruleConditions.Count; i++)
+                    {
+                        var idx = i;
+                        <div class="row g-2 mb-1">
+                            <div class="col-md-3">
+                                <select class="form-select form-select-sm" @bind="ruleConditions[idx].Indicator">
+                                    <option value="RSI">RSI</option>
+                                    <option value="Price">Price</option>
+                                    <option value="EMA">EMA</option>
+                                    <option value="SMA">SMA</option>
+                                    <option value="MACD">MACD</option>
+                                    <option value="Volume">Volume</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select form-select-sm" @bind="ruleConditions[idx].Comparator">
+                                    <option value="LessThan">&lt;</option>
+                                    <option value="GreaterThan">&gt;</option>
+                                    <option value="LessThanOrEqual">≤</option>
+                                    <option value="GreaterThanOrEqual">≥</option>
+                                    <option value="Equal">=</option>
+                                    <option value="CrossAbove">Cross Above</option>
+                                    <option value="CrossBelow">Cross Below</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <input type="number" class="form-control form-control-sm" step="any" @bind="ruleConditions[idx].Value" />
+                            </div>
+                            <div class="col-md-1">
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => ruleConditions.RemoveAt(idx)">✕</button>
+                            </div>
+                        </div>
+                    }
+                    <button class="btn btn-sm btn-outline-secondary mt-1" @onclick="AddConditionRow">+ Condición</button>
+
+                    <div class="mt-3">
+                        <button class="btn btn-primary btn-sm" @onclick="AddRuleAsync">@(isEditingRule ? "Guardar regla" : "Agregar regla")</button>
+                        <button class="btn btn-outline-secondary btn-sm ms-1" @onclick="CancelRuleForm">Cancelar</button>
+                    </div>
+                </div>
+            }
+
+            @if (strategy.Rules.Count == 0)
+            {
+                <p class="text-muted">Sin reglas configuradas. Agrega al menos una para poder activar la estrategia.</p>
+            }
+            else
+            {
+                <table class="table table-sm">
+                    <thead><tr><th>Nombre</th><th>Tipo</th><th>Condiciones</th><th>Acción</th><th>Estado</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var rule in strategy.Rules)
+                        {
+                            <tr>
+                                <td>@rule.Name</td>
+                                <td><span class="badge bg-info">@rule.Type</span></td>
+                                <td>
+                                    @foreach (var c in rule.Conditions)
+                                    {
+                                        <span class="badge bg-light text-dark me-1">@c.Indicator @GetComparatorSymbol(c.Comparator) @c.Value</span>
+                                    }
+                                    @if (rule.Conditions.Count > 1)
+                                    {
+                                        <small class="text-muted">(@rule.Operator)</small>
+                                    }
+                                </td>
+                                <td><span class="badge bg-warning text-dark">@rule.ActionType @rule.AmountUsdt USDT</span></td>
+                                <td>
+                                    <span class="badge @(rule.IsEnabled ? "bg-success" : "bg-secondary")">
+                                        @(rule.IsEnabled ? "Activa" : "Deshabilitada")
+                                    </span>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => StartEditRule(rule)">✏</button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveRuleAsync(rule.Id)">🗑</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+
+    @* ── Risk Config ─────────────────────────────────────────────────── *@
+    <div class="card mb-4">
+        <div class="card-header"><strong>⚙ Gestión de riesgo</strong></div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4"><strong>Max orden:</strong> @strategy.RiskConfig.MaxOrderAmountUsdt USDT</div>
+                <div class="col-md-4"><strong>Max pérdida diaria:</strong> @strategy.RiskConfig.MaxDailyLossUsdt USDT</div>
+                <div class="col-md-4"><strong>Max posiciones:</strong> @strategy.RiskConfig.MaxOpenPositions</div>
+                <div class="col-md-4 mt-2"><strong>Stop Loss:</strong> @strategy.RiskConfig.StopLossPercent%</div>
+                <div class="col-md-4 mt-2"><strong>Take Profit:</strong> @strategy.RiskConfig.TakeProfitPercent%</div>
+            </div>
+        </div>
+    </div>
+
+    <a href="/strategies" class="btn btn-outline-secondary">← Volver a estrategias</a>
+}
+
+@if (errorMessage is not null)
+{
+    <div class="alert alert-danger mt-3">@errorMessage</div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private StrategyDto? strategy;
+    private bool isLoading = true;
+    private string? errorMessage;
+
+    // ── Indicator form ───────────────────────────────────────────────
+    private bool showIndicatorForm;
+    private bool isEditingIndicator;
+    private IndicatorFormModel newIndicator = new();
+    private int indicatorPeriod = 14;
+    private decimal indicatorOverbought = 70;
+    private decimal indicatorOversold = 30;
+    private int macdFast = 12, macdSlow = 26, macdSignal = 9;
+    private decimal bollingerStdDev = 2m;
+
+    // ── Rule form ────────────────────────────────────────────────────
+    private bool showRuleForm;
+    private bool isEditingRule;
+    private Guid? editingRuleId;
+    private RuleFormModel newRule = new();
+    private List<ConditionFormModel> ruleConditions = [new()];
+
+    // ── Strategy edit ────────────────────────────────────────────────
+    private bool isEditingStrategy;
+    private bool isSavingStrategy;
+    private bool isDuplicating;
+    private string? editError;
+    private string editName = "";
+    private string editSymbol = "";
+    private string editMode = "PaperTrading";
+    private decimal editMaxOrder;
+    private decimal editMaxDailyLoss;
+    private decimal editStopLoss;
+    private decimal editTakeProfit;
+    private int editMaxPositions;
+    private string? editDescription;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        try
+        {
+            strategy = await Api.GetStrategyAsync(Id);
+            errorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    // ── Indicators ───────────────────────────────────────────────────
+
+    private async Task AddIndicatorAsync()
+    {
+        try
+        {
+            var parameters = BuildIndicatorParameters();
+            var request = new AddIndicatorRequest(newIndicator.Type, parameters);
+
+            if (isEditingIndicator)
+                await Api.UpdateIndicatorAsync(Id, request);
+            else
+                await Api.AddIndicatorAsync(Id, request);
+
+            showIndicatorForm = false;
+            isEditingIndicator = false;
+            newIndicator = new();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al {(isEditingIndicator ? "actualizar" : "agregar")} indicador: {ex.Message}";
+        }
+    }
+
+    private void StartEditIndicator(IndicatorDto ind)
+    {
+        newIndicator = new() { Type = ind.Type };
+        isEditingIndicator = true;
+        showIndicatorForm = true;
+
+        switch (ind.Type)
+        {
+            case "RSI":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 14);
+                indicatorOverbought = ind.Parameters.GetValueOrDefault("overbought", 70);
+                indicatorOversold = ind.Parameters.GetValueOrDefault("oversold", 30);
+                break;
+            case "EMA" or "SMA":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 20);
+                break;
+            case "MACD":
+                macdFast = (int)ind.Parameters.GetValueOrDefault("fastPeriod", 12);
+                macdSlow = (int)ind.Parameters.GetValueOrDefault("slowPeriod", 26);
+                macdSignal = (int)ind.Parameters.GetValueOrDefault("signalPeriod", 9);
+                break;
+            case "BollingerBands":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 20);
+                bollingerStdDev = ind.Parameters.GetValueOrDefault("stdDev", 2m);
+                break;
+        }
+    }
+
+    private Dictionary<string, decimal> BuildIndicatorParameters() => newIndicator.Type switch
+    {
+        "RSI" => new()
+        {
+            ["period"] = indicatorPeriod,
+            ["overbought"] = indicatorOverbought,
+            ["oversold"] = indicatorOversold
+        },
+        "EMA" or "SMA" => new() { ["period"] = indicatorPeriod },
+        "MACD" => new()
+        {
+            ["fastPeriod"] = macdFast,
+            ["slowPeriod"] = macdSlow,
+            ["signalPeriod"] = macdSignal
+        },
+        "BollingerBands" => new()
+        {
+            ["period"] = indicatorPeriod,
+            ["stdDev"] = bollingerStdDev
+        },
+        _ => new() { ["period"] = indicatorPeriod }
+    };
+
+    private async Task RemoveIndicatorAsync(string type)
+    {
+        try
+        {
+            await Api.RemoveIndicatorAsync(Id, type);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    // ── Rules ────────────────────────────────────────────────────────
+
+    private void AddConditionRow()
+    {
+        ruleConditions.Add(new());
+    }
+
+    private async Task AddRuleAsync()
+    {
+        try
+        {
+            var conditions = ruleConditions
+                .Select(c => new AddRuleConditionRequest(c.Indicator, c.Comparator, c.Value))
+                .ToList();
+
+            if (isEditingRule && editingRuleId.HasValue)
+            {
+                var updateRequest = new UpdateRuleRequest(
+                    newRule.Name, newRule.Operator,
+                    conditions, newRule.ActionType, newRule.AmountUsdt);
+                await Api.UpdateRuleAsync(Id, editingRuleId.Value, updateRequest);
+            }
+            else
+            {
+                var request = new AddRuleRequest(
+                    newRule.Name, newRule.RuleType, newRule.Operator,
+                    conditions, newRule.ActionType, newRule.AmountUsdt);
+                await Api.AddRuleAsync(Id, request);
+            }
+
+            showRuleForm = false;
+            isEditingRule = false;
+            editingRuleId = null;
+            newRule = new();
+            ruleConditions = [new()];
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al {(isEditingRule ? "actualizar" : "agregar")} regla: {ex.Message}";
+        }
+    }
+
+    private void StartEditRule(RuleDto rule)
+    {
+        isEditingRule = true;
+        editingRuleId = rule.Id;
+        showRuleForm = true;
+
+        newRule = new()
+        {
+            Name       = rule.Name,
+            RuleType   = rule.Type,
+            Operator   = rule.Operator,
+            ActionType = rule.ActionType,
+            AmountUsdt = rule.AmountUsdt
+        };
+
+        ruleConditions = rule.Conditions
+            .Select(c => new ConditionFormModel
+            {
+                Indicator  = c.Indicator,
+                Comparator = c.Comparator,
+                Value      = c.Value
+            })
+            .ToList();
+
+        if (ruleConditions.Count == 0)
+            ruleConditions.Add(new());
+    }
+
+    private async Task RemoveRuleAsync(Guid ruleId)
+    {
+        try
+        {
+            await Api.RemoveRuleAsync(Id, ruleId);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    private static string GetStatusClass(string status) => status switch
+    {
+        "Active"   => "bg-success",
+        "Inactive" => "bg-secondary",
+        "Paused"   => "bg-warning text-dark",
+        "Error"    => "bg-danger",
+        _          => "bg-secondary"
+    };
+
+    private static string GetComparatorSymbol(string comparator) => comparator switch
+    {
+        "LessThan"           => "<",
+        "GreaterThan"        => ">",
+        "LessThanOrEqual"    => "≤",
+        "GreaterThanOrEqual" => "≥",
+        "Equal"              => "=",
+        "NotEqual"           => "≠",
+        "CrossAbove"         => "↗",
+        "CrossBelow"         => "↘",
+        _                    => comparator
+    };
+
+    private void CancelIndicatorForm()
+    {
+        showIndicatorForm = false;
+        isEditingIndicator = false;
+        newIndicator = new();
+    }
+
+    private void CancelRuleForm()
+    {
+        showRuleForm = false;
+        isEditingRule = false;
+        editingRuleId = null;
+        newRule = new();
+        ruleConditions = [new()];
+    }
+
+    // ── Strategy edit ────────────────────────────────────────────────
+
+    private void ToggleEditStrategy()
+    {
+        isEditingStrategy = !isEditingStrategy;
+        editError = null;
+
+        if (isEditingStrategy && strategy is not null)
+        {
+            editName         = strategy.Name;
+            editSymbol       = strategy.Symbol;
+            editMode         = strategy.Mode;
+            editMaxOrder     = strategy.RiskConfig.MaxOrderAmountUsdt;
+            editMaxDailyLoss = strategy.RiskConfig.MaxDailyLossUsdt;
+            editStopLoss     = strategy.RiskConfig.StopLossPercent;
+            editTakeProfit   = strategy.RiskConfig.TakeProfitPercent;
+            editMaxPositions = strategy.RiskConfig.MaxOpenPositions;
+            editDescription  = strategy.Description;
+        }
+    }
+
+    private void OnEditSymbolChanged(string value) => editSymbol = value;
+
+    private async Task SaveStrategyAsync()
+    {
+        if (strategy is null) return;
+        isSavingStrategy = true;
+        editError = null;
+
+        try
+        {
+            var request = new UpdateStrategyRequest(
+                editName, editSymbol, editMode,
+                editMaxOrder, editMaxDailyLoss,
+                editStopLoss, editTakeProfit,
+                editMaxPositions, editDescription);
+
+            await Api.UpdateStrategyAsync(Id, request);
+            isEditingStrategy = false;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            editError = ex.Message;
+        }
+        finally
+        {
+            isSavingStrategy = false;
+        }
+    }
+
+    private async Task DuplicateStrategyAsync()
+    {
+        if (strategy is null) return;
+        isDuplicating = true;
+
+        try
+        {
+            var copy = await Api.DuplicateStrategyAsync(Id);
+            if (copy is not null)
+                Nav.NavigateTo($"/strategies/{copy.Id}");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al duplicar: {ex.Message}";
+        }
+        finally
+        {
+            isDuplicating = false;
+        }
+    }
+
+    // ── Form models ──────────────────────────────────────────────────
+
+    private sealed class IndicatorFormModel
+    {
+        public string Type = "RSI";
+    }
+
+    private sealed class RuleFormModel
+    {
+        public string  Name       = string.Empty;
+        public string  RuleType   = "Entry";
+        public string  Operator   = "And";
+        public string  ActionType = "BuyMarket";
+        public decimal AmountUsdt = 50m;
+    }
+
+    private sealed class ConditionFormModel
+    {
+        public string  Indicator  = "RSI";
+        public string  Comparator = "LessThan";
+        public decimal Value      = 30m;
+    }
+}

@@ -1,5 +1,6 @@
 using FluentValidation;
 using MediatR;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TradingBot.Application.Behaviors;
 using TradingBot.Application.RiskManagement;
@@ -17,7 +18,7 @@ public static class ApplicationServiceExtensions
     /// Registra los servicios de la capa Application: MediatR, FluentValidation,
     /// motores de trading, reglas y gestión de riesgo.
     /// </summary>
-    public static IServiceCollection AddApplication(this IServiceCollection services)
+    public static IServiceCollection AddApplication(this IServiceCollection services, IConfiguration? configuration = null)
     {
         var assembly = typeof(ApplicationServiceExtensions).Assembly;
 
@@ -27,6 +28,23 @@ public static class ApplicationServiceExtensions
 
         // FluentValidation
         services.AddValidatorsFromAssembly(assembly);
+
+        // Configuración global de riesgo
+        if (configuration is not null)
+        {
+            var section = configuration.GetSection(GlobalRiskSettings.SectionName);
+            services.Configure<GlobalRiskSettings>(opts =>
+            {
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxDailyLossUsdt)], out var mdl))
+                    opts.MaxDailyLossUsdt = mdl;
+                if (int.TryParse(section[nameof(GlobalRiskSettings.MaxGlobalOpenPositions)], out var mop))
+                    opts.MaxGlobalOpenPositions = mop;
+            });
+        }
+        else
+        {
+            services.Configure<GlobalRiskSettings>(_ => { });
+        }
 
         // Servicios de dominio
         services.AddScoped<IStrategyConfigService, StrategyConfigService>();

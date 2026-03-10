@@ -5,6 +5,47 @@
 
 <h1>🎯 Estrategias</h1>
 
+@* ── Plantillas predefinidas ─────────────────────────────────────────── *@
+@if (templates is not null && templates.Count > 0)
+{
+    <div class="card mb-4">
+        <div class="card-header" role="button" @onclick="() => showTemplates = !showTemplates">
+            📋 Crear desde plantilla @(showTemplates ? "▲" : "▼")
+        </div>
+        @if (showTemplates)
+        {
+            <div class="card-body">
+                <div class="row g-3">
+                    @foreach (var tpl in templates)
+                    {
+                        <div class="col-md-6 col-lg-3">
+                            <div class="card h-100 border-primary">
+                                <div class="card-body">
+                                    <h6 class="card-title">@tpl.Name</h6>
+                                    <p class="card-text small text-muted">@tpl.Description</p>
+                                    <div class="mb-2">
+                                        <span class="badge bg-info me-1">@tpl.Symbol</span>
+                                        @foreach (var ind in tpl.Indicators)
+                                        {
+                                            <span class="badge bg-secondary me-1">@ind.Type</span>
+                                        }
+                                    </div>
+                                    <small class="text-muted">@tpl.Rules.Count reglas · SL @tpl.RiskConfig.StopLossPercent% · TP @tpl.RiskConfig.TakeProfitPercent%</small>
+                                </div>
+                                <div class="card-footer bg-transparent">
+                                    <button class="btn btn-sm btn-outline-primary w-100" @onclick="() => ApplyTemplateAsync(tpl)">
+                                        🚀 Crear con esta plantilla
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+}
+
 @* ── Formulario de creación ──────────────────────────────────────────── *@
 <div class="card mb-4">
     <div class="card-header" role="button" @onclick="() => showForm = !showForm">
@@ -21,7 +62,7 @@
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Símbolo</label>
-                        <InputText class="form-control" @bind-Value="newStrategy.Symbol" placeholder="BTCUSDT" />
+                        <SymbolSelector @bind-Value="newStrategy.Symbol" />
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Modo</label>
@@ -95,7 +136,7 @@ else
                 {
                     <tr>
                         <td>
-                            <strong>@s.Name</strong>
+                            <a href="/strategies/@s.Id"><strong>@s.Name</strong></a>
                             @if (!string.IsNullOrEmpty(s.Description))
                             {
                                 <br /><small class="text-muted">@s.Description</small>
@@ -141,16 +182,30 @@ else
 
 @code {
     private List<StrategyDto>? strategies;
+    private List<StrategyTemplateDto>? templates;
     private bool isLoading = true;
     private bool isSubmitting;
     private bool showForm;
+    private bool showTemplates;
     private string? errorMessage;
 
     private StrategyFormModel newStrategy = new();
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadStrategiesAsync();
+        await Task.WhenAll(LoadStrategiesAsync(), LoadTemplatesAsync());
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        try
+        {
+            templates = await Api.GetTemplatesAsync();
+        }
+        catch
+        {
+            // Las plantillas son opcionales; si falla, no bloquea la página
+        }
     }
 
     private async Task LoadStrategiesAsync()
@@ -234,6 +289,52 @@ else
         catch (Exception ex)
         {
             errorMessage = $"Error al eliminar: {ex.Message}";
+        }
+    }
+
+    private async Task ApplyTemplateAsync(StrategyTemplateDto tpl)
+    {
+        isSubmitting = true;
+        errorMessage = null;
+        try
+        {
+            // 1. Crear la estrategia base
+            var createRequest = new CreateStrategyRequest(
+                tpl.Name, tpl.Symbol, "PaperTrading",
+                tpl.RiskConfig.MaxOrderAmountUsdt, tpl.RiskConfig.MaxDailyLossUsdt,
+                tpl.RiskConfig.StopLossPercent, tpl.RiskConfig.TakeProfitPercent,
+                tpl.RiskConfig.MaxOpenPositions, tpl.Description);
+
+            var created = await Api.CreateStrategyAsync(createRequest);
+            if (created is null) return;
+
+            // 2. Agregar indicadores
+            foreach (var ind in tpl.Indicators)
+            {
+                await Api.AddIndicatorAsync(created.Id, new AddIndicatorRequest(ind.Type, ind.Parameters));
+            }
+
+            // 3. Agregar reglas
+            foreach (var rule in tpl.Rules)
+            {
+                var conditions = rule.Conditions
+                    .Select(c => new AddRuleConditionRequest(c.Indicator, c.Comparator, c.Value))
+                    .ToList();
+                await Api.AddRuleAsync(created.Id, new AddRuleRequest(
+                    rule.Name, rule.RuleType, rule.Operator,
+                    conditions, rule.ActionType, rule.AmountUsdt));
+            }
+
+            showTemplates = false;
+            await LoadStrategiesAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error al crear desde plantilla: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
         }
     }
 

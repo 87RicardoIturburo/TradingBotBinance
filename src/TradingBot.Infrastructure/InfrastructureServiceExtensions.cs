@@ -125,6 +125,9 @@ public static class InfrastructureServiceExtensions
         // MarketDataService es Singleton porque mantiene conexiones WebSocket persistentes
         services.AddSingleton<IMarketDataService, MarketDataService>();
 
+        // SpotOrderExecutor — scoped porque cada scope puede tener una orden diferente
+        services.AddScoped<ISpotOrderExecutor, BinanceSpotOrderExecutor>();
+
         return services;
     }
 }

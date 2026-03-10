@@ -40,4 +40,36 @@ public interface IMarketDataService
         Symbol symbol,
         int    count,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Obtiene velas (klines) históricas para backtesting.
+    /// Cada elemento contiene timestamp y precio de cierre.
+    /// </summary>
+    Task<Result<IReadOnlyList<Kline>, DomainError>> GetKlinesAsync(
+        Symbol symbol,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Obtiene los pares de trading disponibles en Binance, filtrados por quote asset.
+    /// </summary>
+    Task<Result<IReadOnlyList<TradingSymbolInfo>, DomainError>> GetTradingSymbolsAsync(
+        string quoteAsset = "USDT",
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>Vela histórica de Binance para backtesting.</summary>
+public sealed record Kline(
+    DateTimeOffset OpenTime,
+    decimal Open,
+    decimal High,
+    decimal Low,
+    decimal Close,
+    decimal Volume);
+
+/// <summary>Par de trading disponible en Binance.</summary>
+public sealed record TradingSymbolInfo(
+    string Symbol,
+    string BaseAsset,
+    string QuoteAsset);

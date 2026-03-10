@@ -39,4 +39,19 @@ public interface IPositionRepository : IRepository<Position, Guid>
     Task<int> GetOpenPositionCountAsync(
         Guid strategyId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Suma del P&amp;L realizado de todas las posiciones cerradas de una estrategia (histórico completo).
+    /// </summary>
+    Task<decimal> GetTotalRealizedPnLAsync(
+        Guid strategyId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Obtiene estadísticas de trades cerrados para calcular la esperanza matemática.
+    /// Devuelve (totalTrades, wins, totalWinAmount, totalLossAmount).
+    /// </summary>
+    Task<(int TotalTrades, int Wins, decimal TotalWinAmount, decimal TotalLossAmount)> GetTradeStatsAsync(
+        Guid strategyId,
+        CancellationToken cancellationToken = default);
 }
