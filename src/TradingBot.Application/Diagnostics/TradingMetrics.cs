@@ -15,6 +15,7 @@ public sealed class TradingMetrics
     private readonly Counter<long> _ordersPlaced;
     private readonly Counter<long> _ordersFailed;
     private readonly Histogram<double> _tickToOrderLatency;
+    private readonly Counter<long> _ticksDropped;
     private readonly ObservableGauge<double> _dailyPnL;
 
     private double _currentDailyPnL;
@@ -42,6 +43,11 @@ public sealed class TradingMetrics
             "trading.orders_failed",
             unit: "{order}",
             description: "Número de órdenes rechazadas por riesgo, filtros o exchange");
+
+        _ticksDropped = meter.CreateCounter<long>(
+            "trading.ticks_dropped",
+            unit: "{tick}",
+            description: "Número de ticks descartados por canal lleno (DropOldest)");
 
         _tickToOrderLatency = meter.CreateHistogram<double>(
             "trading.tick_to_order_latency",
@@ -84,6 +90,12 @@ public sealed class TradingMetrics
     public void RecordTickToOrderLatency(double milliseconds, string symbol)
         => _tickToOrderLatency.Record(milliseconds,
             new KeyValuePair<string, object?>("symbol", symbol));
+
+    /// <summary>Registra un tick descartado porque el canal bounded estaba lleno.</summary>
+    public void RecordTickDropped(string symbol, string streamType)
+        => _ticksDropped.Add(1,
+            new KeyValuePair<string, object?>("symbol", symbol),
+            new KeyValuePair<string, object?>("stream", streamType));
 
     /// <summary>Actualiza el P&amp;L diario acumulado.</summary>
     public void UpdateDailyPnL(double pnlUsdt)

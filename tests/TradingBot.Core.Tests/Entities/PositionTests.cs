@@ -37,8 +37,26 @@ public sealed class PositionTests
 
         position.UpdatePrice(Price.Create(55000m).Value);
 
+        // Gross = 5000, no fees on entry (default 0) → estimated exit fee = 0
         position.UnrealizedPnL.Should().Be(5000m);
         position.UnrealizedPnLPercent.Should().Be(10m);
+    }
+
+    [Fact]
+    public void UnrealizedPnL_WithEntryFee_SubtractsEstimatedFees()
+    {
+        var position = Position.Open(
+            Guid.NewGuid(),
+            Symbol.Create("BTCUSDT").Value,
+            OrderSide.Buy,
+            Price.Create(50000m).Value,
+            Quantity.Create(1m).Value,
+            entryFee: 50m);
+
+        position.UpdatePrice(Price.Create(55000m).Value);
+
+        // Gross = 5000, minus entryFee(50) + estimatedExitFee(50) = 4900
+        position.UnrealizedPnL.Should().Be(4900m);
     }
 
     [Fact]
@@ -59,10 +77,49 @@ public sealed class PositionTests
         var result = position.Close(Price.Create(52000m).Value);
 
         result.IsSuccess.Should().BeTrue();
+        // Gross PnL = (52000 - 50000) * 1 = 2000, no fees
         result.Value.Should().Be(2000m);
         position.IsOpen.Should().BeFalse();
         position.RealizedPnL.Should().Be(2000m);
         position.ClosedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Close_WithFees_ReturnsNetRealizedPnL()
+    {
+        var position = Position.Open(
+            Guid.NewGuid(),
+            Symbol.Create("BTCUSDT").Value,
+            OrderSide.Buy,
+            Price.Create(50000m).Value,
+            Quantity.Create(1m).Value,
+            entryFee: 50m); // 0.1% de 50000
+
+        var result = position.Close(Price.Create(52000m).Value, exitFee: 52m);
+
+        result.IsSuccess.Should().BeTrue();
+        // Gross = 2000, Net = 2000 - 50 - 52 = 1898
+        result.Value.Should().Be(1898m);
+        position.EntryFee.Should().Be(50m);
+        position.ExitFee.Should().Be(52m);
+    }
+
+    [Fact]
+    public void Close_WithFees_LosingTradeBecomesBiggerLoss()
+    {
+        var position = Position.Open(
+            Guid.NewGuid(),
+            Symbol.Create("BTCUSDT").Value,
+            OrderSide.Buy,
+            Price.Create(50000m).Value,
+            Quantity.Create(1m).Value,
+            entryFee: 50m);
+
+        var result = position.Close(Price.Create(49900m).Value, exitFee: 49.9m);
+
+        result.IsSuccess.Should().BeTrue();
+        // Gross = -100, Net = -100 - 50 - 49.9 = -199.9
+        result.Value.Should().Be(-199.9m);
     }
 
     [Fact]

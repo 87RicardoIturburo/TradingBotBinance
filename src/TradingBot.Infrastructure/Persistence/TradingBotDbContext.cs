@@ -1,4 +1,6 @@
+using MediatR;
 using Microsoft.EntityFrameworkCore;
+using TradingBot.Application.EventHandlers;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Interfaces;
@@ -6,42 +8,57 @@ using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Infrastructure.Persistence;
 
-public sealed class TradingBotDbContext(DbContextOptions<TradingBotDbContext> options)
-    : DbContext(options), IUnitOfWork
+public sealed class TradingBotDbContext : DbContext, IUnitOfWork
 {
+    private readonly IMediator _mediator;
+
+    public TradingBotDbContext(
+        DbContextOptions<TradingBotDbContext> options,
+        IMediator mediator)
+        : base(options)
+    {
+        _mediator = mediator;
+    }
+
     public DbSet<TradingStrategy> TradingStrategies => Set<TradingStrategy>();
     public DbSet<Order>           Orders            => Set<Order>();
     public DbSet<Position>        Positions         => Set<Position>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // IndicatorConfig se serializa a JSON via value converter en TradingStrategyConfiguration.
-        // Se ignora como tipo para evitar que EF Core intente mapear IReadOnlyDictionary<string, decimal>.
         modelBuilder.Ignore<IndicatorConfig>();
-
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(TradingBotDbContext).Assembly);
         base.OnModelCreating(modelBuilder);
     }
 
     /// <summary>
-    /// Guarda los cambios y recoge los domain events de todos los agregados
-    /// modificados para que puedan ser despachados por el Application layer.
+    /// Guarda los cambios, luego despacha los domain events vía MediatR.
+    /// Patrón: persist primero → dispatch después (garantiza consistencia).
     /// </summary>
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         FixNewOwnedEntitiesTrackedAsModified();
 
-        var result = await base.SaveChangesAsync(cancellationToken);
-
-        // Limpiar los domain events tras persistir (el despacho se hace en el Application layer)
-        var aggregatesWithEvents = ChangeTracker
+        // Recoger eventos ANTES de persistir (las entidades pueden dejar de ser tracked)
+        var domainEvents = ChangeTracker
             .Entries<Entity<Guid>>()
             .Where(e => e.Entity.DomainEvents.Count > 0)
-            .Select(e => e.Entity)
+            .SelectMany(e => e.Entity.DomainEvents)
             .ToList();
 
-        foreach (var aggregate in aggregatesWithEvents)
-            aggregate.ClearDomainEvents();
+        // Limpiar eventos de las entidades para evitar despacho doble
+        foreach (var entry in ChangeTracker.Entries<Entity<Guid>>())
+            entry.Entity.ClearDomainEvents();
+
+        var result = await base.SaveChangesAsync(cancellationToken);
+
+        // Despachar eventos después de persistir exitosamente
+        foreach (var domainEvent in domainEvents)
+        {
+            // Envolver IDomainEvent como MediatR INotification
+            await _mediator.Publish(
+                new DomainEventNotification(domainEvent), cancellationToken);
+        }
 
         return result;
     }

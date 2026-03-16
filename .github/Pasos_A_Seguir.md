@@ -817,6 +817,86 @@ dotnet ef database update --project ../TradingBot.Infrastructure
 
 ---
 
+## 📋 Paso H — BacktestEngine usa RuleEngine ✅ (Final.md 2.5)
+
+**Problema**: `BacktestEngine.RunAsync` tenía lógica inline de stop-loss/take-profit que duplicaba lo que `IRuleEngine.EvaluateExitRulesAsync` ya hace (con soporte ATR, trailing stop, indicadores custom). Además, la llamada al RuleEngine era condicional: solo se invocaba si el check inline NO disparaba.
+
+**Código eliminado:**
+```csharp
+// ❌ Lógica duplicada — verificaba pnlPercent manualmente
+var pnlPercent = openPosition.UnrealizedPnLPercent;
+if (pnlPercent <= -(decimal)strategy.RiskConfig.StopLossPercent) { shouldExit = true; ... }
+else if (pnlPercent >= ...) { shouldExit = true; ... }
+if (!shouldExit)  // ← solo llegaba aquí si el inline no disparó
+    await ruleEngine.EvaluateExitRulesAsync(...);
+```
+
+**Solución implementada:**
+- [x] Eliminada la lógica inline de SL/TP (16 líneas)
+- [x] `EvaluateExitRulesAsync` se llama **siempre** para cada tick con posición abierta
+- [x] Añadido `atrValue: tradingStrategy.CurrentAtrValue` para consistencia con el motor live
+- [x] Añadido `DetermineExitReason(BacktestPosition, TradingStrategy)` — etiqueta el trade como "Stop-loss" / "Take-profit" / "Exit rule" según P&L en el momento del cierre (solo para reporting, no para decidir la salida)
+
+**Tests actualizados:**
+- Todos los mocks de `EvaluateExitRulesAsync` actualizados para incluir `Arg.Any<decimal?>()` y `Arg.Any<string?>()` (el nuevo código pasa los 6 argumentos explícitamente; NSubstitute requiere matchers para todos si usa setups secuenciales)
+- `RunAsync_WhenStopLossHit_ClosesPosition` → `EvaluateExitRulesAsync` retorna `sellOrder` en 3ª llamada (tick 3, precio 47000)
+- `RunAsync_WhenTakeProfitHit_ClosesWithProfit` → retorna `sellOrder` en 2ª llamada (tick 2, precio 53000)
+- `RunAsync_WhenDailyLossLimitHit_BlocksNewEntries` → retorna `sellOrder` en 1ª llamada (tick 1, precio 48000)
+
+**Archivos modificados:**
+- `src/TradingBot.Application/Backtesting/BacktestEngine.cs` — refactoring del bloque de salida + nuevo método `DetermineExitReason`
+- `tests/TradingBot.Application.Tests/Backtesting/BacktestEngineTests.cs` — 6 tests actualizados (todos los mocks de `EvaluateExitRulesAsync`)
+
+**Tests**: 353/353 passing — sin regresiones.
+
+---
+
+## 📋 Paso G — PortfolioRiskManager en DI ✅ (Final.md 2.4)
+
+**Problema**: `RiskManager` instanciaba `PortfolioRiskManager` con `new` directamente en su constructor:
+```csharp
+_portfolioRisk = new PortfolioRiskManager(positionRepository); // ❌ hardcoded new
+```
+Esto viola DI: `PortfolioRiskManager` queda invisible para el contenedor (no inyectable, no reemplazable en tests, imposible de auditar en diagnósticos).
+
+- [x] **`RiskManager`** — añadido `PortfolioRiskManager portfolioRiskManager` como parámetro del constructor; eliminado `new`
+- [x] **`ApplicationServiceExtensions`** — registrado `services.AddScoped<PortfolioRiskManager>()` antes de `IRiskManager`
+- [x] **`RiskManagerTests`** — añadido campo `_portfolioRisk = new PortfolioRiskManager(_positionRepo)` en constructor del test; actualizadas las 4 instanciaciones de `RiskManager` para pasar el parámetro
+
+**Archivos modificados:**
+- `src/TradingBot.Application/RiskManagement/RiskManager.cs` — parámetro de constructor + eliminar `new`
+- `src/TradingBot.Application/ApplicationServiceExtensions.cs` — `AddScoped<PortfolioRiskManager>()`
+- `tests/TradingBot.Application.Tests/RiskManagement/RiskManagerTests.cs` — campo + 4 constructores actualizados
+
+**Tests**: 353/353 passing — sin regresiones.
+
+---
+
+## 📋 Paso F — TradingMetrics integración completa ✅ (Final.md 2.3)
+
+**Problema**: `TradingMetrics` (OpenTelemetry) estaba registrado como Singleton en DI pero no inyectado en ningún servicio real. Todos los contadores (`trading.orders_placed`, `trading.orders_failed`) estaban a cero y `trading.tick_to_order_latency` nunca se medía.
+
+- [x] **`OrderService`** — añadidas llamadas en todos los paths de `PlaceOrderAsync`:
+  - `RecordOrderFailed(symbol, "risk_validation")` → cuando RiskManager rechaza
+  - `RecordOrderFailed(symbol, "exchange_filter")` → cuando filtros LOT_SIZE/MIN_NOTIONAL fallan
+  - `RecordOrderFailed(symbol, "spread_guard")` → cuando spread bid-ask excede el máximo
+  - `RecordOrderFailed(symbol, "exchange_rejected")` → cuando Binance devuelve error
+  - `RecordOrderPlaced(symbol, side, type, isPaper: false)` → orden live ejecutada en Binance
+  - `RecordOrderPlaced(symbol, side, type, isPaper: true)` → paper trade completado
+
+- [x] **`StrategyEngine`** — latencia tick→orden medida con `Stopwatch`:
+  - `ProcessSingleKlineAsync` → `Stopwatch` inicia al recibir la vela cerrada, para tras `PlaceOrderAsync` exitoso → `RecordTickToOrderLatency(ms, symbol)`
+  - `ProcessSingleTickAsync` → `Stopwatch` inicia al recibir el tick, para tras orden de salida exitosa (SL/TP) → `RecordTickToOrderLatency(ms, symbol)`
+  - `RecordTickProcessed` y `RecordSignalGenerated` ya estaban implementados
+
+**Archivos modificados:**
+- `src/TradingBot.Application/Services/OrderService.cs` — 4 puntos de medición nuevos
+- `src/TradingBot.Application/Strategies/StrategyEngine.cs` — `using System.Diagnostics` + `Stopwatch` en 2 métodos
+
+**Tests**: 353/353 passing — sin regresiones.
+
+---
+
 ## 🔧 Notas técnicas para el próximo chat
 
 ### Archivos creados en Paso 11

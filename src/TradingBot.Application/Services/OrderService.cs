@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
@@ -25,6 +26,9 @@ internal sealed class OrderService : IOrderService
     private readonly ISpotOrderExecutor _spotOrderExecutor;
     private readonly IAccountService _accountService;
     private readonly IExchangeInfoService _exchangeInfoService;
+    private readonly IOrderExecutionLock _executionLock;
+    private readonly IGlobalCircuitBreaker _circuitBreaker;
+    private readonly TradingMetrics _metrics;
     private readonly TradingFeeConfig _feeConfig;
     private readonly ILogger<OrderService> _logger;
 
@@ -37,6 +41,9 @@ internal sealed class OrderService : IOrderService
         ISpotOrderExecutor spotOrderExecutor,
         IAccountService accountService,
         IExchangeInfoService exchangeInfoService,
+        IOrderExecutionLock executionLock,
+        IGlobalCircuitBreaker circuitBreaker,
+        TradingMetrics metrics,
         IOptions<TradingFeeConfig> feeConfig,
         ILogger<OrderService> logger)
     {
@@ -48,6 +55,9 @@ internal sealed class OrderService : IOrderService
         _spotOrderExecutor   = spotOrderExecutor;
         _accountService      = accountService;
         _exchangeInfoService = exchangeInfoService;
+        _executionLock       = executionLock;
+        _circuitBreaker      = circuitBreaker;
+        _metrics             = metrics;
         _feeConfig           = feeConfig.Value;
         _logger              = logger;
     }
@@ -56,20 +66,47 @@ internal sealed class OrderService : IOrderService
         Order order,
         CancellationToken cancellationToken = default)
     {
+        // Circuit breaker global — si está abierto, rechazar todas las órdenes
+        if (_circuitBreaker.IsOpen)
+            return Result<Order, DomainError>.Failure(
+                DomainError.RiskLimitExceeded(
+                    $"Circuit breaker abierto: {_circuitBreaker.TripReason}"));
+
+        // Serializar validación + ejecución por quote asset para evitar race conditions de saldo
+        var quoteAsset = ExtractQuoteAsset(order.Symbol.Value);
+        using var executionLockHandle = await _executionLock.AcquireAsync(quoteAsset, cancellationToken);
+
         // 1. Validar con RiskManager (obligatorio)
         var riskResult = await _riskManager.ValidateOrderAsync(order, cancellationToken);
         if (riskResult.IsFailure)
+        {
+            _metrics.RecordOrderFailed(order.Symbol.Value, "risk_validation");
             return Result<Order, DomainError>.Failure(riskResult.Error);
+        }
 
         // 2. Validar y ajustar contra filtros del exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
         var filterResult = await ValidateExchangeFiltersAsync(order, cancellationToken);
         if (filterResult.IsFailure)
+        {
+            _metrics.RecordOrderFailed(order.Symbol.Value, "exchange_filter");
             return Result<Order, DomainError>.Failure(filterResult.Error);
+        }
 
-        // 3. Persistir la orden
+        // 3. Validar spread bid-ask para órdenes Market (protección contra flash crash)
+        if (order.LimitPrice is null)
+        {
+            var spreadResult = ValidateSpread(order);
+            if (spreadResult.IsFailure)
+            {
+                _metrics.RecordOrderFailed(order.Symbol.Value, "spread_guard");
+                return Result<Order, DomainError>.Failure(spreadResult.Error);
+            }
+        }
+
+        // 4. Persistir la orden
         await _orderRepository.AddAsync(order, cancellationToken);
 
-        // 4. Ejecutar según modo
+        // 5. Ejecutar según modo
         if (order.IsPaperTrade)
         {
             return await SimulatePaperTradeAsync(order, cancellationToken);
@@ -250,6 +287,7 @@ internal sealed class OrderService : IOrderService
             order.Reject(exchangeResult.Error.Message);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+            _metrics.RecordOrderFailed(order.Symbol.Value, "exchange_rejected");
             _logger.LogWarning(
                 "Orden {OrderId} rechazada por Binance: {Error}",
                 order.Id, exchangeResult.Error.Message);
@@ -294,6 +332,7 @@ internal sealed class OrderService : IOrderService
         // Invalidar caché de balance — el saldo cambió tras la orden
         await _accountService.InvalidateCacheAsync(cancellationToken);
 
+        _metrics.RecordOrderPlaced(order.Symbol.Value, order.Side.ToString(), order.Type.ToString(), isPaper: false);
         _logger.LogInformation(
             "Orden {OrderId} ejecutada en Binance: {Side} {Qty} {Symbol} BinanceId={BinanceId} Status={Status}",
             order.Id, order.Side, order.Quantity.Value, order.Symbol.Value,
@@ -361,6 +400,7 @@ internal sealed class OrderService : IOrderService
         await HandlePositionAsync(order, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+        _metrics.RecordOrderPlaced(order.Symbol.Value, order.Side.ToString(), order.Type.ToString(), isPaper: true);
         _logger.LogInformation(
             "Paper trade completado: {Side} {Qty} {Symbol} @ {Price} (fee: {Fee:F4} USDT)",
             order.Side, order.Quantity.Value, order.Symbol.Value,
@@ -381,20 +421,22 @@ internal sealed class OrderService : IOrderService
 
         if (positionToClose is not null && order.ExecutedPrice is not null)
         {
-            // Cerrar posición existente del lado opuesto
-            positionToClose.Close(order.ExecutedPrice);
+            // Cerrar posición existente del lado opuesto, descontando fee de salida
+            positionToClose.Close(order.ExecutedPrice, order.Fee);
             await _positionRepository.UpdateAsync(positionToClose, cancellationToken);
 
             _logger.LogInformation(
-                "Posición {PosId} cerrada: {Side} {Symbol} PnL={PnL:F2}",
-                positionToClose.Id, positionToClose.Side, order.Symbol.Value, positionToClose.RealizedPnL);
+                "Posición {PosId} cerrada: {Side} {Symbol} PnL={PnL:F2} (fees: entry={EntryFee:F4}, exit={ExitFee:F4})",
+                positionToClose.Id, positionToClose.Side, order.Symbol.Value,
+                positionToClose.RealizedPnL, positionToClose.EntryFee, positionToClose.ExitFee);
         }
         else if (order.Side == OrderSide.Buy)
         {
-            // Abrir nueva posición Long (Spot solo permite Long)
+            // Abrir nueva posición Long (Spot solo permite Long), con fee de entrada
             var position = Position.Open(
                 order.StrategyId, order.Symbol, order.Side,
-                order.ExecutedPrice!, order.FilledQuantity!);
+                order.ExecutedPrice!, order.FilledQuantity!,
+                order.Fee);
 
             await _positionRepository.AddAsync(position, cancellationToken);
         }
@@ -406,5 +448,62 @@ internal sealed class OrderService : IOrderService
                 "No se crea posición Short (Spot trading no soporta shorts).",
                 order.Id, order.Symbol.Value);
         }
+    }
+
+    /// <summary>Extrae el quote asset del símbolo (BTCUSDT → USDT).</summary>
+    private static string ExtractQuoteAsset(string symbol)
+    {
+        ReadOnlySpan<char> s = symbol;
+        string[] quoteAssets = ["USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"];
+        foreach (var qa in quoteAssets)
+        {
+            if (s.EndsWith(qa, StringComparison.OrdinalIgnoreCase))
+                return qa;
+        }
+        return "USDT"; // fallback conservador
+    }
+
+    /// <summary>
+    /// Valida que el spread bid-ask no exceda el máximo configurado.
+    /// Solo aplica a órdenes Market. Si no hay datos de bid/ask disponibles, se permite la orden con warning.
+    /// </summary>
+    private Result<bool, DomainError> ValidateSpread(Order order)
+    {
+        var bidAsk = _marketDataService.GetLastBidAsk(order.Symbol);
+        if (bidAsk is null)
+        {
+            _logger.LogDebug(
+                "Sin datos bid/ask para {Symbol}, spread guard omitido", order.Symbol.Value);
+            return Result<bool, DomainError>.Success(true);
+        }
+
+        var (bid, ask) = bidAsk.Value;
+        if (bid.Value <= 0 || ask.Value <= 0)
+            return Result<bool, DomainError>.Success(true);
+
+        var midPrice = (bid.Value + ask.Value) / 2m;
+        var spreadPercent = (ask.Value - bid.Value) / midPrice * 100m;
+
+        // Usar un default de 1.0% si no se puede determinar MaxSpreadPercent de la estrategia
+        const decimal defaultMaxSpread = 1.0m;
+
+        if (spreadPercent > defaultMaxSpread)
+        {
+            _logger.LogWarning(
+                "⚠ Spread excesivo para {Symbol}: {Spread:F3}% (máx {Max:F1}%). Orden {OrderId} rechazada.",
+                order.Symbol.Value, spreadPercent, defaultMaxSpread, order.Id);
+            return Result<bool, DomainError>.Failure(
+                DomainError.RiskLimitExceeded(
+                    $"Spread bid-ask de {spreadPercent:F3}% excede el máximo de {defaultMaxSpread:F1}% para {order.Symbol.Value}."));
+        }
+
+        if (spreadPercent > defaultMaxSpread * 0.5m)
+        {
+            _logger.LogWarning(
+                "⚠ Spread elevado para {Symbol}: {Spread:F3}% (advertencia > {Warn:F1}%)",
+                order.Symbol.Value, spreadPercent, defaultMaxSpread * 0.5m);
+        }
+
+        return Result<bool, DomainError>.Success(true);
     }
 }

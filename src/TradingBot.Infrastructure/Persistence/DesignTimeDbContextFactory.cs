@@ -1,3 +1,4 @@
+using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
@@ -24,6 +25,24 @@ internal sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<T
                 npgsql => npgsql.MigrationsAssembly(typeof(TradingBotDbContext).Assembly.FullName))
             .Options;
 
-        return new TradingBotDbContext(options);
+        return new TradingBotDbContext(options, new NullMediator());
+    }
+
+    /// <summary>Mediator nulo para design-time — no despacha eventos.</summary>
+    private sealed class NullMediator : IMediator
+    {
+        public Task Publish(object notification, CancellationToken ct = default) => Task.CompletedTask;
+        public Task Publish<TNotification>(TNotification notification, CancellationToken ct = default)
+            where TNotification : INotification => Task.CompletedTask;
+        public Task<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken ct = default)
+            => throw new NotSupportedException("Design-time only");
+        public Task Send<TRequest>(TRequest request, CancellationToken ct = default)
+            where TRequest : IRequest => throw new NotSupportedException("Design-time only");
+        public Task<object?> Send(object request, CancellationToken ct = default)
+            => throw new NotSupportedException("Design-time only");
+        public IAsyncEnumerable<TResponse> CreateStream<TResponse>(IStreamRequest<TResponse> request, CancellationToken ct = default)
+            => throw new NotSupportedException("Design-time only");
+        public IAsyncEnumerable<object?> CreateStream(object request, CancellationToken ct = default)
+            => throw new NotSupportedException("Design-time only");
     }
 }

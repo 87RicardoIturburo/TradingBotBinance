@@ -46,6 +46,15 @@ public interface ITradingStrategy
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Procesa una vela cerrada: actualiza los indicadores técnicos y evalúa señales.
+    /// Este es el método preferido para alimentar indicadores — produce señales
+    /// consistentes y comparables con plataformas profesionales.
+    /// </summary>
+    Task<Result<SignalGeneratedEvent?, DomainError>> ProcessKlineAsync(
+        KlineClosedEvent kline,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Recarga la configuración en caliente sin detener el procesamiento.
     /// Publicado por <see cref="StrategyUpdatedEvent"/>.
     /// </summary>

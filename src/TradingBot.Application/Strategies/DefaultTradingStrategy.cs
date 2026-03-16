@@ -80,6 +80,42 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             Result<SignalGeneratedEvent?, DomainError>.Success(signal));
     }
 
+    public Task<Result<SignalGeneratedEvent?, DomainError>> ProcessKlineAsync(
+        KlineClosedEvent kline,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsInitialized || _config is null)
+            return Task.FromResult(
+                Result<SignalGeneratedEvent?, DomainError>.Failure(
+                    DomainError.InvalidOperation("La estrategia no está inicializada.")));
+
+        // Actualizar indicadores con el precio de cierre de la vela
+        foreach (var indicator in _indicators.Values)
+            indicator.Update(kline.Close);
+
+        // Crear un tick sintético a partir de la vela para evaluar la señal
+        var lastPrice = Price.Create(kline.Close);
+        if (lastPrice.IsFailure)
+            return Task.FromResult(
+                Result<SignalGeneratedEvent?, DomainError>.Success((SignalGeneratedEvent?)null));
+
+        var bidPrice = Price.Create(kline.Low);
+        var askPrice = Price.Create(kline.High);
+
+        var syntheticTick = new MarketTickReceivedEvent(
+            kline.Symbol,
+            bidPrice.IsSuccess ? bidPrice.Value : lastPrice.Value,
+            askPrice.IsSuccess ? askPrice.Value : lastPrice.Value,
+            lastPrice.Value,
+            kline.Volume,
+            kline.CloseTime);
+
+        var signal = EvaluateSignal(syntheticTick);
+
+        return Task.FromResult(
+            Result<SignalGeneratedEvent?, DomainError>.Success(signal));
+    }
+
     public Task ReloadConfigAsync(TradingStrategy config, CancellationToken cancellationToken = default)
     {
         _config = config;

@@ -7,7 +7,9 @@ using CryptoExchange.Net.Objects.Sockets;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Core.Common;
+using TradingBot.Core.Enums;
 using TradingBot.Core.Events;
 using TradingBot.Core.Interfaces.Services;
 using TradingBot.Core.ValueObjects;
@@ -27,10 +29,14 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
     private readonly IBinanceRestClient              _restClient;
     private readonly IBinanceSocketClient            _socketClient;
     private readonly ILogger<MarketDataService>      _logger;
+    private readonly TradingMetrics                  _metrics;
     private readonly ResiliencePipeline              _retryPipeline;
 
     private readonly ConcurrentDictionary<string, Channel<MarketTickReceivedEvent>> _channels     = new();
+    private readonly ConcurrentDictionary<string, Channel<KlineClosedEvent>>       _klineChannels = new();
     private readonly ConcurrentDictionary<string, UpdateSubscription>               _subscriptions = new();
+    private readonly ConcurrentDictionary<string, UpdateSubscription>               _klineSubscriptions = new();
+    private readonly ConcurrentDictionary<string, (Price Bid, Price Ask)>           _lastBidAsk    = new();
 
     private volatile bool _isConnected;
     public  bool IsConnected => _isConnected;
@@ -38,11 +44,13 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
     public MarketDataService(
         IBinanceRestClient         restClient,
         IBinanceSocketClient       socketClient,
-        ILogger<MarketDataService> logger)
+        ILogger<MarketDataService> logger,
+        TradingMetrics             metrics)
     {
         _restClient   = restClient;
         _socketClient = socketClient;
         _logger       = logger;
+        _metrics      = metrics;
 
         _retryPipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
@@ -76,8 +84,13 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
             return;
         }
 
-        var channel = Channel.CreateUnbounded<MarketTickReceivedEvent>(
-            new UnboundedChannelOptions { SingleReader = false, SingleWriter = true });
+        var channel = Channel.CreateBounded<MarketTickReceivedEvent>(
+            new BoundedChannelOptions(1000)
+            {
+                SingleReader = false,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.DropOldest
+            });
 
         _channels[sv] = channel;
 
@@ -88,7 +101,12 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
                 var d    = update.Data;
                 var tick = BuildTick(sv, d.LastPrice, d.BestBidPrice, d.BestAskPrice, d.Volume);
                 if (tick is not null)
-                    channel.Writer.TryWrite(tick);
+                {
+                    // Almacenar último bid/ask para spread guard
+                    _lastBidAsk[sv] = (tick.BidPrice, tick.AskPrice);
+                    if (!channel.Writer.TryWrite(tick))
+                        _metrics.RecordTickDropped(sv, "ticker");
+                }
             },
             cancellationToken);
 
@@ -143,7 +161,105 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
             yield return tick;
     }
 
+    // ── Suscripción Kline WebSocket ───────────────────────────────────────
+
+    public async Task SubscribeKlinesAsync(Symbol symbol, CandleInterval interval, CancellationToken cancellationToken = default)
+    {
+        var sv = symbol.Value;
+        var key = $"{sv}_{interval}";
+
+        if (_klineSubscriptions.ContainsKey(key))
+        {
+            _logger.LogDebug("Ya existe suscripción kline activa para {Key}", key);
+            return;
+        }
+
+        var channel = Channel.CreateBounded<KlineClosedEvent>(
+            new BoundedChannelOptions(500)
+            {
+                SingleReader = false,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.DropOldest
+            });
+
+        _klineChannels[sv] = channel;
+
+        var binanceInterval = MapInterval(interval);
+
+        var result = await _socketClient.SpotApi.ExchangeData.SubscribeToKlineUpdatesAsync(
+            sv,
+            binanceInterval,
+            update =>
+            {
+                var d = update.Data.Data;
+                // Solo emitir cuando la vela se cierra (Final == true)
+                if (!d.Final) return;
+
+                var symbolResult = Symbol.Create(sv);
+                if (symbolResult.IsFailure) return;
+
+                var klineEvent = new KlineClosedEvent(
+                    symbolResult.Value,
+                    interval,
+                    d.OpenPrice,
+                    d.HighPrice,
+                    d.LowPrice,
+                    d.ClosePrice,
+                    d.Volume,
+                    d.OpenTime,
+                    d.CloseTime);
+
+                if (!channel.Writer.TryWrite(klineEvent))
+                    _metrics.RecordTickDropped(sv, "kline");
+            },
+            cancellationToken);
+
+        if (!result.Success)
+        {
+            _klineChannels.TryRemove(sv, out _);
+            _logger.LogError("No se pudo suscribir a klines de {Symbol} [{Interval}]: {Error}",
+                sv, interval, result.Error?.Message);
+            return;
+        }
+
+        _klineSubscriptions[key] = result.Data;
+
+        _logger.LogInformation(
+            "Suscrito al stream de klines de {Symbol} [{Interval}]", sv, interval);
+    }
+
+    public async IAsyncEnumerable<KlineClosedEvent> GetKlineStreamAsync(
+        Symbol symbol,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!_klineChannels.TryGetValue(symbol.Value, out var channel))
+        {
+            _logger.LogWarning(
+                "Sin canal de klines para {Symbol}. Llama SubscribeKlinesAsync primero.", symbol.Value);
+            yield break;
+        }
+
+        await foreach (var kline in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            yield return kline;
+    }
+
+    private static KlineInterval MapInterval(CandleInterval interval) => interval switch
+    {
+        CandleInterval.OneMinute      => KlineInterval.OneMinute,
+        CandleInterval.FiveMinutes    => KlineInterval.FiveMinutes,
+        CandleInterval.FifteenMinutes => KlineInterval.FifteenMinutes,
+        CandleInterval.ThirtyMinutes  => KlineInterval.ThirtyMinutes,
+        CandleInterval.OneHour        => KlineInterval.OneHour,
+        CandleInterval.FourHours      => KlineInterval.FourHour,
+        CandleInterval.OneDay         => KlineInterval.OneDay,
+        _ => KlineInterval.OneMinute
+    };
+
     // ── REST — precio actual ──────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public (Price Bid, Price Ask)? GetLastBidAsk(Symbol symbol)
+        => _lastBidAsk.TryGetValue(symbol.Value, out var pair) ? pair : null;
 
     public async Task<Result<Price, DomainError>> GetCurrentPriceAsync(
         Symbol symbol,

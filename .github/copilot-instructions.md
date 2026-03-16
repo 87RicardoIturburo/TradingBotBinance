@@ -43,6 +43,8 @@ TradingBot/
     ├── TradingBot.Core.Tests/
     ├── TradingBot.Application.Tests/
     └── TradingBot.Integration.Tests/
+```
+
 ---
 
 ## ✅ Convenciones de Código
@@ -135,6 +137,8 @@ TradingBot/
 ## ✅ Lo que SI hacer
 - Actualizar `.github/PROJECT.md` con cualquier cambio relevante en la arquitectura o funcionalidades
 - Actualizar `.github/Pasos_A_Seguir.md` a medida que se cumplen hitos importantes del proyecto
+- Responde siempre en español
+- Programa en ingles, pero documenta en español
 
 ---
 

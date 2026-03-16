@@ -109,7 +109,8 @@ public sealed class BacktestEngineTests
         // Ninguna regla de salida se activa — la posición se cierra al final del backtest
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-            Arg.Any<Price>(), Arg.Any<CancellationToken>())
+            Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+            Arg.Any<decimal?>(), Arg.Any<string?>())
             .Returns(Result<Order?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -159,10 +160,20 @@ public sealed class BacktestEngineTests
         _ruleEngine.EvaluateAsync(strategy, buySignal, Arg.Any<CancellationToken>())
             .Returns(Result<Order?, DomainError>.Success(order));
 
+        var sellOrder = Order.Create(
+            strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
+            orderQty, TradingMode.PaperTrading).Value;
+
+        // EvaluateExitRulesAsync es llamado con posición abierta en ticks 1, 2, 3 y 4.
+        // tick 1 (50000): hold, tick 2 (49000): hold, tick 3 (47000 = -6% → SL): salida
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-            Arg.Any<Price>(), Arg.Any<CancellationToken>())
-            .Returns(Result<Order?, DomainError>.Success(null));
+            Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+            Arg.Any<decimal?>(), Arg.Any<string?>())
+            .Returns(
+                Result<Order?, DomainError>.Success(null),
+                Result<Order?, DomainError>.Success(null),
+                Result<Order?, DomainError>.Success(sellOrder));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
 
@@ -241,10 +252,19 @@ public sealed class BacktestEngineTests
         _ruleEngine.EvaluateAsync(strategy, buySignal, Arg.Any<CancellationToken>())
             .Returns(Result<Order?, DomainError>.Success(order));
 
+        var sellOrder = Order.Create(
+            strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
+            orderQty, TradingMode.PaperTrading).Value;
+
+        // EvaluateExitRulesAsync es llamado en ticks 1 y 2 (posición abierta desde tick 0).
+        // tick 1 (51000): hold, tick 2 (53000 = +6% → TP): salida
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-            Arg.Any<Price>(), Arg.Any<CancellationToken>())
-            .Returns(Result<Order?, DomainError>.Success(null));
+            Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+            Arg.Any<decimal?>(), Arg.Any<string?>())
+            .Returns(
+                Result<Order?, DomainError>.Success(null),
+                Result<Order?, DomainError>.Success(sellOrder));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
 
@@ -303,7 +323,8 @@ public sealed class BacktestEngineTests
             .Returns(Result<Order?, DomainError>.Success(order));
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-            Arg.Any<Price>(), Arg.Any<CancellationToken>())
+            Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+            Arg.Any<decimal?>(), Arg.Any<string?>())
             .Returns(Result<Order?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -362,14 +383,22 @@ public sealed class BacktestEngineTests
 
         _ruleEngine.EvaluateAsync(strategy, buySignal, Arg.Any<CancellationToken>())
             .Returns(Result<Order?, DomainError>.Success(order));
+
+        var sellOrder = Order.Create(
+            strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
+            orderQty, TradingMode.PaperTrading).Value;
+
+        // EvaluateExitRulesAsync se llama en tick 1 (posición abierta desde tick 0).
+        // tick 1 (48000 = -4% → por debajo del stopLossPercent=2%): cierra la posición
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-            Arg.Any<Price>(), Arg.Any<CancellationToken>())
-            .Returns(Result<Order?, DomainError>.Success(null));
+            Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+            Arg.Any<decimal?>(), Arg.Any<string?>())
+            .Returns(Result<Order?, DomainError>.Success(sellOrder));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
 
-        // Solo 1 trade: el segundo fue bloqueado por el circuit breaker diario
+        // Solo 1 trade: el segundo fue bloqueado porque la pérdida diaria supera maxDailyLossUsdt=3
         result.TotalTrades.Should().Be(1,
             "el segundo trade debe ser bloqueado porque la pérdida diaria supera maxDailyLossUsdt=3");
     }
@@ -423,7 +452,8 @@ public sealed class BacktestEngineTests
                 .Returns(Result<Order?, DomainError>.Success(ord));
             mockRe.EvaluateExitRulesAsync(
                 Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
-                Arg.Any<Price>(), Arg.Any<CancellationToken>())
+                Arg.Any<Price>(), Arg.Any<CancellationToken>(),
+                Arg.Any<decimal?>(), Arg.Any<string?>())
                 .Returns(Result<Order?, DomainError>.Success(null));
 
             return _engine.RunAsync(strat, mockTs, mockRe, klines).GetAwaiter().GetResult().TotalInvested;

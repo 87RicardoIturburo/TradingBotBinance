@@ -9,11 +9,12 @@ namespace TradingBot.API.Controllers;
 [Authorize]
 [Route("api/[controller]")]
 public sealed class SystemController(
-    IStrategyEngine    strategyEngine,
-    IMarketDataService marketDataService,
-    ICacheService      cacheService,
-    IAccountService    accountService,
-    IRiskManager       riskManager) : ControllerBase
+    IStrategyEngine       strategyEngine,
+    IMarketDataService    marketDataService,
+    ICacheService         cacheService,
+    IAccountService       accountService,
+    IRiskManager          riskManager,
+    IGlobalCircuitBreaker circuitBreaker) : ControllerBase
 {
     /// <summary>Devuelve el estado del bot y de todas las estrategias activas.</summary>
     [HttpGet("status")]
@@ -103,5 +104,25 @@ public sealed class SystemController(
 
         return Results.Ok(new PortfolioExposureDto(
             totalLong, totalShort, net, symbolDtos, isDrawdown, drawdownPct));
+    }
+
+    /// <summary>Devuelve el estado del circuit breaker global.</summary>
+    [HttpGet("circuit-breaker")]
+    public IResult GetCircuitBreakerStatus()
+    {
+        return Results.Ok(new
+        {
+            circuitBreaker.IsOpen,
+            circuitBreaker.TripReason,
+            circuitBreaker.TrippedAt
+        });
+    }
+
+    /// <summary>Resetea el circuit breaker global para reanudar el trading.</summary>
+    [HttpPost("circuit-breaker/reset")]
+    public IResult ResetCircuitBreaker()
+    {
+        circuitBreaker.Reset();
+        return Results.Ok(new { message = "Circuit breaker reseteado" });
     }
 }

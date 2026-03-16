@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -25,6 +27,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 {
     private readonly IServiceScopeFactory                             _scopeFactory;
     private readonly IMarketDataService                               _marketDataService;
+    private readonly IGlobalCircuitBreaker                            _circuitBreaker;
+    private readonly TradingMetrics                                   _metrics;
     private readonly ILogger<StrategyEngine>                          _logger;
     private readonly ConcurrentDictionary<Guid, StrategyRunnerState>  _runners = new();
     /// <summary>Semáforo por estrategia para serializar el procesamiento de ticks y evitar órdenes duplicadas.</summary>
@@ -37,10 +41,14 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     public StrategyEngine(
         IServiceScopeFactory scopeFactory,
         IMarketDataService   marketDataService,
+        IGlobalCircuitBreaker circuitBreaker,
+        TradingMetrics       metrics,
         ILogger<StrategyEngine> logger)
     {
         _scopeFactory      = scopeFactory;
         _marketDataService = marketDataService;
+        _circuitBreaker    = circuitBreaker;
+        _metrics           = metrics;
         _logger            = logger;
     }
 
@@ -199,14 +207,21 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         // Evaluar posiciones abiertas inmediatamente al arrancar
         await EvaluateOpenPositionsOnStartupAsync(config, cancellationToken);
 
-        // Suscribir al WebSocket
+        // Suscribir al WebSocket — ticker para SL/TP y klines para indicadores
         await _marketDataService.SubscribeAsync(config.Symbol, cancellationToken);
+        await _marketDataService.SubscribeKlinesAsync(config.Symbol, config.Timeframe, cancellationToken);
 
         // Crear y arrancar el runner
         var cts    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var runner = new StrategyRunnerState(config.Id, config.Name, config.Symbol, tradingStrategy, cts, runnerScope);
         runner.CachedConfig    = config;
-        runner.ProcessingTask = Task.Run(() => ProcessTicksLoopAsync(runner), cts.Token);
+        runner.ProcessingTask = Task.Run(async () =>
+        {
+            // Dos loops en paralelo: kline (indicadores + señales) + ticker (SL/TP + dashboard)
+            var klineTask = ProcessKlinesLoopAsync(runner);
+            var tickTask  = ProcessTicksLoopAsync(runner);
+            await Task.WhenAll(klineTask, tickTask);
+        }, cts.Token);
 
         _runners[config.Id] = runner;
 
@@ -330,6 +345,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             }
 
             var currentPrice = priceResult.Value;
+            var orderRepo = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
 
             // ATR no disponible al reiniciar (indicadores no precalentados aún); usar stop-loss porcentual
             foreach (var position in openPositions)
@@ -341,6 +357,17 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
                 if (exitResult.IsSuccess && exitResult.Value is { } exitOrder)
                 {
+                    // Verificar idempotencia: no duplicar orden de cierre si ya hay una pendiente
+                    var hasPending = await orderRepo.HasPendingCloseOrderAsync(
+                        config.Id, exitOrder.Symbol, exitOrder.Side, cancellationToken);
+                    if (hasPending)
+                    {
+                        _logger.LogInformation(
+                            "Orden de cierre duplicada evitada al reiniciar para posición {PosId} ({Side} {Symbol})",
+                            position.Id, exitOrder.Side, exitOrder.Symbol.Value);
+                        continue;
+                    }
+
                     var placeResult = await orderService.PlaceOrderAsync(exitOrder, cancellationToken);
                     if (placeResult.IsSuccess)
                     {
@@ -423,7 +450,145 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         }
     }
 
-    // ── Loop principal por estrategia ──────────────────────────────────────
+    // ── Loop de klines (indicadores + señales) ──────────────────────────────
+
+    /// <summary>
+    /// Consume velas cerradas del WebSocket y las procesa con <see cref="ITradingStrategy.ProcessKlineAsync"/>.
+    /// Las señales generadas aquí son las que producen órdenes de entrada.
+    /// </summary>
+    private async Task ProcessKlinesLoopAsync(StrategyRunnerState runner)
+    {
+        var token = runner.CancellationTokenSource.Token;
+
+        _logger.LogDebug("Kline loop iniciado para '{Name}' ({Id})", runner.StrategyName, runner.StrategyId);
+
+        try
+        {
+            await foreach (var kline in _marketDataService.GetKlineStreamAsync(runner.Symbol, token))
+            {
+                if (token.IsCancellationRequested) break;
+                if (_isPaused || _circuitBreaker.IsOpen) continue;
+
+                try
+                {
+                    var strategyLock = _strategyLocks.GetOrAdd(runner.StrategyId, _ => new SemaphoreSlim(1, 1));
+                    await strategyLock.WaitAsync(token);
+                    try
+                    {
+                        await ProcessSingleKlineAsync(runner, kline, token);
+                    }
+                    finally
+                    {
+                        strategyLock.Release();
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Error procesando kline para '{Name}' ({Id})",
+                        runner.StrategyName, runner.StrategyId);
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* shutdown normal */ }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Kline loop terminado inesperadamente para '{Name}' ({Id})",
+                runner.StrategyName, runner.StrategyId);
+        }
+        finally
+        {
+            _logger.LogDebug("Kline loop finalizado para '{Name}' ({Id})", runner.StrategyName, runner.StrategyId);
+        }
+    }
+
+    private async Task ProcessSingleKlineAsync(
+        StrategyRunnerState runner,
+        KlineClosedEvent kline,
+        CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+
+        // Procesar vela cerrada → indicadores + señal
+        var signalResult = await runner.Strategy.ProcessKlineAsync(kline, cancellationToken);
+        if (signalResult.IsFailure || signalResult.Value is null) return;
+
+        var signal = signalResult.Value;
+        runner.SignalsGenerated++;
+        _metrics.RecordSignalGenerated(runner.StrategyName, runner.Symbol.Value, signal.Direction.ToString());
+
+        using var scope  = _scopeFactory.CreateScope();
+        var ruleEngine   = scope.ServiceProvider.GetRequiredService<IRuleEngine>();
+        var orderService = scope.ServiceProvider.GetRequiredService<IOrderService>();
+        var positionRepo = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
+        var notifier     = scope.ServiceProvider.GetService<ITradingNotifier>();
+
+        if (notifier is not null)
+            await notifier.NotifySignalGeneratedAsync(signal, cancellationToken);
+
+        var strategy = runner.CachedConfig;
+        if (strategy is null || !strategy.IsActive) return;
+
+        // No abrir posición duplicada
+        var existingPositions = await positionRepo.GetOpenByStrategyIdAsync(runner.StrategyId, cancellationToken);
+        if (existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == signal.Direction))
+            return;
+
+        var orderResult = await ruleEngine.EvaluateAsync(strategy, signal, cancellationToken);
+        if (orderResult.IsFailure || orderResult.Value is null) return;
+
+        var order = orderResult.Value;
+
+        // Position sizing con ATR si está habilitado
+        if (strategy.RiskConfig.UseAtrSizing && signal.AtrValue is > 0)
+        {
+            var accountService = scope.ServiceProvider.GetRequiredService<IAccountService>();
+            var balanceResult = await accountService.GetAvailableBalanceAsync("USDT", cancellationToken);
+            if (balanceResult.IsSuccess)
+            {
+                var sizing = PositionSizer.Calculate(
+                    balanceResult.Value,
+                    strategy.RiskConfig.RiskPercentPerTrade / 100m,
+                    signal.AtrValue.Value,
+                    strategy.RiskConfig.AtrMultiplier,
+                    signal.CurrentPrice.Value,
+                    strategy.RiskConfig.MaxOrderAmountUsdt);
+
+                var adjustedQty = Quantity.Create(sizing.QuantityBaseAsset);
+                if (adjustedQty.IsSuccess)
+                {
+                    var adjustedOrder = Order.Create(
+                        order.StrategyId, order.Symbol, order.Side, order.Type,
+                        adjustedQty.Value, order.Mode, order.LimitPrice, order.StopPrice,
+                        estimatedPrice: signal.CurrentPrice);
+
+                    if (adjustedOrder.IsSuccess)
+                        order = adjustedOrder.Value;
+                }
+            }
+        }
+
+        var placeResult = await orderService.PlaceOrderAsync(order, cancellationToken);
+        if (placeResult.IsSuccess)
+        {
+            runner.OrdersPlaced++;
+            _metrics.RecordTickToOrderLatency(sw.Elapsed.TotalMilliseconds, runner.Symbol.Value);
+            _logger.LogInformation(
+                "Orden de entrada (kline) por '{Name}': {Side} {Qty} {Symbol}",
+                runner.StrategyName, order.Side, order.Quantity.Value, order.Symbol.Value);
+
+            if (notifier is not null)
+                await notifier.NotifyOrderExecutedAsync(
+                    new OrderPlacedEvent(
+                        order.Id, order.StrategyId, order.Symbol,
+                        order.Side, order.Type, order.Quantity,
+                        order.LimitPrice, order.IsPaperTrade),
+                    cancellationToken);
+        }
+    }
+
+    // ── Loop principal de ticks (SL/TP + dashboard) ───────────────────────
 
     private async Task ProcessTicksLoopAsync(StrategyRunnerState runner)
     {
@@ -543,20 +708,16 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         MarketTickReceivedEvent tick,
         CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
+
         runner.TicksProcessed++;
         runner.LastTickAt = tick.Timestamp;
+        _metrics.RecordTickProcessed(runner.Symbol.Value);
 
-        // 1. ITradingStrategy → genera señal si los indicadores lo indican
-        var signalResult = await runner.Strategy.ProcessTickAsync(tick, cancellationToken);
-        if (signalResult.IsFailure)
-        {
-            _logger.LogWarning(
-                "Error en ProcessTick para '{Name}': {Error}",
-                runner.StrategyName, signalResult.Error.Message);
-            return;
-        }
+        // Circuit breaker global — si está abierto, no procesar
+        if (_circuitBreaker.IsOpen) return;
 
-        // 2. Usar un scope nuevo para los servicios scoped (repos, UoW)
+        // Scope para servicios scoped
         using var scope       = _scopeFactory.CreateScope();
         var ruleEngine        = scope.ServiceProvider.GetRequiredService<IRuleEngine>();
         var orderService      = scope.ServiceProvider.GetRequiredService<IOrderService>();
@@ -567,107 +728,13 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         if (notifier is not null)
             await notifier.NotifyMarketTickAsync(tick, cancellationToken);
 
-        // Usar config cacheada en lugar de consultar la BD en cada tick.
-        // Se recarga solo en ReloadStrategyAsync (hot-reload).
         var strategy = runner.CachedConfig;
         if (strategy is null || !strategy.IsActive) return;
 
-        // 3. Si hay señal → evaluar reglas de entrada
-        if (signalResult.Value is { } signal)
-        {
-            runner.SignalsGenerated++;
-
-            if (notifier is not null)
-                await notifier.NotifySignalGeneratedAsync(signal, cancellationToken);
-
-            // P1-1: No abrir posición duplicada en el mismo símbolo/dirección
-            var existingPositions = await positionRepo.GetOpenByStrategyIdAsync(
-                runner.StrategyId, cancellationToken);
-            var alreadyHasPosition = existingPositions
-                .Any(p => p.Symbol == signal.Symbol && p.Side == signal.Direction);
-
-            if (alreadyHasPosition)
-            {
-                _logger.LogDebug(
-                    "Señal {Side} descartada para '{Name}': ya existe posición abierta {Side} en {Symbol}",
-                    signal.Direction, runner.StrategyName, signal.Direction, signal.Symbol.Value);
-            }
-            else
-            {
-                var orderResult = await ruleEngine.EvaluateAsync(strategy, signal, cancellationToken);
-                if (orderResult.IsSuccess && orderResult.Value is { } order)
-                {
-                    // Position sizing dinámico con ATR si está habilitado
-                    if (strategy.RiskConfig.UseAtrSizing && signal.AtrValue is > 0)
-                    {
-                        var accountService = scope.ServiceProvider.GetRequiredService<IAccountService>();
-                        var balanceResult = await accountService.GetAvailableBalanceAsync("USDT", cancellationToken);
-                        if (balanceResult.IsSuccess)
-                        {
-                            var sizing = PositionSizer.Calculate(
-                                balanceResult.Value,
-                                strategy.RiskConfig.RiskPercentPerTrade / 100m,
-                                signal.AtrValue.Value,
-                                strategy.RiskConfig.AtrMultiplier,
-                                signal.CurrentPrice.Value,
-                                strategy.RiskConfig.MaxOrderAmountUsdt);
-
-                            // Recrear la orden con la cantidad ajustada por ATR
-                            var adjustedQty = Quantity.Create(sizing.QuantityBaseAsset);
-                            if (adjustedQty.IsSuccess)
-                            {
-                                var adjustedOrder = Order.Create(
-                                    order.StrategyId, order.Symbol, order.Side, order.Type,
-                                    adjustedQty.Value, order.Mode, order.LimitPrice, order.StopPrice,
-                                    estimatedPrice: signal.CurrentPrice);
-
-                                if (adjustedOrder.IsSuccess)
-                                {
-                                    order = adjustedOrder.Value;
-                                    _logger.LogInformation(
-                                        "ATR sizing aplicado para '{Name}': {AmountUsdt:F2} USDT (ATR={Atr:F4}, SL distance={StopDist:F2})",
-                                        runner.StrategyName, sizing.AmountUsdt, signal.AtrValue.Value, sizing.StopDistancePrice);
-                                }
-                            }
-                        }
-                    }
-
-                    var placeResult = await orderService.PlaceOrderAsync(order, cancellationToken);
-                    if (placeResult.IsSuccess)
-                    {
-                        runner.OrdersPlaced++;
-                        _logger.LogInformation(
-                            "Orden colocada por '{Name}': {Side} {Qty} {Symbol}",
-                            runner.StrategyName, order.Side, order.Quantity.Value, order.Symbol.Value);
-
-                        if (notifier is not null)
-                            await notifier.NotifyOrderExecutedAsync(
-                                new OrderPlacedEvent(
-                                    order.Id, order.StrategyId, order.Symbol,
-                                    order.Side, order.Type, order.Quantity,
-                                    order.LimitPrice, order.IsPaperTrade),
-                                cancellationToken);
-                    }
-                    else
-                    {
-                        _logger.LogWarning(
-                            "Orden rechazada para '{Name}': {Error}",
-                            runner.StrategyName, placeResult.Error.Message);
-
-                        if (notifier is not null)
-                            await notifier.NotifyAlertAsync(
-                                $"Orden rechazada para '{runner.StrategyName}': {placeResult.Error.Message}",
-                                cancellationToken);
-                    }
-                }
-            }
-        }
-
-        // 4. Evaluar reglas de salida para posiciones abiertas
+        // Ticks ahora solo evalúan reglas de salida (SL/TP) para posiciones abiertas
         var openPositions = await positionRepo.GetOpenByStrategyIdAsync(
             runner.StrategyId, cancellationToken);
 
-        // Obtener ATR actual del runner para stop-loss dinámico
         var currentAtr = runner.Strategy.CurrentAtrValue;
 
         foreach (var position in openPositions)
@@ -681,10 +748,23 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
             if (exitResult.IsSuccess && exitResult.Value is { } exitOrder)
             {
+                // Verificar idempotencia: no duplicar orden de cierre si ya hay una pendiente
+                var orderRepo = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
+                var hasPending = await orderRepo.HasPendingCloseOrderAsync(
+                    runner.StrategyId, exitOrder.Symbol, exitOrder.Side, cancellationToken);
+                if (hasPending)
+                {
+                    _logger.LogDebug(
+                        "Orden de cierre duplicada evitada para posición {PosId} ({Side} {Symbol})",
+                        position.Id, exitOrder.Side, exitOrder.Symbol.Value);
+                    continue;
+                }
+
                 var placeResult = await orderService.PlaceOrderAsync(exitOrder, cancellationToken);
                 if (placeResult.IsSuccess)
                 {
                     runner.OrdersPlaced++;
+                    _metrics.RecordTickToOrderLatency(sw.Elapsed.TotalMilliseconds, runner.Symbol.Value);
                     _logger.LogInformation(
                         "Orden de salida colocada por '{Name}': {Side} {Symbol} (posición {PosId})",
                         runner.StrategyName, exitOrder.Side, exitOrder.Symbol.Value, position.Id);

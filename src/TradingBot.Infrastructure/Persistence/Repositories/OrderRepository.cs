@@ -70,4 +70,17 @@ internal sealed class OrderRepository(TradingBotDbContext context)
             .AsNoTracking()
             .Where(o => SyncStatuses.Contains(o.Status))
             .ToListAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<bool> HasPendingCloseOrderAsync(
+        Guid strategyId,
+        Symbol symbol,
+        OrderSide exitSide,
+        CancellationToken cancellationToken = default)
+        => await DbSet
+            .AnyAsync(o => o.StrategyId == strategyId
+                        && o.Symbol == symbol
+                        && o.Side == exitSide
+                        && !o.IsTerminal,
+                cancellationToken);
 }

@@ -43,6 +43,8 @@ internal sealed class PositionConfiguration : IEntityTypeConfiguration<Position>
 
         builder.Property(x => x.IsOpen).IsRequired();
         builder.Property(x => x.RealizedPnL);     // decimal? — sin conversión
+        builder.Property(x => x.EntryFee).HasDefaultValue(0m);
+        builder.Property(x => x.ExitFee).HasDefaultValue(0m);
 
         builder.Property(x => x.Version).IsConcurrencyToken();
         builder.Property(x => x.OpenedAt).IsRequired();

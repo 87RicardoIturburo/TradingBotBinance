@@ -32,4 +32,14 @@ public interface IOrderRepository : IRepository<Order, Guid>
     /// </summary>
     Task<IReadOnlyList<Order>> GetPendingSyncAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Verifica si ya existe una orden de cierre no terminal para la estrategia,
+    /// símbolo y dirección indicados. Evita duplicar órdenes de cierre al reiniciar.
+    /// </summary>
+    Task<bool> HasPendingCloseOrderAsync(
+        Guid strategyId,
+        Symbol symbol,
+        OrderSide exitSide,
+        CancellationToken cancellationToken = default);
 }

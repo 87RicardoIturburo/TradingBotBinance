@@ -21,6 +21,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
     public Symbol          Symbol           { get; private set; } = null!;
     public StrategyStatus  Status           { get; private set; }
     public TradingMode     Mode             { get; private set; }
+    public CandleInterval  Timeframe        { get; private set; }
     public RiskConfig      RiskConfig       { get; private set; } = null!;
     public DateTimeOffset  CreatedAt        { get; private set; }
     public DateTimeOffset  UpdatedAt        { get; private set; }
@@ -42,7 +43,8 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         Symbol      symbol,
         TradingMode mode,
         RiskConfig  riskConfig,
-        string?     description = null)
+        string?     description = null,
+        CandleInterval timeframe = CandleInterval.OneMinute)
     {
         if (string.IsNullOrWhiteSpace(name))
             return Result<TradingStrategy, DomainError>.Failure(
@@ -60,6 +62,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
             Symbol      = symbol,
             Status      = StrategyStatus.Inactive,
             Mode        = mode,
+            Timeframe   = timeframe,
             RiskConfig  = riskConfig,
             CreatedAt   = now,
             UpdatedAt   = now

@@ -22,18 +22,22 @@ public sealed class Position : AggregateRoot<Guid>
     public Quantity       Quantity     { get; private set; } = null!;
     public bool           IsOpen       { get; private set; }
     public decimal?       RealizedPnL  { get; private set; }
+    /// <summary>Comisión pagada al abrir la posición (en quote asset).</summary>
+    public decimal        EntryFee     { get; private set; }
+    /// <summary>Comisión pagada al cerrar la posición (en quote asset).</summary>
+    public decimal        ExitFee      { get; private set; }
     public DateTimeOffset OpenedAt     { get; private set; }
     public DateTimeOffset? ClosedAt    { get; private set; }
 
     /// <summary>
-    /// P&amp;L no realizado calculado sobre <see cref="CurrentPrice"/>.
-    /// Long:  (Current - Entry) * Qty
-    /// Short: (Entry - Current) * Qty
+    /// P&amp;L no realizado calculado sobre <see cref="CurrentPrice"/>, descontando fees.
+    /// Incluye <see cref="EntryFee"/> ya pagada y una estimación de exit fee igual a <see cref="EntryFee"/>.
     /// </summary>
     public decimal UnrealizedPnL => IsOpen
-        ? Side == OrderSide.Buy
+        ? (Side == OrderSide.Buy
             ? (CurrentPrice.Value - EntryPrice.Value) * Quantity.Value
-            : (EntryPrice.Value - CurrentPrice.Value) * Quantity.Value
+            : (EntryPrice.Value - CurrentPrice.Value) * Quantity.Value)
+          - EntryFee - EntryFee // Estimar exit fee igual a entry fee
         : 0m;
 
     /// <summary>Porcentaje de retorno no realizado sobre el capital invertido.</summary>
@@ -49,7 +53,8 @@ public sealed class Position : AggregateRoot<Guid>
         Symbol     symbol,
         OrderSide  side,
         Price      entryPrice,
-        Quantity   quantity)
+        Quantity   quantity,
+        decimal    entryFee = 0m)
     {
         var now = DateTimeOffset.UtcNow;
         return new Position(Guid.NewGuid())
@@ -62,6 +67,7 @@ public sealed class Position : AggregateRoot<Guid>
             HighestPriceSinceEntry = entryPrice,
             LowestPriceSinceEntry  = entryPrice,
             Quantity               = quantity,
+            EntryFee               = entryFee,
             IsOpen                 = true,
             OpenedAt               = now
         };
@@ -79,17 +85,21 @@ public sealed class Position : AggregateRoot<Guid>
             LowestPriceSinceEntry = currentPrice;
     }
 
-    /// <summary>Cierra la posición al precio indicado y devuelve el P&amp;L realizado.</summary>
-    public Result<decimal, DomainError> Close(Price closePrice)
+    /// <summary>Cierra la posición al precio indicado y devuelve el P&amp;L realizado neto de fees.</summary>
+    public Result<decimal, DomainError> Close(Price closePrice, decimal exitFee = 0m)
     {
         if (!IsOpen)
             return Result<decimal, DomainError>.Failure(
                 DomainError.InvalidOperation("La posición ya está cerrada."));
 
         CurrentPrice = closePrice;
-        RealizedPnL  = Side == OrderSide.Buy
+        ExitFee      = exitFee;
+
+        var grossPnL = Side == OrderSide.Buy
             ? (closePrice.Value - EntryPrice.Value) * Quantity.Value
             : (EntryPrice.Value - closePrice.Value) * Quantity.Value;
+
+        RealizedPnL = grossPnL - EntryFee - ExitFee;
 
         IsOpen   = false;
         ClosedAt = DateTimeOffset.UtcNow;

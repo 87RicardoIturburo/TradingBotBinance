@@ -1,7 +1,9 @@
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Application.Services;
 using TradingBot.Core.Common;
@@ -24,19 +26,34 @@ public sealed class OrderServiceTests
     private readonly ISpotOrderExecutor  _spotExecutor = Substitute.For<ISpotOrderExecutor>();
     private readonly IAccountService     _accountService = Substitute.For<IAccountService>();
     private readonly IExchangeInfoService _exchangeInfo = Substitute.For<IExchangeInfoService>();
+    private readonly IOrderExecutionLock _executionLock = Substitute.For<IOrderExecutionLock>();
+    private readonly IGlobalCircuitBreaker _circuitBreaker = Substitute.For<IGlobalCircuitBreaker>();
+    private readonly TradingMetrics        _metrics;
     private readonly OrderService        _sut;
 
     public OrderServiceTests()
     {
+        var meterFactory = Substitute.For<IMeterFactory>();
+        meterFactory.Create(Arg.Any<MeterOptions>()).Returns(new Meter("TradingBot.Test"));
+        _metrics = new TradingMetrics(meterFactory);
+
         // By default, exchange filters are unavailable (graceful degradation)
         _exchangeInfo.GetFiltersAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Result<ExchangeSymbolFilters, DomainError>.Failure(
                 DomainError.ExternalService("Filtros no disponibles")));
 
+        // Execution lock always succeeds immediately
+        _executionLock.AcquireAsync(Arg.Any<string>(), Arg.Any<CancellationToken>(), Arg.Any<TimeSpan?>())
+            .Returns(Substitute.For<IDisposable>());
+
+        // Circuit breaker closed by default
+        _circuitBreaker.IsOpen.Returns(false);
+
         _sut = new OrderService(
             _orderRepo, _positionRepo, _unitOfWork,
             _riskManager, _marketData, _spotExecutor,
-            _accountService, _exchangeInfo,
+            _accountService, _exchangeInfo, _executionLock,
+            _circuitBreaker, _metrics,
             Options.Create(new TradingFeeConfig()),
             NullLogger<OrderService>.Instance);
     }

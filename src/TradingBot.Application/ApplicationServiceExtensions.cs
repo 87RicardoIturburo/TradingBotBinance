@@ -73,8 +73,15 @@ public static class ApplicationServiceExtensions
         // Servicios de dominio
         services.AddScoped<IStrategyConfigService, StrategyConfigService>();
         services.AddScoped<IOrderService, OrderService>();
+        services.AddScoped<PortfolioRiskManager>();
         services.AddScoped<IRiskManager, RiskManager>();
         services.AddScoped<IRuleEngine, RuleEngine>();
+
+        // Lock de ejecución de órdenes — singleton (semáforo global por quote asset)
+        services.AddSingleton<IOrderExecutionLock, OrderExecutionLock>();
+
+        // Circuit breaker global — singleton (estado compartido entre todos los servicios)
+        services.AddSingleton<IGlobalCircuitBreaker, GlobalCircuitBreaker>();
 
         // Estrategia por defecto (transient para que cada instancia tenga su estado)
         services.AddTransient<ITradingStrategy, DefaultTradingStrategy>();

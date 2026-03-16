@@ -38,6 +38,9 @@ public sealed record RiskConfig
     /// <summary>Porcentaje de retroceso desde el máximo para activar el trailing stop (ej: 1.5 = 1.5%). Solo aplica si <see cref="UseTrailingStop"/> es <c>true</c>.</summary>
     public decimal TrailingStopPercent { get; }
 
+    /// <summary>Spread máximo bid-ask permitido para órdenes Market (ej: 1.0 = 1%). Si el spread supera este valor, la orden se rechaza.</summary>
+    public decimal MaxSpreadPercent { get; }
+
     private RiskConfig(
         decimal maxOrderAmountUsdt,
         decimal maxDailyLossUsdt,
@@ -48,7 +51,8 @@ public sealed record RiskConfig
         decimal riskPercentPerTrade,
         decimal atrMultiplier,
         bool useTrailingStop,
-        decimal trailingStopPercent)
+        decimal trailingStopPercent,
+        decimal maxSpreadPercent)
     {
         MaxOrderAmountUsdt   = maxOrderAmountUsdt;
         MaxDailyLossUsdt     = maxDailyLossUsdt;
@@ -60,6 +64,7 @@ public sealed record RiskConfig
         AtrMultiplier        = atrMultiplier;
         UseTrailingStop      = useTrailingStop;
         TrailingStopPercent  = trailingStopPercent;
+        MaxSpreadPercent     = maxSpreadPercent;
     }
 
     public static Result<RiskConfig, DomainError> Create(
@@ -72,7 +77,8 @@ public sealed record RiskConfig
         decimal riskPercentPerTrade = 1m,
         decimal atrMultiplier = 2m,
         bool useTrailingStop = false,
-        decimal trailingStopPercent = 1.5m)
+        decimal trailingStopPercent = 1.5m,
+        decimal maxSpreadPercent = 1.0m)
     {
         if (maxOrderAmountUsdt <= 0)
             return Result<RiskConfig, DomainError>.Failure(
@@ -114,7 +120,8 @@ public sealed record RiskConfig
             riskPercentPerTrade,
             atrMultiplier,
             useTrailingStop,
-            trailingStopPercent));
+            trailingStopPercent,
+            maxSpreadPercent));
     }
 
     /// <summary>Configuración conservadora por defecto: 100 USDT/orden, SL 2%, TP 4%.</summary>

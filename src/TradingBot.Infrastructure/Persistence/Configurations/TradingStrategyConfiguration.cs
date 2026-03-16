@@ -39,6 +39,11 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
             .HasConversion<int>()
             .IsRequired();
 
+        builder.Property(x => x.Timeframe)
+            .HasConversion<int>()
+            .HasDefaultValue(CandleInterval.OneMinute)
+            .IsRequired();
+
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.UpdatedAt).IsRequired();
 
@@ -54,7 +59,8 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
                     rc.MaxOrderAmountUsdt, rc.MaxDailyLossUsdt,
                     rc.StopLossPercent.Value, rc.TakeProfitPercent.Value,
                     rc.MaxOpenPositions,
-                    rc.UseAtrSizing, rc.RiskPercentPerTrade, rc.AtrMultiplier), JsonOptions),
+                    rc.UseAtrSizing, rc.RiskPercentPerTrade, rc.AtrMultiplier,
+                    rc.MaxSpreadPercent), JsonOptions),
                 json => DeserializeRiskConfig(json));
 
         // ── Indicators → columna jsonb via campo _indicators ────────────────
@@ -136,7 +142,8 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         return RiskConfig.Create(
             d.MaxOrderAmountUsdt, d.MaxDailyLossUsdt,
             d.StopLossPercent, d.TakeProfitPercent, d.MaxOpenPositions,
-            d.UseAtrSizing, d.RiskPercentPerTrade, d.AtrMultiplier).Value;
+            d.UseAtrSizing, d.RiskPercentPerTrade, d.AtrMultiplier,
+            maxSpreadPercent: d.MaxSpreadPercent).Value;
     }
 
     private static List<IndicatorConfig> DeserializeIndicators(string json)
@@ -154,7 +161,8 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         int     MaxOpenPositions,
         bool    UseAtrSizing = false,
         decimal RiskPercentPerTrade = 1m,
-        decimal AtrMultiplier = 2m);
+        decimal AtrMultiplier = 2m,
+        decimal MaxSpreadPercent = 1.0m);
 
     private sealed record IndicatorConfigDto(
         IndicatorType                  Type,

@@ -86,36 +86,52 @@ internal sealed class RuleEngine : IRuleEngine
                 ? basePrice - stopDistance
                 : basePrice + stopDistance;
 
-            var triggered = position.Side == OrderSide.Buy
-                ? currentPrice.Value <= stopLossPrice
-                : currentPrice.Value >= stopLossPrice;
+            // El stop ATR es válido solo si el precio resultante es positivo (para Buy)
+            // o razonable (para Sell). Un ATR excesivamente grande produce precios negativos.
+            var isAtrStopValid = position.Side == OrderSide.Buy
+                ? stopLossPrice > 0
+                : stopLossPrice > 0 && stopLossPrice < basePrice * 10m;
 
-            if (triggered)
+            if (isAtrStopValid)
+            {
+                var triggered = position.Side == OrderSide.Buy
+                    ? currentPrice.Value <= stopLossPrice
+                    : currentPrice.Value >= stopLossPrice;
+
+                if (triggered)
+                {
+                    _logger.LogWarning(
+                        "Stop-loss ATR activado para posición {PositionId}: precio {Price} cruzó SL {StopLoss:F2} (ATR={Atr:F4} × {Mult}, base={BasePrice:F2}, trailing={IsTrailing})",
+                        position.Id, currentPrice.Value, stopLossPrice, atrValue.Value, risk.AtrMultiplier, basePrice, risk.UseTrailingStop);
+
+                    var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                    var orderResult = Order.Create(
+                        strategy.Id, position.Symbol, exitSide,
+                        OrderType.Market, position.Quantity, strategy.Mode,
+                        estimatedPrice: currentPrice);
+
+                    return Task.FromResult(
+                        orderResult.Match<Result<Order?, DomainError>>(
+                            order => Result<Order?, DomainError>.Success(order),
+                            error => Result<Order?, DomainError>.Failure(error)));
+                }
+            }
+            else
             {
                 _logger.LogWarning(
-                    "Stop-loss ATR activado para posición {PositionId}: precio {Price} cruzó SL {StopLoss:F2} (ATR={Atr:F4} × {Mult}, base={BasePrice:F2}, trailing={IsTrailing})",
-                    position.Id, currentPrice.Value, stopLossPrice, atrValue.Value, risk.AtrMultiplier, basePrice, risk.UseTrailingStop);
-
-                var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-                var orderResult = Order.Create(
-                    strategy.Id, position.Symbol, exitSide,
-                    OrderType.Market, position.Quantity, strategy.Mode,
-                    estimatedPrice: currentPrice);
-
-                return Task.FromResult(
-                    orderResult.Match<Result<Order?, DomainError>>(
-                        order => Result<Order?, DomainError>.Success(order),
-                        error => Result<Order?, DomainError>.Failure(error)));
+                    "Stop ATR inválido para posición {PositionId}: stopDistance={Stop:F2} > basePrice={Base:F2}. Aplicando SL porcentual como respaldo.",
+                    position.Id, stopDistance, basePrice);
             }
         }
-        else
+
+        // Stop-loss porcentual: se evalúa siempre que el ATR no disparó (o cuando UseAtrSizing=false)
+        // Actúa como red de seguridad ante ATR desproporcionados o volatilidad extrema.
         {
-            // Stop-loss porcentual clásico
             var pnlPercent = position.UnrealizedPnLPercent;
             if (pnlPercent <= -(decimal)risk.StopLossPercent)
             {
                 _logger.LogWarning(
-                    "Stop-loss activado para posición {PositionId}: PnL {PnL:F2}% <= -{StopLoss:F2}%",
+                    "Stop-loss porcentual activado para posición {PositionId}: PnL {PnL:F2}% <= -{StopLoss:F2}%",
                     position.Id, pnlPercent, risk.StopLossPercent.Value);
 
                 var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;

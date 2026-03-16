@@ -1,4 +1,5 @@
 using TradingBot.Core.Common;
+using TradingBot.Core.Enums;
 using TradingBot.Core.Events;
 using TradingBot.Core.ValueObjects;
 
@@ -6,7 +7,7 @@ namespace TradingBot.Core.Interfaces.Services;
 
 /// <summary>
 /// Servicio de datos de mercado en tiempo real.
-/// Mantiene la conexión WebSocket con Binance y distribuye ticks.
+/// Mantiene la conexión WebSocket con Binance y distribuye ticks y velas.
 /// La implementación en Infrastructure gestiona la reconexión con backoff exponencial.
 /// </summary>
 public interface IMarketDataService
@@ -14,11 +15,17 @@ public interface IMarketDataService
     /// <summary>Indica si la conexión WebSocket está activa.</summary>
     bool IsConnected { get; }
 
-    /// <summary>Suscribe al stream de precios de un símbolo.</summary>
+    /// <summary>Suscribe al stream de precios (ticker) de un símbolo.</summary>
     Task SubscribeAsync(Symbol symbol, CancellationToken cancellationToken = default);
 
     /// <summary>Cancela la suscripción al stream de un símbolo.</summary>
     Task UnsubscribeAsync(Symbol symbol, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Suscribe al stream de velas (klines) de un símbolo con el intervalo indicado.
+    /// Solo emite eventos cuando la vela se cierra (<c>Final == true</c>).
+    /// </summary>
+    Task SubscribeKlinesAsync(Symbol symbol, CandleInterval interval, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Devuelve un stream asíncrono de ticks para el símbolo indicado.
@@ -28,10 +35,24 @@ public interface IMarketDataService
         Symbol symbol,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Devuelve un stream asíncrono de velas cerradas para el símbolo indicado.
+    /// El stream se completa cuando se cancela <paramref name="cancellationToken"/>.
+    /// </summary>
+    IAsyncEnumerable<KlineClosedEvent> GetKlineStreamAsync(
+        Symbol symbol,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Obtiene el precio actual vía REST (snapshot puntual).</summary>
     Task<Result<Price, DomainError>> GetCurrentPriceAsync(
         Symbol symbol,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Devuelve el último bid y ask recibidos por WebSocket para el símbolo indicado.
+    /// Retorna <c>null</c> si no hay datos disponibles.
+    /// </summary>
+    (Price Bid, Price Ask)? GetLastBidAsk(Symbol symbol);
 
     /// <summary>
     /// Obtiene precios históricos de cierre para inicializar indicadores técnicos.

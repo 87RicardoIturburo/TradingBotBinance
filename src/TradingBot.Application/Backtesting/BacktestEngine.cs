@@ -65,49 +65,58 @@ internal sealed class BacktestEngine
                 price.Value, price.Value, price.Value,
                 kline.Volume, kline.OpenTime);
 
-            // 1. Procesar tick → señal?
+            // 1. Procesar tick → señal? (actualiza indicadores internamente)
             var signalResult = await tradingStrategy.ProcessTickAsync(tick, cancellationToken);
-            if (signalResult.IsFailure) continue;
+            // No se interrumpe aquí: la evaluación de salida debe ejecutarse siempre
+            // que haya una posición abierta, independientemente del resultado de la señal.
 
-            // 2. Si hay posición abierta → evaluar salida
+            // 2. Si hay posición abierta → delegar la evaluación de salida al RuleEngine (fuente única de verdad)
             if (openPosition is not null)
             {
-                openPosition = openPosition with { CurrentPrice = kline.Close };
-
-                // Stop-loss / take-profit
-                var pnlPercent = openPosition.UnrealizedPnLPercent;
-                var shouldExit = false;
-                var exitReason = "";
-
-                if (pnlPercent <= -(decimal)strategy.RiskConfig.StopLossPercent)
+                openPosition = openPosition with
                 {
-                    shouldExit = true;
-                    exitReason = "Stop-loss";
+                    CurrentPrice              = kline.Close,
+                    HighestPriceSinceEntry   = Math.Max(openPosition.HighestPriceSinceEntry, kline.Close),
+                    LowestPriceSinceEntry    = Math.Min(openPosition.LowestPriceSinceEntry,  kline.Close)
+                };
+
+                var fakePosition = Position.Open(
+                    strategy.Id, strategy.Symbol, openPosition.Side,
+                    Price.Create(openPosition.EntryPrice).Value,
+                    Quantity.Create(openPosition.Quantity).Value);
+                // Reproducir los peaks históricos para que el trailing stop
+                // se calcule sobre el precio máximo/mínimo real desde la apertura.
+                if (openPosition.HighestPriceSinceEntry > openPosition.EntryPrice)
+                    fakePosition.UpdatePrice(Price.Create(openPosition.HighestPriceSinceEntry).Value);
+                if (openPosition.LowestPriceSinceEntry < openPosition.EntryPrice)
+                    fakePosition.UpdatePrice(Price.Create(openPosition.LowestPriceSinceEntry).Value);
+                fakePosition.UpdatePrice(price.Value);
+
+                var exitResult = await ruleEngine.EvaluateExitRulesAsync(
+                    strategy, fakePosition, price.Value, cancellationToken,
+                    atrValue: tradingStrategy.CurrentAtrValue,
+                    indicatorSnapshot: tradingStrategy.GetCurrentSnapshot());
+
+                // Si EvaluateExitRulesAsync falla (p. ej. Order.Create rechazó la orden),
+                // usar el check directo de BacktestPosition como red de seguridad.
+                bool shouldExit;
+                string exitReason;
+
+                if (exitResult.IsFailure)
+                {
+                    _logger.LogWarning(
+                        "EvaluateExitRulesAsync falló para posición abierta: {Error}. Aplicando SL/TP directo.",
+                        exitResult.Error.Message);
+
+                    var pnlPct = openPosition.UnrealizedPnLPercent;
+                    shouldExit = pnlPct <= -(decimal)strategy.RiskConfig.StopLossPercent
+                              || pnlPct >=  (decimal)strategy.RiskConfig.TakeProfitPercent;
+                    exitReason = DetermineExitReason(openPosition, strategy);
                 }
-                else if (pnlPercent >= (decimal)strategy.RiskConfig.TakeProfitPercent)
+                else
                 {
-                    shouldExit = true;
-                    exitReason = "Take-profit";
-                }
-
-                // Evaluar reglas de salida configuradas
-                if (!shouldExit)
-                {
-                    var fakePosition = Position.Open(
-                        strategy.Id, strategy.Symbol, openPosition.Side,
-                        Price.Create(openPosition.EntryPrice).Value,
-                        Quantity.Create(openPosition.Quantity).Value);
-                    fakePosition.UpdatePrice(price.Value);
-
-                    var exitResult = await ruleEngine.EvaluateExitRulesAsync(
-                        strategy, fakePosition, price.Value, cancellationToken,
-                        indicatorSnapshot: tradingStrategy.GetCurrentSnapshot());
-
-                    if (exitResult.IsSuccess && exitResult.Value is not null)
-                    {
-                        shouldExit = true;
-                        exitReason = "Exit rule";
-                    }
+                    shouldExit = exitResult.Value is not null;
+                    exitReason = shouldExit ? DetermineExitReason(openPosition, strategy) : string.Empty;
                 }
 
                 if (shouldExit)
@@ -131,8 +140,8 @@ internal sealed class BacktestEngine
                 }
             }
 
-            // 3. Si hay señal y no hay posición abierta → evaluar entrada
-            if (signalResult.Value is { } signal && openPosition is null)
+            // 3. Si hay señal válida y no hay posición abierta → evaluar entrada
+            if (signalResult.IsSuccess && signalResult.Value is { } signal && openPosition is null)
             {
                 // Circuit breaker diario: no abrir nuevas posiciones si se
                 // alcanzó el límite de pérdida diaria de esta estrategia
@@ -173,7 +182,9 @@ internal sealed class BacktestEngine
                                 kline.Close, order.Side, _feeConfig.SlippagePercent);
                             totalInvested += entryPrice * qty;
                             openPosition = new BacktestPosition(
-                                order.Side, entryPrice, entryPrice, qty, kline.OpenTime);
+                                order.Side, entryPrice, entryPrice, qty, kline.OpenTime,
+                                HighestPriceSinceEntry: entryPrice,
+                                LowestPriceSinceEntry:  entryPrice);
                         }
                     }
                 }
@@ -266,26 +277,70 @@ internal sealed class BacktestEngine
         BacktestPosition position, decimal exitPrice, DateTimeOffset exitTime,
         string reason, TradingFeeConfig feeConfig)
     {
-        var impact = FeeAndSlippageCalculator.CalculateRoundTripImpact(
-            position.Side,
-            position.EntryPrice,
-            exitPrice,
-            position.Quantity,
-            feeConfig.EffectiveTakerFee,
-            feeConfig.SlippagePercent);
+        // position.EntryPrice ya tiene el slippage de entrada aplicado al abrir la posición.
+        // Solo aplicamos slippage al precio de salida para evitar conteo doble.
+        var exitSide     = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+        var adjustedExit = FeeAndSlippageCalculator.ApplySlippage(
+            exitPrice, exitSide, feeConfig.SlippagePercent);
+
+        var grossPnL = position.Side == OrderSide.Buy
+            ? (adjustedExit - position.EntryPrice) * position.Quantity
+            : (position.EntryPrice - adjustedExit) * position.Quantity;
+
+        var entryFee   = FeeAndSlippageCalculator.CalculateFee(
+            position.EntryPrice, position.Quantity, feeConfig.EffectiveTakerFee);
+        var exitFee    = FeeAndSlippageCalculator.CalculateFee(
+            adjustedExit, position.Quantity, feeConfig.EffectiveTakerFee);
+        var totalFees  = entryFee + exitFee;
+        var slippage   = Math.Abs((exitPrice - adjustedExit) * position.Quantity);
+        var netPnL     = grossPnL - totalFees;
 
         return new BacktestTrade(
             position.Side,
             position.EntryPrice,
             exitPrice,
             position.Quantity,
-            impact.GrossPnL,
-            impact.TotalFees,
-            impact.TotalSlippageCost,
-            impact.NetPnL,
+            grossPnL,
+            totalFees,
+            slippage,
+            netPnL,
             position.OpenedAt,
             exitTime,
             reason);
+    }
+
+    /// <summary>
+    /// Infiere la razón de salida a partir del P&amp;L y el estado de la posición al momento del cierre.
+    /// Usado exclusivamente para el etiquetado de resultados de backtest.
+    /// </summary>
+    private static string DetermineExitReason(BacktestPosition position, TradingStrategy strategy)
+    {
+        var pnlPercent = position.UnrealizedPnLPercent;
+        if (pnlPercent < 0)
+            return "Stop-loss";
+        if (pnlPercent >= (decimal)strategy.RiskConfig.TakeProfitPercent)
+            return "Take-profit";
+
+        // Detectar trailing stop: la posición estaba en ganancia y el precio
+        // retrocedió desde el pico histórico hasta el umbral de trailing stop.
+        var risk = strategy.RiskConfig;
+        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0 && pnlPercent > 0)
+        {
+            if (position.Side == OrderSide.Buy
+                && position.HighestPriceSinceEntry > position.EntryPrice
+                && position.CurrentPrice <= position.HighestPriceSinceEntry * (1m - risk.TrailingStopPercent / 100m))
+            {
+                return "Trailing stop";
+            }
+            if (position.Side == OrderSide.Sell
+                && position.LowestPriceSinceEntry < position.EntryPrice
+                && position.CurrentPrice >= position.LowestPriceSinceEntry * (1m + risk.TrailingStopPercent / 100m))
+            {
+                return "Trailing stop";
+            }
+        }
+
+        return "Exit rule";
     }
 }
 
@@ -296,7 +351,9 @@ internal sealed record BacktestPosition(
     decimal EntryPrice,
     decimal CurrentPrice,
     decimal Quantity,
-    DateTimeOffset OpenedAt)
+    DateTimeOffset OpenedAt,
+    decimal HighestPriceSinceEntry,
+    decimal LowestPriceSinceEntry)
 {
     public decimal UnrealizedPnL => Side == OrderSide.Buy
         ? (CurrentPrice - EntryPrice) * Quantity

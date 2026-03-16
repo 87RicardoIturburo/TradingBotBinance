@@ -39,13 +39,14 @@ internal sealed class RiskManager : IRiskManager
         IPositionRepository          positionRepository,
         IAccountService              accountService,
         IOptions<GlobalRiskSettings> globalRiskOptions,
+        PortfolioRiskManager         portfolioRiskManager,
         ILogger<RiskManager>         logger)
     {
         _strategyRepository = strategyRepository;
         _positionRepository = positionRepository;
         _accountService     = accountService;
         _globalRisk         = globalRiskOptions.Value;
-        _portfolioRisk      = new PortfolioRiskManager(positionRepository);
+        _portfolioRisk      = portfolioRiskManager;
         _logger             = logger;
     }
 
