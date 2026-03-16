@@ -15,6 +15,10 @@ public sealed class Position : AggregateRoot<Guid>
     public OrderSide      Side         { get; private set; }
     public Price          EntryPrice   { get; private set; } = null!;
     public Price          CurrentPrice { get; private set; } = null!;
+    /// <summary>Precio más alto alcanzado desde la apertura (Long trailing stop).</summary>
+    public Price          HighestPriceSinceEntry { get; private set; } = null!;
+    /// <summary>Precio más bajo alcanzado desde la apertura (Short trailing stop).</summary>
+    public Price          LowestPriceSinceEntry  { get; private set; } = null!;
     public Quantity       Quantity     { get; private set; } = null!;
     public bool           IsOpen       { get; private set; }
     public decimal?       RealizedPnL  { get; private set; }
@@ -53,19 +57,26 @@ public sealed class Position : AggregateRoot<Guid>
             StrategyId   = strategyId,
             Symbol       = symbol,
             Side         = side,
-            EntryPrice   = entryPrice,
-            CurrentPrice = entryPrice,
-            Quantity     = quantity,
-            IsOpen       = true,
-            OpenedAt     = now
+            EntryPrice             = entryPrice,
+            CurrentPrice           = entryPrice,
+            HighestPriceSinceEntry = entryPrice,
+            LowestPriceSinceEntry  = entryPrice,
+            Quantity               = quantity,
+            IsOpen                 = true,
+            OpenedAt               = now
         };
     }
 
-    /// <summary>Actualiza el precio de mercado y recalcula el P&amp;L no realizado.</summary>
+    /// <summary>Actualiza el precio de mercado, recalcula P&amp;L y rastrea máximos/mínimos para trailing stop.</summary>
     public void UpdatePrice(Price currentPrice)
     {
         if (!IsOpen) return;
         CurrentPrice = currentPrice;
+
+        if (currentPrice.Value > HighestPriceSinceEntry.Value)
+            HighestPriceSinceEntry = currentPrice;
+        if (currentPrice.Value < LowestPriceSinceEntry.Value)
+            LowestPriceSinceEntry = currentPrice;
     }
 
     /// <summary>Cierra la posición al precio indicado y devuelve el P&amp;L realizado.</summary>

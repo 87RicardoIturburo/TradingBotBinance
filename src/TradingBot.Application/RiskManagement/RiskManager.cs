@@ -15,23 +15,37 @@ namespace TradingBot.Application.RiskManagement;
 /// </summary>
 internal sealed class RiskManager : IRiskManager
 {
-    /// <summary>Mínimo de trades cerrados necesarios para evaluar la esperanza matemática.</summary>
-    internal const int MinTradesForExpectancy = 10;
+    /// <summary>
+    /// Mínimo de trades cerrados necesarios para evaluar la esperanza matemática.
+    /// Un valor bajo (ej: 10) puede bloquear la estrategia prematuramente por
+    /// una mala racha inicial que es estadísticamente normal.
+    /// </summary>
+    internal const int MinTradesForExpectancy = 30;
+
+    /// <summary>
+    /// Reserva de saldo: el 5% del monto de la orden queda como buffer para comisiones.
+    /// </summary>
+    private const decimal FeeBuffer = 0.05m;
 
     private readonly IStrategyRepository           _strategyRepository;
     private readonly IPositionRepository           _positionRepository;
+    private readonly IAccountService               _accountService;
     private readonly GlobalRiskSettings             _globalRisk;
+    private readonly PortfolioRiskManager           _portfolioRisk;
     private readonly ILogger<RiskManager>          _logger;
 
     public RiskManager(
-        IStrategyRepository      strategyRepository,
-        IPositionRepository      positionRepository,
+        IStrategyRepository          strategyRepository,
+        IPositionRepository          positionRepository,
+        IAccountService              accountService,
         IOptions<GlobalRiskSettings> globalRiskOptions,
-        ILogger<RiskManager>     logger)
+        ILogger<RiskManager>         logger)
     {
         _strategyRepository = strategyRepository;
         _positionRepository = positionRepository;
+        _accountService     = accountService;
         _globalRisk         = globalRiskOptions.Value;
+        _portfolioRisk      = new PortfolioRiskManager(positionRepository);
         _logger             = logger;
     }
 
@@ -45,9 +59,39 @@ internal sealed class RiskManager : IRiskManager
                 DomainError.NotFound($"Estrategia '{order.StrategyId}'"));
 
         var risk = strategy.RiskConfig;
+        var orderAmount = order.NotionalValue;
+
+        // 0. Balance disponible en la cuenta (sólo en modo Live/Testnet)
+        if (!order.IsPaperTrade)
+        {
+            var quoteAsset = order.Symbol.Value.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
+                             ? "USDT" : "BTC";
+
+            var balanceResult = await _accountService.GetAvailableBalanceAsync(quoteAsset, cancellationToken);
+            if (balanceResult.IsSuccess)
+            {
+                var required = orderAmount * (1m + FeeBuffer);
+                if (balanceResult.Value < required)
+                {
+                    _logger.LogWarning(
+                        "Orden {OrderId} bloqueada: saldo disponible {Balance:F2} {Asset} < requerido {Required:F2} (incluye buffer de comisiones)",
+                        order.Id, balanceResult.Value, quoteAsset, required);
+
+                    return Result<bool, DomainError>.Failure(
+                        DomainError.RiskLimitExceeded(
+                            $"Saldo insuficiente: {balanceResult.Value:F2} {quoteAsset} disponible, " +
+                            $"se requieren {required:F2} {quoteAsset} (incluye {FeeBuffer:P0} de buffer para comisiones)."));
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "No se pudo verificar balance para orden {OrderId}: {Error}. Continuando sin validación de balance.",
+                    order.Id, balanceResult.Error.Message);
+            }
+        }
 
         // 1. Monto máximo por orden
-        var orderAmount = order.Quantity.Value * (order.LimitPrice?.Value ?? 0m);
         if (orderAmount > risk.MaxOrderAmountUsdt)
         {
             _logger.LogWarning(
@@ -117,7 +161,19 @@ internal sealed class RiskManager : IRiskManager
             }
         }
 
-        // 6. Esperanza matemática — bloquea si la estrategia es perdedora a largo plazo
+        // 6. Exposición del portafolio (concentración por símbolo, límites long/short)
+        var portfolioValidation = await _portfolioRisk.ValidateExposureAsync(order, _globalRisk, cancellationToken);
+        if (!portfolioValidation.IsAllowed)
+        {
+            _logger.LogWarning(
+                "Orden {OrderId} bloqueada por exposición de portafolio: {Reason}",
+                order.Id, portfolioValidation.Reason);
+
+            return Result<bool, DomainError>.Failure(
+                DomainError.RiskLimitExceeded(portfolioValidation.Reason!));
+        }
+
+        // 7. Esperanza matemática — bloquea si la estrategia es perdedora a largo plazo
         var expectancy = await GetMathematicalExpectancyAsync(order.StrategyId, cancellationToken);
         if (expectancy is not null && expectancy.Value <= 0m)
         {
@@ -184,5 +240,67 @@ internal sealed class RiskManager : IRiskManager
         var avgLoss  = losses > 0 ? totalLossAmount / losses : 0m;
 
         return winRate * avgWin - lossRate * avgLoss;
+    }
+
+    /// <summary>
+    /// Verifica si el drawdown diario de la cuenta supera el límite configurado.
+    /// Devuelve <c>true</c> si se debe activar el kill switch de portafolio.
+    /// </summary>
+    public async Task<(bool IsTriggered, decimal DrawdownPercent)> CheckAccountDrawdownAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (_globalRisk.MaxAccountDrawdownPercent <= 0)
+            return (false, 0m);
+
+        var globalDailyPnL = await GetGlobalDailyLossAsync(cancellationToken);
+        if (globalDailyPnL >= 0)
+            return (false, 0m);
+
+        // Obtener balance actual para estimar drawdown
+        var balanceResult = await _accountService.GetAvailableBalanceAsync("USDT", cancellationToken);
+        if (balanceResult.IsFailure)
+            return (false, 0m);
+
+        var currentBalance = balanceResult.Value;
+        // Balance al inicio del día ≈ balance actual - P&L del día
+        var startOfDayBalance = currentBalance - globalDailyPnL;
+        if (startOfDayBalance <= 0)
+            return (false, 0m);
+
+        var drawdownPercent = Math.Abs(globalDailyPnL) / startOfDayBalance * 100m;
+        var isTriggered = drawdownPercent >= _globalRisk.MaxAccountDrawdownPercent;
+
+        if (isTriggered)
+        {
+            _logger.LogCritical(
+                "🛑 CIRCUIT BREAKER — Drawdown de cuenta {Drawdown:F1}% >= límite {Limit:F1}%. " +
+                "P&L diario: {PnL:F2} USDT, Balance: {Balance:F2} USDT",
+                drawdownPercent, _globalRisk.MaxAccountDrawdownPercent,
+                globalDailyPnL, currentBalance);
+        }
+
+        return (isTriggered, Math.Round(drawdownPercent, 2));
+    }
+
+    /// <summary>
+    /// Devuelve la exposición del portafolio por símbolo y dirección.
+    /// </summary>
+    public async Task<(decimal TotalLongUsdt, decimal TotalShortUsdt, decimal NetUsdt)> GetPortfolioExposureAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var exposure = await _portfolioRisk.GetPortfolioExposureAsync(cancellationToken);
+        return (exposure.TotalLongUsdt, exposure.TotalShortUsdt, exposure.NetUsdt);
+    }
+
+    /// <summary>
+    /// Devuelve la exposición del portafolio desglosada por símbolo.
+    /// </summary>
+    public async Task<IReadOnlyList<(string Symbol, decimal LongUsdt, decimal ShortUsdt, decimal NetUsdt)>> GetExposureBySymbolAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var bySymbol = await _portfolioRisk.GetExposureBySymbolAsync(cancellationToken);
+        return bySymbol.Values
+            .Select(s => (s.Symbol, s.LongUsdt, s.ShortUsdt, s.NetUsdt))
+            .ToList();
     }
 }

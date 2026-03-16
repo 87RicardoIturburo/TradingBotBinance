@@ -87,4 +87,32 @@ public sealed class PositionTests
 
         position.CurrentPrice.Should().Be(priceAfterClose);
     }
+
+    // ── Peak price tracking ───────────────────────────────────────────────
+
+    [Fact]
+    public void UpdatePrice_TracksHighestPrice()
+    {
+        var position = CreateOpenPosition(entryPrice: 100m);
+
+        position.UpdatePrice(Price.Create(110m).Value);
+        position.UpdatePrice(Price.Create(105m).Value);
+        position.UpdatePrice(Price.Create(120m).Value);
+        position.UpdatePrice(Price.Create(115m).Value);
+
+        position.HighestPriceSinceEntry.Value.Should().Be(120m);
+    }
+
+    [Fact]
+    public void UpdatePrice_TracksLowestPrice()
+    {
+        var position = CreateOpenPosition(entryPrice: 100m);
+
+        position.UpdatePrice(Price.Create(95m).Value);
+        position.UpdatePrice(Price.Create(98m).Value);
+        position.UpdatePrice(Price.Create(90m).Value);
+        position.UpdatePrice(Price.Create(92m).Value);
+
+        position.LowestPriceSinceEntry.Value.Should().Be(90m);
+    }
 }

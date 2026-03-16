@@ -135,4 +135,58 @@ public sealed class OrderTests
         order.Status.Should().Be(OrderStatus.Rejected);
         order.IsTerminal.Should().BeTrue();
     }
+
+    // ── NotionalValue ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void NotionalValue_WhenLimitOrder_UsesLimitPrice()
+    {
+        var order = CreatePendingOrder(OrderType.Limit, limitPrice: 50000m);
+
+        order.NotionalValue.Should().Be(0.01m * 50000m);
+    }
+
+    [Fact]
+    public void NotionalValue_WhenMarketOrderWithEstimatedPrice_UsesEstimatedPrice()
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var qty    = Quantity.Create(0.01m).Value;
+        var est    = Price.Create(55000m).Value;
+
+        var order = Order.Create(
+            Guid.NewGuid(), symbol, OrderSide.Buy, OrderType.Market,
+            qty, TradingMode.PaperTrading, estimatedPrice: est).Value;
+
+        order.NotionalValue.Should().Be(0.01m * 55000m);
+    }
+
+    [Fact]
+    public void NotionalValue_WhenMarketOrderNoPrice_ReturnsZero()
+    {
+        var order = CreatePendingOrder();
+
+        order.NotionalValue.Should().Be(0m);
+    }
+
+    // ── AdjustForExchange ─────────────────────────────────────────────────
+
+    [Fact]
+    public void AdjustForExchange_UpdatesQuantity()
+    {
+        var order = CreatePendingOrder();
+
+        order.AdjustForExchange(0.005m, null);
+
+        order.Quantity.Value.Should().Be(0.005m);
+    }
+
+    [Fact]
+    public void AdjustForExchange_UpdatesLimitPrice()
+    {
+        var order = CreatePendingOrder(OrderType.Limit, limitPrice: 50000m);
+
+        order.AdjustForExchange(0.01m, 49999.50m);
+
+        order.LimitPrice!.Value.Should().Be(49999.50m);
+    }
 }

@@ -13,6 +13,29 @@ public sealed record SymbolInfoDto(
     string BaseAsset,
     string QuoteAsset);
 
+/// <summary>Balance de un asset en la cuenta.</summary>
+public sealed record AccountBalanceDto(
+    string  Asset,
+    decimal Free,
+    decimal Locked,
+    decimal Total);
+
+/// <summary>Exposición de un símbolo en el portafolio.</summary>
+public sealed record SymbolExposureDto(
+    string  Symbol,
+    decimal LongUsdt,
+    decimal ShortUsdt,
+    decimal NetUsdt);
+
+/// <summary>Exposición total del portafolio.</summary>
+public sealed record PortfolioExposureDto(
+    decimal                    TotalLongUsdt,
+    decimal                    TotalShortUsdt,
+    decimal                    NetUsdt,
+    List<SymbolExposureDto>    BySymbol,
+    bool                       DrawdownTriggered = false,
+    decimal                    DrawdownPercent = 0m);
+
 /// <summary>Respuesta de estrategia para el frontend.</summary>
 public sealed record StrategyDto(
     Guid                          Id,
@@ -50,12 +73,16 @@ public sealed record RiskConfigDto(
     decimal MaxDailyLossUsdt,
     decimal StopLossPercent,
     decimal TakeProfitPercent,
-    int     MaxOpenPositions)
+    int     MaxOpenPositions,
+    bool    UseAtrSizing = false,
+    decimal RiskPercentPerTrade = 1m,
+    decimal AtrMultiplier = 2m)
 {
     public static RiskConfigDto FromDomain(RiskConfig r) => new(
         r.MaxOrderAmountUsdt, r.MaxDailyLossUsdt,
         r.StopLossPercent.Value, r.TakeProfitPercent.Value,
-        r.MaxOpenPositions);
+        r.MaxOpenPositions,
+        r.UseAtrSizing, r.RiskPercentPerTrade, r.AtrMultiplier);
 }
 
 public sealed record IndicatorDto(
@@ -99,6 +126,7 @@ public sealed record OrderDto(
     decimal?        StopPrice,
     decimal?        FilledQuantity,
     decimal?        ExecutedPrice,
+    decimal         Fee,
     OrderStatus     Status,
     TradingMode     Mode,
     string?         BinanceOrderId,
@@ -110,7 +138,7 @@ public sealed record OrderDto(
         o.Side, o.Type, o.Quantity.Value,
         o.LimitPrice?.Value, o.StopPrice?.Value,
         o.FilledQuantity?.Value, o.ExecutedPrice?.Value,
-        o.Status, o.Mode, o.BinanceOrderId,
+        o.Fee, o.Status, o.Mode, o.BinanceOrderId,
         o.CreatedAt, o.FilledAt);
 }
 
@@ -129,12 +157,14 @@ public sealed record StrategyEngineStatusDto(
     DateTimeOffset LastTickAt,
     int            TicksProcessed,
     int            SignalsGenerated,
-    int            OrdersPlaced)
+    int            OrdersPlaced,
+    string         CurrentRegime)
 {
     public static StrategyEngineStatusDto FromDomain(StrategyEngineStatus s) => new(
         s.StrategyId, s.StrategyName, s.Symbol.Value,
         s.IsProcessing, s.LastTickAt,
-        s.TicksProcessed, s.SignalsGenerated, s.OrdersPlaced);
+        s.TicksProcessed, s.SignalsGenerated, s.OrdersPlaced,
+        s.CurrentRegime.ToString());
 }
 
 /// <summary>Posición abierta o cerrada para el frontend.</summary>
@@ -196,6 +226,9 @@ public sealed record BacktestResultDto(
     int                             WinningTrades,
     int                             LosingTrades,
     decimal                         WinRate,
+    decimal                         GrossPnL,
+    decimal                         TotalFeesUsdt,
+    decimal                         TotalSlippageUsdt,
     decimal                         TotalPnL,
     decimal                         TotalInvested,
     decimal                         ReturnOnInvestment,
@@ -203,17 +236,34 @@ public sealed record BacktestResultDto(
     decimal                         AveragePnLPerTrade,
     decimal                         BestTrade,
     decimal                         WorstTrade,
+    BacktestMetricsDto              Metrics,
     List<BacktestTradeDto>          Trades,
     List<EquityPointDto>            EquityCurve)
 {
     public static BacktestResultDto FromDomain(BacktestResult r) => new(
         r.StrategyName, r.Symbol, r.From, r.To,
         r.TotalKlines, r.TotalTrades, r.WinningTrades, r.LosingTrades,
-        r.WinRate, r.TotalPnL, r.TotalInvested, r.ReturnOnInvestment,
+        r.WinRate, r.GrossPnL, r.TotalFeesUsdt, r.TotalSlippageUsdt,
+        r.TotalPnL, r.TotalInvested, r.ReturnOnInvestment,
         r.MaxDrawdownPercent, r.AveragePnLPerTrade,
         r.BestTrade, r.WorstTrade,
+        BacktestMetricsDto.FromDomain(r.Metrics),
         r.Trades.Select(BacktestTradeDto.FromDomain).ToList(),
         r.EquityCurve.Select(EquityPointDto.FromDomain).ToList());
+}
+
+public sealed record BacktestMetricsDto(
+    decimal SharpeRatio,
+    decimal SortinoRatio,
+    decimal CalmarRatio,
+    decimal ProfitFactor,
+    int     MaxConsecutiveLosses,
+    int     MaxConsecutiveWins,
+    decimal Expectancy)
+{
+    public static BacktestMetricsDto FromDomain(BacktestMetrics m) => new(
+        m.SharpeRatio, m.SortinoRatio, m.CalmarRatio, m.ProfitFactor,
+        m.MaxConsecutiveLosses, m.MaxConsecutiveWins, m.Expectancy);
 }
 
 public sealed record BacktestTradeDto(
@@ -221,14 +271,18 @@ public sealed record BacktestTradeDto(
     decimal        EntryPrice,
     decimal        ExitPrice,
     decimal        Quantity,
-    decimal        PnL,
+    decimal        GrossPnL,
+    decimal        Fees,
+    decimal        SlippageCost,
+    decimal        NetPnL,
     DateTimeOffset EntryTime,
     DateTimeOffset ExitTime,
     string         ExitReason)
 {
     public static BacktestTradeDto FromDomain(BacktestTrade t) => new(
         t.Side.ToString(), t.EntryPrice, t.ExitPrice,
-        t.Quantity, t.PnL, t.EntryTime, t.ExitTime, t.ExitReason);
+        t.Quantity, t.GrossPnL, t.Fees, t.SlippageCost, t.NetPnL,
+        t.EntryTime, t.ExitTime, t.ExitReason);
 }
 
 public sealed record EquityPointDto(
@@ -245,7 +299,8 @@ public sealed record RunOptimizationRequest(
     Guid                       StrategyId,
     DateTimeOffset             From,
     DateTimeOffset             To,
-    List<ParameterRangeDto>    ParameterRanges);
+    List<ParameterRangeDto>    ParameterRanges,
+    string?                    RankBy = null);
 
 public sealed record ParameterRangeDto(
     string  Name,
@@ -262,12 +317,14 @@ public sealed record OptimizationResultDto(
     int                                 TotalCombinations,
     int                                 CompletedCombinations,
     double                              DurationSeconds,
+    string                              RankedBy,
     List<OptimizationRunSummaryDto>     Results)
 {
     public static OptimizationResultDto FromDomain(OptimizationResult r) => new(
         r.StrategyName, r.Symbol, r.From, r.To,
         r.TotalCombinations, r.CompletedCombinations,
         r.Duration.TotalSeconds,
+        r.RankedBy.ToString(),
         r.Results.Select(OptimizationRunSummaryDto.FromDomain).ToList());
 }
 
@@ -281,10 +338,34 @@ public sealed record OptimizationRunSummaryDto(
     decimal                     TotalInvested,
     decimal                     ReturnOnInvestment,
     decimal                     MaxDrawdownPercent,
-    decimal                     AveragePnLPerTrade)
+    decimal                     AveragePnLPerTrade,
+    BacktestMetricsDto?         Metrics)
 {
     public static OptimizationRunSummaryDto FromDomain(OptimizationRunSummary r) => new(
         r.Rank, r.Parameters, r.TotalTrades, r.WinningTrades,
         r.WinRate, r.TotalPnL, r.TotalInvested, r.ReturnOnInvestment,
-        r.MaxDrawdownPercent, r.AveragePnLPerTrade);
+        r.MaxDrawdownPercent, r.AveragePnLPerTrade,
+        BacktestMetricsDto.FromDomain(r.Metrics));
+}
+
+/// <summary>Resultado de walk-forward analysis para el frontend.</summary>
+public sealed record WalkForwardResultDto(
+    Dictionary<string, decimal> BestParameters,
+    decimal                     TrainPnL,
+    decimal                     TestPnL,
+    BacktestMetricsDto          TrainMetrics,
+    BacktestMetricsDto          TestMetrics,
+    int                         TrainKlines,
+    int                         TestKlines,
+    decimal                     DegradationPercent,
+    bool                        IsOverfit,
+    string                      RankedBy)
+{
+    public static WalkForwardResultDto FromDomain(WalkForwardResult r) => new(
+        r.BestParameters, r.TrainPnL, r.TestPnL,
+        BacktestMetricsDto.FromDomain(r.TrainMetrics),
+        BacktestMetricsDto.FromDomain(r.TestMetrics),
+        r.TrainKlines, r.TestKlines,
+        r.DegradationPercent, r.IsOverfit,
+        r.RankedBy.ToString());
 }

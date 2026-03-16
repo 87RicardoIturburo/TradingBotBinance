@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
@@ -57,40 +58,135 @@ internal sealed class RuleEngine : IRuleEngine
         TradingStrategy strategy,
         Position        position,
         Price           currentPrice,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        decimal?        atrValue = null,
+        string?         indicatorSnapshot = null)
     {
         var risk = strategy.RiskConfig;
 
-        // Stop-loss automático
-        var pnlPercent = position.UnrealizedPnLPercent;
-        if (pnlPercent <= -(decimal)risk.StopLossPercent)
+        // Stop-loss: dinámico (ATR) o porcentual según configuración
+        if (risk.UseAtrSizing && atrValue is > 0)
         {
-            _logger.LogWarning(
-                "Stop-loss activado para posición {PositionId}: PnL {PnL:F2}% <= -{StopLoss:F2}%",
-                position.Id, pnlPercent, risk.StopLossPercent.Value);
+            // Stop-loss dinámico: stopDistance = ATR × multiplier
+            // Si trailing stop está habilitado, calcula desde el peak price en vez del entry price
+            var stopDistance = atrValue.Value * risk.AtrMultiplier;
+            decimal basePrice;
+            if (risk.UseTrailingStop)
+            {
+                basePrice = position.Side == OrderSide.Buy
+                    ? position.HighestPriceSinceEntry.Value
+                    : position.LowestPriceSinceEntry.Value;
+            }
+            else
+            {
+                basePrice = position.EntryPrice.Value;
+            }
 
-            var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-            var orderResult = Order.Create(
-                strategy.Id, position.Symbol, exitSide,
-                OrderType.Market, position.Quantity, strategy.Mode);
+            var stopLossPrice = position.Side == OrderSide.Buy
+                ? basePrice - stopDistance
+                : basePrice + stopDistance;
 
-            return Task.FromResult(
-                orderResult.Match<Result<Order?, DomainError>>(
-                    order => Result<Order?, DomainError>.Success(order),
-                    error => Result<Order?, DomainError>.Failure(error)));
+            var triggered = position.Side == OrderSide.Buy
+                ? currentPrice.Value <= stopLossPrice
+                : currentPrice.Value >= stopLossPrice;
+
+            if (triggered)
+            {
+                _logger.LogWarning(
+                    "Stop-loss ATR activado para posición {PositionId}: precio {Price} cruzó SL {StopLoss:F2} (ATR={Atr:F4} × {Mult}, base={BasePrice:F2}, trailing={IsTrailing})",
+                    position.Id, currentPrice.Value, stopLossPrice, atrValue.Value, risk.AtrMultiplier, basePrice, risk.UseTrailingStop);
+
+                var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                var orderResult = Order.Create(
+                    strategy.Id, position.Symbol, exitSide,
+                    OrderType.Market, position.Quantity, strategy.Mode,
+                    estimatedPrice: currentPrice);
+
+                return Task.FromResult(
+                    orderResult.Match<Result<Order?, DomainError>>(
+                        order => Result<Order?, DomainError>.Success(order),
+                        error => Result<Order?, DomainError>.Failure(error)));
+            }
+        }
+        else
+        {
+            // Stop-loss porcentual clásico
+            var pnlPercent = position.UnrealizedPnLPercent;
+            if (pnlPercent <= -(decimal)risk.StopLossPercent)
+            {
+                _logger.LogWarning(
+                    "Stop-loss activado para posición {PositionId}: PnL {PnL:F2}% <= -{StopLoss:F2}%",
+                    position.Id, pnlPercent, risk.StopLossPercent.Value);
+
+                var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                var orderResult = Order.Create(
+                    strategy.Id, position.Symbol, exitSide,
+                    OrderType.Market, position.Quantity, strategy.Mode,
+                    estimatedPrice: currentPrice);
+
+                return Task.FromResult(
+                    orderResult.Match<Result<Order?, DomainError>>(
+                        order => Result<Order?, DomainError>.Success(order),
+                        error => Result<Order?, DomainError>.Failure(error)));
+            }
         }
 
-        // Take-profit automático
-        if (pnlPercent >= (decimal)risk.TakeProfitPercent)
+        // Trailing stop: protege ganancias no realizadas ajustando el stop al peak price
+        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0)
+        {
+            var peakPrice = position.Side == OrderSide.Buy
+                ? position.HighestPriceSinceEntry.Value
+                : position.LowestPriceSinceEntry.Value;
+
+            // Solo activar trailing si la posición está en ganancia
+            var isInProfit = position.Side == OrderSide.Buy
+                ? peakPrice > position.EntryPrice.Value
+                : peakPrice < position.EntryPrice.Value;
+
+            if (isInProfit)
+            {
+                var trailingStopPrice = position.Side == OrderSide.Buy
+                    ? peakPrice * (1m - risk.TrailingStopPercent / 100m)
+                    : peakPrice * (1m + risk.TrailingStopPercent / 100m);
+
+                var trailingTriggered = position.Side == OrderSide.Buy
+                    ? currentPrice.Value <= trailingStopPrice
+                    : currentPrice.Value >= trailingStopPrice;
+
+                if (trailingTriggered)
+                {
+                    _logger.LogWarning(
+                        "Trailing stop activado para posición {PositionId}: precio {Price} cruzó trailing SL {TrailSL:F2} " +
+                        "(peak={Peak:F2}, trail%={TrailPct}%)",
+                        position.Id, currentPrice.Value, trailingStopPrice, peakPrice, risk.TrailingStopPercent);
+
+                    var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                    var orderResult = Order.Create(
+                        strategy.Id, position.Symbol, exitSide,
+                        OrderType.Market, position.Quantity, strategy.Mode,
+                        estimatedPrice: currentPrice);
+
+                    return Task.FromResult(
+                        orderResult.Match<Result<Order?, DomainError>>(
+                            order => Result<Order?, DomainError>.Success(order),
+                            error => Result<Order?, DomainError>.Failure(error)));
+                }
+            }
+        }
+
+        // Take-profit automático (siempre porcentual)
+        var takeProfitPnl = position.UnrealizedPnLPercent;
+        if (takeProfitPnl >= (decimal)risk.TakeProfitPercent)
         {
             _logger.LogInformation(
                 "Take-profit activado para posición {PositionId}: PnL {PnL:F2}% >= {TakeProfit:F2}%",
-                position.Id, pnlPercent, risk.TakeProfitPercent.Value);
+                position.Id, takeProfitPnl, risk.TakeProfitPercent.Value);
 
             var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
             var orderResult = Order.Create(
                 strategy.Id, position.Symbol, exitSide,
-                OrderType.Market, position.Quantity, strategy.Mode);
+                OrderType.Market, position.Quantity, strategy.Mode,
+                estimatedPrice: currentPrice);
 
             return Task.FromResult(
                 orderResult.Match<Result<Order?, DomainError>>(
@@ -98,29 +194,35 @@ internal sealed class RuleEngine : IRuleEngine
                     error => Result<Order?, DomainError>.Failure(error)));
         }
 
-        // Evaluar reglas de salida configuradas
+        // Evaluar reglas de salida configuradas.
+        // Usa el snapshot de indicadores reales para evaluar condiciones como RSI > 65.
+        // Sin snapshot, las condiciones de indicadores siempre fallan (snapshot incompleto).
         var exitRules = strategy.Rules
             .Where(r => r.IsEnabled && r.Type is RuleType.Exit)
             .ToList();
+
+        var snapshot = indicatorSnapshot
+            ?? $"Price={currentPrice.Value:F4}|PnL={takeProfitPnl:F2}%";
 
         foreach (var rule in exitRules)
         {
             var signal = new SignalGeneratedEvent(
                 strategy.Id, position.Symbol,
                 position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
-                currentPrice, $"ExitEval|PnL={pnlPercent:F2}%");
+                currentPrice, snapshot);
 
             if (!EvaluateCondition(rule.Condition, signal))
                 continue;
 
             _logger.LogInformation(
-                "Regla de salida '{RuleName}' activada para posición {PositionId}",
-                rule.Name, position.Id);
+                "Regla de salida '{RuleName}' activada para posición {PositionId} (snapshot: {Snapshot})",
+                rule.Name, position.Id, snapshot);
 
             var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
             var orderResult = Order.Create(
                 strategy.Id, position.Symbol, exitSide,
-                OrderType.Market, position.Quantity, strategy.Mode);
+                OrderType.Market, position.Quantity, strategy.Mode,
+                estimatedPrice: currentPrice);
 
             return Task.FromResult(
                 orderResult.Match<Result<Order?, DomainError>>(
@@ -143,6 +245,9 @@ internal sealed class RuleEngine : IRuleEngine
         };
     }
 
+    /// <summary>Tolerancia para comparaciones de igualdad entre decimales calculados.</summary>
+    private const decimal EqualityEpsilon = 0.0001m;
+
     private static bool EvaluateLeaf(LeafCondition leaf, SignalGeneratedEvent signal)
     {
         var actualValue = GetIndicatorValue(leaf.Indicator, signal);
@@ -154,8 +259,8 @@ internal sealed class RuleEngine : IRuleEngine
             Comparator.LessThan           => actualValue.Value < leaf.Value,
             Comparator.GreaterThanOrEqual => actualValue.Value >= leaf.Value,
             Comparator.LessThanOrEqual    => actualValue.Value <= leaf.Value,
-            Comparator.Equal              => actualValue.Value == leaf.Value,
-            Comparator.NotEqual           => actualValue.Value != leaf.Value,
+            Comparator.Equal              => Math.Abs(actualValue.Value - leaf.Value) < EqualityEpsilon,
+            Comparator.NotEqual           => Math.Abs(actualValue.Value - leaf.Value) >= EqualityEpsilon,
             _                             => false
         };
     }
@@ -181,7 +286,8 @@ internal sealed class RuleEngine : IRuleEngine
             var eqIdx = part.IndexOf('=');
             if (eqIdx < 0) continue;
 
-            if (decimal.TryParse(part[(eqIdx + 1)..], out var value))
+            if (decimal.TryParse(part[(eqIdx + 1)..],
+                    NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
                 return value;
         }
 
@@ -226,7 +332,8 @@ internal sealed class RuleEngine : IRuleEngine
 
         var orderResult = Order.Create(
             strategy.Id, strategy.Symbol, side, orderType,
-            quantity.Value, strategy.Mode, limitPrice);
+            quantity.Value, strategy.Mode, limitPrice,
+            estimatedPrice: orderType == OrderType.Market ? currentPrice : null);
 
         return orderResult.Match<Result<Order?, DomainError>>(
             order => Result<Order?, DomainError>.Success(order),

@@ -2,9 +2,7 @@
 
 ## 🧠 Contexto del Proyecto
 
-Este proyecto es un **bot de trading autónomo para Binance** con frontend y backend.
-Opera en tiempo real usando WebSocket y REST API de Binance, ejecutando estrategias
-y reglas configuradas por el usuario, con capacidad de hot-reload en tiempo de ejecución.
+Este proyecto es un **bot de trading autónomo para Binance** con frontend y backend. Opera en tiempo real usando WebSocket y REST API de Binance, ejecutando estrategias y reglas configuradas por el usuario, con capacidad de hot-reload en tiempo de ejecución. Tú eres un experto en BINANCE, trading y desarrollo de software. 
 
 ---
 
@@ -12,7 +10,7 @@ y reglas configuradas por el usuario, con capacidad de hot-reload en tiempo de e
 
 | Capa               | Tecnología                           |
 |--------------------|--------------------------------------|
-| Backend            | C# / .NET 9 — Clean Architecture     |
+| Backend            | C# / .NET 10 — Clean Architecture    |
 | Frontend           | Blazor WebAssembly                   |
 | Tiempo real        | SignalR (backend ↔ frontend)         |
 | Binance SDK        | Binance.Net (NuGet)                  |
@@ -45,14 +43,12 @@ TradingBot/
     ├── TradingBot.Core.Tests/
     ├── TradingBot.Application.Tests/
     └── TradingBot.Integration.Tests/
-```
-
 ---
 
 ## ✅ Convenciones de Código
 
 ### General
-- Usar **C# 13** con nullable reference types habilitado (`<Nullable>enable</Nullable>`)
+- Usar **C# 14** con nullable reference types habilitado (`<Nullable>enable</Nullable>`)
 - Preferir `record` para DTOs y value objects inmutables
 - Preferir `sealed` en clases que no se hereden
 - Usar `IOptions<T>` para configuración, nunca `IConfiguration` directamente en servicios
@@ -81,6 +77,13 @@ TradingBot/
 
 ---
 
+### Cambios en el código
+- [x] **Al finalizar de realizar cambios en el código, realizar las siguientes acciones:**
+    - Compilar y verificar que no hay errores de compilación
+    - En caso de errores de compilación, corregirlos antes de continuar
+    - Solo si es necesario realizar pruebas unitarias para validar que los cambios no rompen funcionalidades existentes
+- **Cuando se agreguen nuevas propiedades a entidades de dominio que se persisten en la base de datos (EF Core + PostgreSQL), siempre crear una migración de EF Core para mantener el esquema sincronizado. Ejecutar:** `dotnet ef migrations add <NombreMigración> --project src\TradingBot.Infrastructure --startup-project src\TradingBot.API`
+
 ## ⚡ Reglas para el Motor de Trading
 
 - Todo indicador técnico (RSI, MACD, EMA, etc.) debe implementar `ITechnicalIndicator`
@@ -106,8 +109,10 @@ TradingBot/
 - Usar `Binance.Net` para todas las interacciones (REST y WebSocket)
 - WebSocket: reconexión automática con backoff exponencial
 - Respetar rate limits de Binance; usar el middleware de throttling incluido
-- Ambiente de desarrollo: usar **Binance Testnet** siempre
+- Ambiente de desarrollo: usar **Binance Demo** (`demo.binance.com`) con `UseDemo: true`
 - Variables de entorno para keys: `BINANCE_API_KEY`, `BINANCE_API_SECRET`
+- Variables de entorno para entorno: `BINANCE_USE_TESTNET`, `BINANCE_USE_DEMO`
+- Entornos disponibles: `BinanceEnvironment.Demo` (demo.binance.com), `BinanceEnvironment.Testnet` (testnet.binance.vision), producción (por defecto)
 
 ---
 
@@ -124,11 +129,15 @@ TradingBot/
 - Convert: https://developers.binance.com/docs/convert/change-log
 - Binance Open API: https://developers.binance.com/docs/binance-open-api/apis
 - Institutional Loan: https://developers.binance.com/docs/institutional_loan/change-log
+
 ---
+
 ## ✅ Lo que SI hacer
-- Actualizar `docs/PROJECT.md` con cualquier cambio relevante en la arquitectura o funcionalidades
+- Actualizar `.github/PROJECT.md` con cualquier cambio relevante en la arquitectura o funcionalidades
 - Actualizar `.github/Pasos_A_Seguir.md` a medida que se cumplen hitos importantes del proyecto
+
 ---
+
 ## 🚫 Lo que NO hacer
 
 - No usar `Thread.Sleep` — siempre `await Task.Delay`
@@ -136,5 +145,3 @@ TradingBot/
 - No hacer llamadas a Binance REST directamente desde controladores
 - No modificar estrategias activas sin pasar por `IStrategyConfigService`
 - No commitear archivos `appsettings.Development.json` con keys reales
-
----

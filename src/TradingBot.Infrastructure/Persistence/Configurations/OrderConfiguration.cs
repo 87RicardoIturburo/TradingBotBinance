@@ -44,6 +44,13 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(x => x.BinanceOrderId)
             .HasMaxLength(64);
 
+        builder.Property(x => x.Fee)
+            .HasDefaultValue(0m)
+            .IsRequired();
+
+        // EstimatedPrice es transitorio — solo para validación de riesgo pre-ejecución
+        builder.Ignore(x => x.EstimatedPrice);
+
         builder.Property(x => x.Version).IsConcurrencyToken();
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.UpdatedAt).IsRequired();

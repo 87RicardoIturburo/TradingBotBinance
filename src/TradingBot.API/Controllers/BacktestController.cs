@@ -1,4 +1,5 @@
 using MediatR;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.API.Middleware;
@@ -7,6 +8,7 @@ using TradingBot.Application.Backtesting;
 namespace TradingBot.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public sealed class BacktestController(ISender mediator) : ControllerBase
 {
@@ -37,10 +39,38 @@ public sealed class BacktestController(ISender mediator) : ControllerBase
             .Select(r => new ParameterRange(r.Name, r.Min, r.Max, r.Step))
             .ToList();
 
+        var rankBy = Enum.TryParse<OptimizationRankBy>(request.RankBy, true, out var parsed)
+            ? parsed
+            : OptimizationRankBy.PnL;
+
         var command = new RunOptimizationCommand(
-            request.StrategyId, request.From, request.To, ranges);
+            request.StrategyId, request.From, request.To, ranges, rankBy);
 
         var result = await mediator.Send(command, ct);
         return result.ToHttpResult(OptimizationResultDto.FromDomain);
+    }
+
+    /// <summary>
+    /// Walk-forward analysis: optimiza en 70% train, valida en 30% test.
+    /// Detecta overfitting si la degradación de métricas supera el 30%.
+    /// </summary>
+    [HttpPost("walk-forward")]
+    public async Task<IResult> WalkForward(
+        [FromBody] RunOptimizationRequest request,
+        CancellationToken ct)
+    {
+        var ranges = request.ParameterRanges
+            .Select(r => new ParameterRange(r.Name, r.Min, r.Max, r.Step))
+            .ToList();
+
+        var rankBy = Enum.TryParse<OptimizationRankBy>(request.RankBy, true, out var parsed)
+            ? parsed
+            : OptimizationRankBy.SharpeRatio;
+
+        var command = new RunWalkForwardCommand(
+            request.StrategyId, request.From, request.To, ranges, rankBy);
+
+        var result = await mediator.Send(command, ct);
+        return result.ToHttpResult(WalkForwardResultDto.FromDomain);
     }
 }

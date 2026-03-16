@@ -105,25 +105,49 @@ public static class InfrastructureServiceExtensions
                             Environment.GetEnvironmentVariable("BINANCE_USE_TESTNET"), out var t)
                          ? t
                          : section.GetValue<bool?>(nameof(BinanceOptions.UseTestnet)) ?? true;
+        var useDemo = bool.TryParse(
+                            Environment.GetEnvironmentVariable("BINANCE_USE_DEMO"), out var d)
+                         ? d
+                         : section.GetValue<bool?>(nameof(BinanceOptions.UseDemo)) ?? false;
 
         // Almacena las opciones resueltas (sin keys) para que otros servicios puedan leerlas
+        var hasCredentials = !string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(apiSecret);
+
         services.Configure<BinanceOptions>(opt =>
         {
-            opt.UseTestnet = useTestnet;
+            opt.UseTestnet      = useTestnet;
+            opt.UseDemo         = useDemo;
+            opt.HasCredentials  = hasCredentials;
             // ApiKey y ApiSecret NO se almacenan en IOptions por seguridad
         });
 
         services.AddBinance(opts =>
         {
-            if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(apiSecret))
+            if (hasCredentials)
                 opts.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
 
-            if (useTestnet)
+            // Demo tiene prioridad sobre Testnet (keys de demo.binance.com)
+            if (useDemo)
+                opts.Environment = BinanceEnvironment.Demo;
+            else if (useTestnet)
                 opts.Environment = BinanceEnvironment.Testnet;
         });
 
         // MarketDataService es Singleton porque mantiene conexiones WebSocket persistentes
         services.AddSingleton<IMarketDataService, MarketDataService>();
+
+        // ExchangeInfoService — Singleton (caché Redis, sin estado mutable propio)
+        services.AddSingleton<IExchangeInfoService, BinanceExchangeInfoService>();
+
+        // AccountService — Singleton (caché Redis breve, sin estado mutable propio)
+        services.AddSingleton<IAccountService, BinanceAccountService>();
+
+        // UserDataStreamService — Singleton + HostedService (mantiene WebSocket persistente)
+        services.AddSingleton<UserDataStreamService>();
+        services.AddSingleton<IUserDataStreamService>(sp =>
+            sp.GetRequiredService<UserDataStreamService>());
+        services.AddHostedService(sp =>
+            sp.GetRequiredService<UserDataStreamService>());
 
         // SpotOrderExecutor — scoped porque cada scope puede tener una orden diferente
         services.AddScoped<ISpotOrderExecutor, BinanceSpotOrderExecutor>();

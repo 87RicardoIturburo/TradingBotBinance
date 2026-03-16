@@ -151,6 +151,12 @@ public sealed class TradingApiClient(HttpClient http)
     public Task<List<SymbolInfoDto>?> GetSymbolsAsync(string quoteAsset = "USDT") =>
         http.GetFromJsonAsync<List<SymbolInfoDto>>($"api/system/symbols?quoteAsset={quoteAsset}");
 
+    public Task<List<AccountBalanceDto>?> GetBalanceAsync() =>
+        http.GetFromJsonAsync<List<AccountBalanceDto>>("api/system/balance");
+
+    public Task<PortfolioExposureDto?> GetPortfolioExposureAsync() =>
+        http.GetFromJsonAsync<PortfolioExposureDto>("api/system/exposure");
+
     // ── Positions & P&L ──────────────────────────────────────────────────
 
     public Task<List<PositionDto>?> GetOpenPositionsAsync() =>

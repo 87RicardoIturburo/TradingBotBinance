@@ -155,7 +155,8 @@ Permite modificar estrategias y reglas en tiempo de ejecución.
 # Binance
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
-BINANCE_USE_TESTNET=true
+BINANCE_USE_TESTNET=false
+BINANCE_USE_DEMO=true
 
 # Base de datos
 POSTGRES_CONNECTION=Host=localhost;Database=tradingbot;Username=postgres;Password=...
@@ -167,11 +168,12 @@ JWT_SECRET=your_jwt_secret
 
 ### Modos de Operación
 
-| Modo           | Descripción                                |
-|----------------|--------------------------------------------|
-| `Live`         | Opera con dinero real en Binance           |
-| `Testnet`      | Opera en el entorno de pruebas de Binance  |
-| `PaperTrading` | Simula operaciones localmente sin exchange |
+| Modo           | Descripción                                                |
+|----------------|-----------------------------------------------------------|
+| `Live`         | Opera con dinero real en Binance                           |
+| `Demo`         | Opera en demo.binance.com (keys de demo)                   |
+| `Testnet`      | Opera en testnet.binance.vision (keys de testnet)          |
+| `PaperTrading` | Simula operaciones localmente sin exchange                 |
 
 ---
 

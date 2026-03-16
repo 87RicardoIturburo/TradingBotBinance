@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
+using TradingBot.Application.RiskManagement;
 using TradingBot.Application.Services;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
@@ -20,13 +22,22 @@ public sealed class OrderServiceTests
     private readonly IRiskManager        _riskManager  = Substitute.For<IRiskManager>();
     private readonly IMarketDataService  _marketData   = Substitute.For<IMarketDataService>();
     private readonly ISpotOrderExecutor  _spotExecutor = Substitute.For<ISpotOrderExecutor>();
+    private readonly IAccountService     _accountService = Substitute.For<IAccountService>();
+    private readonly IExchangeInfoService _exchangeInfo = Substitute.For<IExchangeInfoService>();
     private readonly OrderService        _sut;
 
     public OrderServiceTests()
     {
+        // By default, exchange filters are unavailable (graceful degradation)
+        _exchangeInfo.GetFiltersAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Result<ExchangeSymbolFilters, DomainError>.Failure(
+                DomainError.ExternalService("Filtros no disponibles")));
+
         _sut = new OrderService(
             _orderRepo, _positionRepo, _unitOfWork,
             _riskManager, _marketData, _spotExecutor,
+            _accountService, _exchangeInfo,
+            Options.Create(new TradingFeeConfig()),
             NullLogger<OrderService>.Instance);
     }
 
@@ -315,6 +326,80 @@ public sealed class OrderServiceTests
         result.Value.Should().HaveCount(2);
     }
 
+    // ── Exchange Filter Validation ────────────────────────────────────────
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenExchangeFiltersUnavailable_ContinuesWithoutValidation()
+    {
+        var order = CreatePaperOrder();
+        SetupRiskApproved(order);
+        SetupMarketPrice(55000m);
+
+        // Default setup: filters unavailable — should still succeed
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be(OrderStatus.Filled);
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenQuantityBelowMinQty_ReturnsFilterError()
+    {
+        var order = CreatePaperOrder();
+        SetupRiskApproved(order);
+        SetupExchangeFilters(minQty: 0.1m); // order qty is 0.01 < 0.1
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("VALIDATION_ERROR");
+        result.Error.Message.Should().Contain("mínimo permitido");
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenQuantityAboveMaxQty_ReturnsFilterError()
+    {
+        var order = CreatePaperOrder();
+        SetupRiskApproved(order);
+        SetupExchangeFilters(maxQty: 0.001m); // order qty is 0.01 > 0.001
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("VALIDATION_ERROR");
+        result.Error.Message.Should().Contain("máximo permitido");
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenFiltersPass_ProceedsNormally()
+    {
+        var order = CreatePaperOrder();
+        SetupRiskApproved(order);
+        SetupMarketPrice(55000m);
+        SetupExchangeFilters(); // Default filters that allow 0.01 qty
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be(OrderStatus.Filled);
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenLimitNotionalBelowMinimum_ReturnsFilterError()
+    {
+        var limitPrice = Price.Create(5m).Value;
+        var order = CreatePaperOrder(OrderType.Limit, limitPrice: limitPrice);
+        SetupRiskApproved(order);
+        // qty=0.01 * price=5 = 0.05 USDT notional < minNotional=10
+        SetupExchangeFilters(minNotional: 10m);
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("VALIDATION_ERROR");
+        result.Error.Message.Should().Contain("Notional");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static Order CreatePaperOrder(
@@ -351,5 +436,71 @@ public sealed class OrderServiceTests
     {
         _marketData.GetCurrentPriceAsync(Arg.Any<Symbol>(), Arg.Any<CancellationToken>())
             .Returns(Result<Price, DomainError>.Success(Price.Create(price).Value));
+    }
+
+    private void SetupExchangeFilters(
+        decimal minQty = 0.00001m,
+        decimal maxQty = 9000m,
+        decimal stepSize = 0.00001m,
+        decimal tickSize = 0.01m,
+        decimal minNotional = 5m)
+    {
+        var filters = new ExchangeSymbolFilters(
+            Symbol: "BTCUSDT",
+            MinQty: minQty,
+            MaxQty: maxQty,
+            StepSize: stepSize,
+            TickSize: tickSize,
+            MinNotional: minNotional,
+            MaxNumOrders: 200);
+
+        _exchangeInfo.GetFiltersAsync("BTCUSDT", Arg.Any<CancellationToken>())
+            .Returns(Result<ExchangeSymbolFilters, DomainError>.Success(filters));
+    }
+
+    // ── P0-3: Exchange filter adjustments applied ─────────────────────────
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenFiltersAdjustQuantity_AppliesAdjustmentToOrder()
+    {
+        // stepSize=0.001 → qty 0.01 stays as 0.01 (already a multiple)
+        // stepSize=0.1 → qty 0.01 floors to 0.0 → below minQty → rejected
+        // Use a quantity that gets adjusted but remains valid
+        var qty = Quantity.Create(0.0155m).Value;
+        var order = Order.Create(
+            Guid.NewGuid(), Symbol.Create("BTCUSDT").Value, OrderSide.Buy,
+            OrderType.Market, qty, TradingMode.PaperTrading).Value;
+
+        SetupRiskApproved(order);
+        SetupMarketPrice(55000m);
+        SetupExchangeFilters(minQty: 0.001m, stepSize: 0.01m); // 0.0155 → floor to 0.01
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsSuccess.Should().BeTrue();
+        // The order's quantity should have been adjusted to 0.01 (floor of 0.0155 with stepSize 0.01)
+        result.Value.Quantity.Value.Should().Be(0.01m);
+    }
+
+    // ── P0-4: No phantom Short positions in Spot ──────────────────────────
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenSellWithoutLongPosition_DoesNotOpenShortPosition()
+    {
+        var strategyId = Guid.NewGuid();
+        var order = CreatePaperOrder(side: OrderSide.Sell, strategyId: strategyId);
+        SetupRiskApproved(order);
+        SetupMarketPrice(55000m);
+
+        // No open positions for this strategy
+        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(new List<Position>());
+
+        await _sut.PlaceOrderAsync(order);
+
+        // Should NOT create a new position (no Short in Spot)
+        await _positionRepo.DidNotReceive().AddAsync(
+            Arg.Any<Position>(),
+            Arg.Any<CancellationToken>());
     }
 }

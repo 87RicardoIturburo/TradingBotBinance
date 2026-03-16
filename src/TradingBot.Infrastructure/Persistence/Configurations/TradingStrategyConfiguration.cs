@@ -53,7 +53,8 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
                 rc => JsonSerializer.Serialize(new RiskConfigDto(
                     rc.MaxOrderAmountUsdt, rc.MaxDailyLossUsdt,
                     rc.StopLossPercent.Value, rc.TakeProfitPercent.Value,
-                    rc.MaxOpenPositions), JsonOptions),
+                    rc.MaxOpenPositions,
+                    rc.UseAtrSizing, rc.RiskPercentPerTrade, rc.AtrMultiplier), JsonOptions),
                 json => DeserializeRiskConfig(json));
 
         // ── Indicators → columna jsonb via campo _indicators ────────────────
@@ -134,7 +135,8 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         var d = JsonSerializer.Deserialize<RiskConfigDto>(json, JsonOptions)!;
         return RiskConfig.Create(
             d.MaxOrderAmountUsdt, d.MaxDailyLossUsdt,
-            d.StopLossPercent, d.TakeProfitPercent, d.MaxOpenPositions).Value;
+            d.StopLossPercent, d.TakeProfitPercent, d.MaxOpenPositions,
+            d.UseAtrSizing, d.RiskPercentPerTrade, d.AtrMultiplier).Value;
     }
 
     private static List<IndicatorConfig> DeserializeIndicators(string json)
@@ -149,7 +151,10 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         decimal MaxDailyLossUsdt,
         decimal StopLossPercent,
         decimal TakeProfitPercent,
-        int     MaxOpenPositions);
+        int     MaxOpenPositions,
+        bool    UseAtrSizing = false,
+        decimal RiskPercentPerTrade = 1m,
+        decimal AtrMultiplier = 2m);
 
     private sealed record IndicatorConfigDto(
         IndicatorType                  Type,

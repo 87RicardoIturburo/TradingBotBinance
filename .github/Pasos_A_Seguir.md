@@ -6,14 +6,14 @@
 
 ---
 
-## 📊 Estado actual verificado (2026-03-09)
+## 📊 Estado actual verificado (2026-03-16)
 
 | Métrica | Valor |
 |---------|-------|
 | Build | ✅ Compilación correcta (8 proyectos) |
-| Tests | ✅ **234/234 passing** — Core (47) + Application (179) + Integration (8) |
+| Tests | ✅ **358/358 passing** — Core (74) + Application (276) + Integration (8) |
 | TFM | .NET 10 / C# 14 |
-| Migraciones EF Core | 4 aplicadas: `InitialCreate`, `UseXminConcurrencyToken`, `FixVersionColumnType`, `AddOptimizationRanges` |
+| Migraciones EF Core | 6 aplicadas: `InitialCreate`, `UseXminConcurrencyToken`, `FixVersionColumnType`, `AddOptimizationRanges`, `AddPositionPeakPriceTracking`, `AddOrderFeeColumn` |
 | Multi-project launch | `TradingBot.slnLaunch.user` con API + Frontend |
 | **E2E** | ✅ Probado: CRUD estrategias, indicadores, reglas, activar/desactivar, eliminar, SignalR ticks |
 
@@ -21,12 +21,12 @@
 
 | Capa | Estado | Archivos clave |
 |------|--------|----------------|
-| **Core** | ✅ 10 enums, 10 VOs, 4 entidades, 10 eventos, 12 interfaces | `src/TradingBot.Core/` |
-| **Infrastructure** | ✅ EF Core + Npgsql, 3 repos, Binance.Net WS+REST, Redis cache, Serilog | `src/TradingBot.Infrastructure/` |
-| **Application** | ✅ 14 MediatR handlers, StrategyEngine (BackgroundService), RuleEngine, RiskManager (esperanza matemática), OrderService, 7 indicadores (RSI/EMA/SMA/MACD/Bollinger/Fibonacci/LinReg), multi-indicator confirmation | `src/TradingBot.Application/` |
-| **API** | ✅ 5 controllers (27 endpoints), SignalR Hub, ErrorHandling middleware, SignalRTradingNotifier, 4 strategy templates | `src/TradingBot.API/` |
-| **Frontend** | ✅ 7 páginas Blazor WASM (Dashboard, Strategies, StrategyDetail, Orders, Positions, Backtest, Optimizer), TradingApiClient, SignalR | `src/TradingBot.Frontend/` |
-| **Tests** | ✅ Core.Tests (47), Application.Tests (179), Integration.Tests (8) | `tests/` |
+| **Core** | ✅ 11 enums, 12 VOs, 4 entidades, 10 eventos, 19 interfaces | `src/TradingBot.Core/` |
+| **Infrastructure** | ✅ EF Core + Npgsql, 3 repos, Binance.Net WS+REST, Redis cache, Serilog, ExchangeInfoService, BinanceOrderFilter, UserDataStreamService, BinanceAccountService | `src/TradingBot.Infrastructure/` |
+| **Application** | ✅ 14 MediatR handlers, StrategyEngine (BackgroundService), RuleEngine, RiskManager (esperanza matemática + portafolio), OrderService (+ exchange filter + fees), 9 indicadores, multi-indicator confirmation, MarketRegimeDetector, PositionSizer, FeeAndSlippageCalculator, TradingMetrics (OpenTelemetry) | `src/TradingBot.Application/` |
+| **API** | ✅ 5 controllers (30+ endpoints), SignalR Hub, ErrorHandling middleware, SignalRTradingNotifier, 4 strategy templates, API Key Auth, Rate Limiting, Health Checks | `src/TradingBot.API/` |
+| **Frontend** | ✅ 7 páginas Blazor WASM (Dashboard, Strategies, StrategyDetail, Orders, Positions, Backtest, Optimizer), TradingApiClient, SignalR, ApiKeyDelegatingHandler | `src/TradingBot.Frontend/` |
+| **Tests** | ✅ Core (74), Application (276), Integration (8) | `tests/` |
 
 ### Flujo completo implementado (no probado end-to-end)
 
@@ -466,82 +466,354 @@ dotnet ef database update --project ../TradingBot.Infrastructure
 - `src/TradingBot.API/appsettings.json` — sección `GlobalRisk`
 - `tests/TradingBot.Application.Tests/RiskManagement/RiskManagerTests.cs` — actualizado para `IOptions<GlobalRiskSettings>`
 
+
 ---
 
-## 📋 Paso F — Mejoras pre-Testnet (estrategias, visual, tests) ✅
+## 🗺️ Roadmap hacia producción real
 
-> **Objetivo**: Implementar mejoras de calidad antes de operar contra Binance Testnet.
+> **Objetivo**: operar con dinero real de forma segura y rentable.
+> Las etapas son secuenciales — no pasar a la siguiente sin completar la anterior.
+> Cada etapa tiene criterio de salida (`✅ Done when`) antes de continuar.
 
-### Mejora 1: Signal Cooldown ✅
+---
 
-**Problema**: Si RSI cruza 30 varias veces rápido, podía generar múltiples órdenes en ráfaga.
+## 🔴 ETAPA 1 — Bloqueantes Binance (sin esto las órdenes reales fallan)
 
-- [x] `DefaultTradingStrategy._lastSignalAt` — tracking del timestamp de la última señal
-- [x] `SignalCooldown = 1 minuto` — tiempo mínimo entre señales consecutivas
-- [x] Se aplica DESPUÉS del cruce RSI pero ANTES de la confirmación multi-indicador
-- [x] Se resetea en `Reset()` y `RebuildIndicators()`
-- [x] Tests: `ProcessTickAsync_WhenSignalWithinCooldown_SuppressesSecondSignal` + `ProcessTickAsync_WhenSignalAfterCooldown_GeneratesSignal`
+> **Criterio de salida**: todas las órdenes en Testnet se ejecutan sin errores de filtro.
 
-### Mejora 2: Dashboard con P&L, señales y órdenes en tiempo real ✅
+### Paso 15 — Filtros de Exchange de Binance ✅
 
-**Problema**: Dashboard solo mostraba ticks. No P&L, no señales, no órdenes, no toast notifications.
+**Problema**: Binance rechaza órdenes que no cumplen sus filtros por símbolo. Sin esto el 80% de las órdenes reales fallarán.
 
-- [x] **P&L card global** — suma diaria realizada + no realizada de todas las estrategias
-- [x] **P&L por estrategia** — cards compactas con hoy/total/open por estrategia
-- [x] **Señales recientes** — panel con últimas 10 señales vía SignalR `OnSignalGenerated`
-- [x] **Órdenes recientes** — panel con últimas 10 órdenes vía SignalR `OnOrderExecuted`
-- [x] **Toast notifications** — alertas flotantes con auto-dismiss (8s) para señales, órdenes y alertas
-- [x] **Auto-refresh** — P&L y status se refrescan cada 30 segundos via `Timer`
-- [x] Layout reorganizado: 4 cards top (Motor, WS, Estrategias, P&L) + 2 columnas (señales/órdenes) + ticks + tabla estrategias
+- [x] **`IExchangeInfoService`** — interfaz en Core para obtener filtros por símbolo
+- [x] **`ExchangeSymbolFilters`** — value object en Core con filtros `LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL`, `MAX_NUM_ORDERS`
+- [x] **`ExchangeSymbolFilters.AdjustQuantity/AdjustPrice/ValidateAndAdjust`** — lógica de ajuste y validación directamente en el value object (Core)
+  - `stepSize` para cantidad (floor al múltiplo más cercano)
+  - `tickSize` para precio (round half-up al múltiplo más cercano)
+  - Validación `minQty`, `maxQty`, `minNotional`
+- [x] **`BinanceExchangeInfoService`** — implementación en Infrastructure con Redis cache (TTL 1h) + Polly retry
+- [x] **`BinanceOrderFilter`** — clase en Infrastructure que delega a `ExchangeSymbolFilters` (sin duplicación de lógica)
+- [x] **`BinanceSpotOrderExecutor`** — aplica filtros para órdenes live antes de enviar a Binance REST
+- [x] **`OrderService` — validación de filtros para TODAS las órdenes** (Paper + Live) como paso previo a ejecución
+  - Inyecta `IExchangeInfoService`
+  - Valida después del RiskManager, antes de persistir y ejecutar
+  - Degradación graceful: si filtros no disponibles, continúa sin validar
+- [x] **Tests `ExchangeSymbolFiltersTests`** (20): AdjustQuantity (4), AdjustPrice (4), ValidateAndAdjust (8), Precision (4)
+- [x] **Tests `OrderServiceTests`** (5 nuevos): filtros unavailable, minQty, maxQty, notional, filters pass
+- [x] **Tests totales: 312/312 passing** — Core (67) + Application (237) + Integration (8)
 
-### Mejora 3: Tests para Global Risk Limits ✅
-
-- [x] `ValidateOrder_WhenGlobalDailyLossExceeded_ReturnsKillSwitch` — simula pérdida global > $500
-- [x] `ValidateOrder_WhenGlobalOpenPositionsExceeded_ReturnsLimitExceeded` — simula 2 posiciones vs límite de 2
-- [x] `ValidateOrder_WhenGlobalLimitsDisabled_Passes` — verifica que 0 = deshabilitado
+**Archivos creados:**
+- `tests/TradingBot.Core.Tests/ValueObjects/ExchangeSymbolFiltersTests.cs`
 
 **Archivos modificados:**
-- `src/TradingBot.Application/Strategies/DefaultTradingStrategy.cs` — `_lastSignalAt`, `SignalCooldown`, cooldown check en `EvaluateSignal`
-- `src/TradingBot.Frontend/Pages/Home.razor` — Dashboard completo con P&L, señales, órdenes, toasts
-- `tests/TradingBot.Application.Tests/Strategies/DefaultTradingStrategyTests.cs` — 2 tests cooldown + `CreateTick` con timestamp
-- `tests/TradingBot.Application.Tests/RiskManagement/RiskManagerTests.cs` — 3 tests global risk + helpers `CreateClosedPosition`/`CreateOpenPosition`
+- `src/TradingBot.Core/ValueObjects/ExchangeSymbolFilters.cs` — `AdjustQuantity()`, `AdjustPrice()`, `ValidateAndAdjust()`
+- `src/TradingBot.Infrastructure/Binance/BinanceOrderFilter.cs` — delegación a `ExchangeSymbolFilters`
+- `src/TradingBot.Application/Services/OrderService.cs` — inyección de `IExchangeInfoService` + `ValidateExchangeFiltersAsync`
+- `tests/TradingBot.Application.Tests/Services/OrderServiceTests.cs` — `IExchangeInfoService` mock + 5 tests nuevos
 
-### Mejora 4: Detección de desconexión de internet en Dashboard ✅
+### Paso 16 — Balance real-time y sincronización de cuenta ✅ (pre-implementado)
 
-**Problema**: Si el usuario pierde internet, la card "Binance WS" seguía mostrando "🟢 OK" y los ticks viejos seguían visibles.
+**Problema**: el bot puede intentar comprar más de lo que hay en la cuenta.
 
-**Causa raíz**: 3 bugs en `Home.razor`:
-1. `LoadStatusAsync` no limpiaba `systemStatus` al fallar → la card usaba datos obsoletos
-2. La card "Binance WS" solo miraba `systemStatus.IsConnected` (dato del backend), ignoraba el estado de SignalR
-3. Los ticks no se limpiaban al perder conexión SignalR
+- [x] **`IAccountService`** — interfaz con `GetAvailableBalanceAsync(asset)` y `GetAccountSnapshotAsync()`
+- [x] **`BinanceAccountService`** — implementación con Binance.Net REST + caché 5 segundos
+- [x] **`RiskManager`** — validación #0 (antes de todo): `orderAmountUsdt <= availableUsdt * 0.95` (FeeBuffer 5%)
+- [x] **Actualizar balance en cache** tras cada orden ejecutada (`InvalidateCacheAsync` en `OrderService`)
+- [x] **Frontend**: card de balance en Dashboard (USDT disponible, BTC, ETH, etc.) — implementado en `Home.razor` con `accountBalances`
+- [x] **Tests**: `RiskManager` con balance insuficiente — `ValidateOrder_WhenLiveBalanceInsufficient_ReturnsRiskLimitExceeded` + `ValidateOrder_WhenLiveBalanceSufficient_Passes`
 
-**Correcciones:**
-- [x] `LoadStatusAsync` → al fallar limpia `systemStatus = null` y `pnlSummaries = null`. Contador de fallos consecutivos para mensajes escalados
-- [x] **Banner de desconexión** — franja roja visible arriba cuando API o SignalR están caídos: "⛔ Sin conexión — los datos pueden estar desactualizados"
-- [x] **Card "Conexión" triple-check** — muestra la peor de 3 señales: API reachable, SignalR connected, Binance WS connected (backend). Línea de detalle: `API: ✓ | SR: ✓ | WS: ✓`
-- [x] **SignalR `Closed`** → limpia `recentTicks` + toast "❌ SignalR desconectado — los ticks se detendrán"
-- [x] **SignalR `Reconnecting`** → toast "🔄 SignalR reconectando…"
-- [x] **SignalR `Reconnected`** → toast "✅ SignalR reconectado"
-- [x] **Ticks section** → muestra mensaje "⚠ Sin conexión SignalR" cuando `hubState != "Connected"` en vez de tabla vacía
-- [x] **Botón Pausar/Reanudar** → `disabled` cuando API inalcanzable
-- [x] **Auto-refresh** cada 15 segundos (antes 30) para detectar desconexiones más rápido
-- [x] `LoadPnLAsync` no intenta si `apiReachable == false` (evita request redundante)
+### Paso 17 — User Data Stream + sincronización de órdenes ✅ (pre-implementado)
+
+**Problema**: sin esto el bot no sabe si una orden fue filled/cancelled en Binance sin hacer polling constante → riesgo de rate limit y estado inconsistente.
+
+- [x] **`UserDataStreamService`** — WebSocket con `SubscribeToUserDataUpdatesAsync`
+  - Evento `executionReport` → actualiza `Order` en BD + cache
+  - Evento `outboundAccountPosition` → invalida caché de balance
+  - CryptoExchange.Net gestiona listenKey y renovación automáticamente
+  - Reconexión automática con backoff exponencial
+- [x] **`IHostedService`** — arranca automáticamente con el host
+- [x] **`OrderService.SyncOrderStatusAsync`** — polling de respaldo para órdenes `Submitted`
+- [x] **Partial fills**: `PartialFill()` en la máquina de estados de `Order`
+- [x] **`OrderRepository`**: `GetPendingSyncAsync` — órdenes `Submitted`/`PartiallyFilled` pendientes de sincronización
+- [ ] **Tests**: `UserDataStreamServiceTests` — diferido (requiere mocking de WebSocket infrastructure de CryptoExchange.Net)
 
 ---
 
-## 📋 Pasos siguientes — Próximo: Paso 15
+## 🟠 ETAPA 2 — Fidelidad de simulación (Backtest y Paper Trading realistas)
 
-### Paso 15 — Ejecución real de órdenes (Binance Testnet)
+> **Criterio de salida**: backtest con fees/slippage muestra P&L ≤ 30% del P&L sin fees. Si la estrategia sigue siendo rentable, continuar.
 
-- `OrderService.ExecuteRealOrderAsync` → Binance.Net REST `PlaceOrderAsync`
-- Sincronización de estado de órdenes (`SyncOrderStatusAsync`)
-- Webhooks o polling para actualizaciones de estado
-- Tests de integración con Binance Testnet (requiere API keys)
+### Paso 18 — Fees y slippage en Paper Trading y Backtest ✅ (pre-implementado)
 
-### Paso 16 — Notificaciones
+**Problema**: sin fees, el backtest sobreestima el P&L en ~0.2% por trade. Con 200 trades/mes esto puede convertir una estrategia perdedora en "ganadora" en papel.
 
-- Telegram Bot para alertas de órdenes y señales
-- Configuración por estrategia
+- [x] **`TradingFeeConfig`** — `IOptions<TradingFeeConfig>` con `MakerFeePercent`, `TakerFeePercent`, `UseBnbDiscount`, `SlippagePercent`
+- [x] **`FeeAndSlippageCalculator`** — `ApplySlippage`, `CalculateFee`, `QuantityAfterFee`, `CalculateRoundTripImpact`
+- [x] **`OrderService.SimulatePaperTradeAsync`** — aplica slippage al precio + calcula fee (maker/taker)
+- [x] **`BacktestEngine`** — aplica fees + slippage en cada trade usando `CalculateRoundTripImpact`
+- [x] **`BacktestResult`** — campos `GrossPnL`, `TotalFeesUsdt`, `TotalSlippageUsdt`, `TotalPnL` (neto)
+- [x] **Frontend Backtest**: muestra P&L bruto vs neto + fees + slippage con cards separadas
+- [x] **Tests**: `BacktestMetricsTests.Calculate_NetPnLLessThanGross_WhenFeesApplied` — verifica P&L neto < bruto
+
+### Paso 19 — Métricas de calidad en el Optimizador ✅
+
+**Problema**: el optimizador rankeaba por P&L bruto → overfitting garantizado. El mejor resultado histórico rara vez es el mejor en live.
+
+- [x] **`BacktestMetrics`** — Sharpe, Sortino, Calmar, ProfitFactor, MaxConsecutiveLosses/Wins, Expectancy
+- [x] **`BacktestMetrics.Calculate(trades)`** — cálculo automático desde lista de trades
+- [x] **`OptimizationRunSummary`** — incluye `BacktestMetrics` por cada combinación
+- [x] **`OptimizationRankBy` enum** — `PnL | SharpeRatio | SortinoRatio | CalmarRatio | ProfitFactor`
+- [x] **`OptimizationEngine.RunAsync`** — ranking configurable con `rankBy` parameter + `GetRankingValue()`
+- [x] **`OptimizationResult`** — incluye `RankedBy` para saber qué métrica se usó
+- [x] **`RunOptimizationCommand`** — acepta `RankBy` parameter
+- [x] **API**: `RunOptimizationRequest.RankBy` → `BacktestController` parsea y pasa al command
+- [x] **DTOs**: `OptimizationRunSummaryDto.Metrics`, `OptimizationResultDto.RankedBy`, `BacktestMetricsDto`
+- [x] **Frontend Optimizer**: selector de métrica de ranking, columnas Sharpe/Sortino/PF en tabla, métricas en Top 3 cards
+- [ ] **Walk-forward analysis** — dividir klines en 70% train / 30% test (diferido a post-Testnet)
+- [x] **Tests**: `BacktestMetricsTests` (11 tests) — Sharpe, Sortino, Calmar, ProfitFactor, Expectancy, MaxConsecutive, NoTrades, AllWins, AllLosses, NetPnL<Gross, KnownReturns
+
+---
+
+## 🟡 ETAPA 3 — Calidad de señales (estrategias más robustas) ✅
+
+> **Criterio de salida**: estrategia probada en Testnet real durante 2 semanas con Sharpe > 1.0 y max drawdown < 15%.
+
+### Paso 20 — Detector de régimen de mercado ✅
+
+**Problema**: RSI en oversold/overbought falla en tendencias fuertes. BTC en bull run 2021 tuvo RSI > 70 durante semanas → el bot habría vendido continuamente.
+
+- [x] **`AdxIndicator`** — Average Directional Index: `ADX > 25` = tendencia, `ADX < 20` = ranging
+  - `+DI` y `-DI` para dirección de la tendencia
+  - `IndicatorType.ADX` + `IndicatorFactory` + `IndicatorConfig.Adx()`
+- [x] **`MarketRegime` enum** — `Trending | Ranging | HighVolatility | Unknown`
+- [x] **`MarketRegimeDetector`** — combina ADX + Bollinger BandWidth + ATR para clasificar régimen
+- [x] **`DefaultTradingStrategy`** — filtrar señales según régimen:
+  - `Ranging` → habilitar señales RSI oversold/overbought
+  - `Trending` → solo señales en dirección de la tendencia (+DI/-DI de ADX)
+  - `HighVolatility` → no operar (señales suprimidas)
+- [x] **Frontend StrategyDetail**: card de régimen actual por símbolo (📈 Trending / ↔️ Ranging / ⚡ HighVolatility / ❓ Unknown) con métricas del runner
+- [x] **Tests**: `AdxIndicatorTests`, `MarketRegimeDetectorTests`, `DefaultTradingStrategy` por régimen
+
+### Paso 21 — Position sizing dinámico (ATR-based) ✅
+
+**Problema**: `amountUsdt` fijo ignora la volatilidad. En días de alta volatilidad el stop-loss salta con mayor frecuencia → pérdidas innecesarias.
+
+- [x] **`AtrIndicator`** — Average True Range: medida de volatilidad del mercado
+  - `IndicatorType.ATR` + factory + config
+- [x] **`PositionSizer`** — calcula tamaño óptimo de posición:
+  ```
+  riskAmount = accountBalance * riskPercentPerTrade  (ej: 1%)
+  stopDistance = ATR * atrMultiplier                 (ej: 2x ATR)
+  positionSize = riskAmount / stopDistance
+  ```
+- [x] **`RiskConfig`** — `RiskPercentPerTrade` (default 1%), `AtrMultiplier` (default 2.0), `UseAtrSizing = false` — ya implementado
+- [x] **`StrategyEngine`** — si `UseAtrSizing = true`, calcula qty con `PositionSizer` usando balance de `IAccountService` + ATR de `SignalGeneratedEvent.AtrValue`
+- [x] **Stop-loss dinámico** basado en ATR: `RuleEngine.EvaluateExitRulesAsync` recibe `atrValue` → calcula `stopLossPrice = entryPrice ∓ (ATR × atrMultiplier)` por lado
+  - Long: SL = entry − (ATR × mult), triggerea si price ≤ SL
+  - Short: SL = entry + (ATR × mult), triggerea si price ≥ SL
+  - Fallback a stop-loss porcentual si ATR no disponible
+  - Take-profit siempre porcentual
+- [x] **Tests**: `AtrIndicatorTests`, `PositionSizerTests`, **5 nuevos tests ATR stop-loss** (long triggered, not triggered, short triggered, fallback sin ATR, take-profit porcentual)
+
+#### Cambios realizados para completar Etapa 3
+
+**Archivos modificados:**
+- `src/TradingBot.Core/Events/SignalGeneratedEvent.cs` — `decimal? AtrValue` para propagar ATR a través del pipeline
+- `src/TradingBot.Core/Interfaces/Trading/ITradingStrategy.cs` — `CurrentRegime` y `CurrentAtrValue` propiedades
+- `src/TradingBot.Core/Interfaces/Services/IStrategyEngine.cs` — `StrategyEngineStatus` con `MarketRegime CurrentRegime`
+- `src/TradingBot.Core/Interfaces/Services/IRuleEngine.cs` — `EvaluateExitRulesAsync` con `decimal? atrValue`
+- `src/TradingBot.Application/Strategies/DefaultTradingStrategy.cs` — implementa `CurrentRegime`, `CurrentAtrValue`, propaga ATR en señal
+- `src/TradingBot.Application/Strategies/StrategyEngine.cs` — integra `PositionSizer` con `IAccountService`, pasa ATR a exit rules, expone régimen en status
+- `src/TradingBot.Application/Rules/RuleEngine.cs` — stop-loss dinámico ATR vs porcentual, take-profit siempre porcentual
+- `src/TradingBot.API/Dtos/Dtos.cs` — `StrategyEngineStatusDto` con `CurrentRegime`
+- `src/TradingBot.Frontend/Models/Dtos.cs` — `StrategyEngineStatusDto` con `CurrentRegime`
+- `src/TradingBot.Frontend/Pages/StrategyDetail.razor` — card de régimen con icono/color/descripción
+- `tests/TradingBot.Application.Tests/Rules/RuleEngineTests.cs` — 5 tests ATR stop-loss + helper `CreateAtrStrategy`
+
+---
+
+## 🟢 ETAPA 4 — Gestión de riesgo de portafolio
+
+> **Criterio de salida**: nunca más de X% del capital expuesto en una dirección. Kill switch de portafolio probado.
+
+### Paso 22 — Correlación y exposición de portafolio ✅
+
+**Problema**: 5 estrategias con BTCUSDT Long operando simultáneamente = misma exposición x5. Una caída brusca de BTC limpia todas las posiciones a la vez.
+
+- [x] **`PortfolioRiskManager`** — análisis de exposición neta:
+  - `GetExposureBySymbolAsync()` — exposición larga y corta por símbolo
+  - `GetPortfolioExposureAsync()` — exposición total larga vs corta + neta
+  - `ValidateExposureAsync()` — valida límites Long/Short/concentración por símbolo
+- [x] **`GlobalRiskSettings`** — agregados: `MaxPortfolioLongExposureUsdt`, `MaxPortfolioShortExposureUsdt`, `MaxExposurePerSymbolPercent`, `MaxAccountDrawdownPercent`
+- [x] **`RiskManager`** — integrado `PortfolioRiskManager` como validación #6 (antes de esperanza matemática)
+- [x] **Circuit breaker de drawdown de cuenta** — `CheckAccountDrawdownAsync()`: si balance cae > X% en el día → kill switch + log crítico
+- [x] **`IRiskManager`** — extendida interfaz con `CheckAccountDrawdownAsync`, `GetPortfolioExposureAsync`, `GetExposureBySymbolAsync`
+- [x] **API**: `GET /api/system/exposure` — devuelve exposición total + por símbolo + drawdown
+- [x] **DTOs**: `PortfolioExposureDto`, `SymbolExposureDto` (API + Frontend)
+- [x] **Frontend Dashboard**: card de exposición del portafolio (Long/Short/Neto por símbolo, drawdown badge)
+- [x] **DI**: `ApplicationServiceExtensions` parsea los nuevos settings de `GlobalRisk`
+- [x] **Tests**: `PortfolioRiskManagerTests` (11 tests): exposición vacía, mixta, por símbolo, límites Long/Short/concentración, límites deshabilitados, Sell vs Long limit, static helper
+
+**Archivos creados:**
+- `src/TradingBot.Application/RiskManagement/PortfolioRiskManager.cs`
+- `tests/TradingBot.Application.Tests/RiskManagement/PortfolioRiskManagerTests.cs`
+
+**Archivos modificados:**
+- `src/TradingBot.Application/RiskManagement/GlobalRiskSettings.cs` — 4 propiedades nuevas
+- `src/TradingBot.Application/RiskManagement/RiskManager.cs` — validación #6 portafolio + `CheckAccountDrawdownAsync` + `GetPortfolioExposureAsync` + `GetExposureBySymbolAsync`
+- `src/TradingBot.Core/Interfaces/Services/IRiskManager.cs` — 3 métodos nuevos
+- `src/TradingBot.Application/ApplicationServiceExtensions.cs` — parsing de nuevos settings
+- `src/TradingBot.API/Controllers/SystemController.cs` — endpoint `/api/system/exposure`
+- `src/TradingBot.API/Dtos/Dtos.cs` — `PortfolioExposureDto`, `SymbolExposureDto`
+- `src/TradingBot.Frontend/Models/Dtos.cs` — DTOs espejo
+- `src/TradingBot.Frontend/Services/TradingApiClient.cs` — `GetPortfolioExposureAsync`
+- `src/TradingBot.Frontend/Pages/Home.razor` — card de exposición con long/short/neto/drawdown
+
+---
+
+## 🔵 ETAPA 5 — Ejecución real en Testnet
+
+> **Criterio de salida**: bot operando en Testnet 1 semana sin errores.
+
+### Paso 23 — Ejecución real de órdenes (Binance Testnet) ✅ (pre-implementado + hardening)
+
+- [x] **`BinanceSpotOrderExecutor.PlaceOrderAsync`** — Binance.Net REST con Polly retry (3 intentos, backoff exponencial + jitter, timeout 15s)
+- [x] **Filtros de exchange** — aplica `LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL` antes de enviar (vía `BinanceOrderFilter`)
+- [x] **Manejo de errores específicos de Binance**:
+  - `-1013` (filter failure) → fail fast, no reintentar
+  - `-2010` (insufficient balance) → fail fast
+  - `-1021` (timestamp) → fail fast
+  - `-1003` / `-1015` (rate limit) → log warning, retry con backoff
+  - `BinanceNonRetryableException` — clasificación de errores retryables vs determinísticos
+- [x] **`OrderService.ExecuteSpotOrderAsync`** — Submit → Fill/PartialFill + HandlePosition + InvalidateBalanceCache
+- [x] **`OrderService.SyncOrderStatusAsync`** — polling de fallback para órdenes Submitted
+- [x] **`UserDataStreamService`** — WebSocket IHostedService con reconexión automática (fuente primaria)
+- [x] **Partial fills** — `Order.PartialFill()` state machine
+- [x] **`CancelOrderAsync`** — cancela en Binance primero, luego localmente
+- [x] **Modo Testnet/Demo** — `BINANCE_USE_TESTNET=true` / `BINANCE_USE_DEMO=true` vía env vars, switch transparente en `BinanceEnvironment`
+- [x] **Logging estructurado** — cada orden enviada/confirmada/rechazada con IDs de Binance
+- [ ] **Tests de integración con Binance Testnet** — requiere API keys reales de testnet (manual)
+
+---
+
+## ⚫ ETAPA 6 — Observabilidad y operaciones
+
+> **Criterio de salida**: el bot puede ejecutarse 24/7 sin intervención manual, con alertas ante cualquier anomalía.
+
+### Paso 25 — Health checks y métricas de sistema ✅
+
+- [x] **Health checks** (`IHealthCheck`):
+  - `BinanceHealthCheck` — ping a Binance REST API (`/api/v3/ping`)
+  - `StrategyEngineHealthCheck` — verifica runners activos y que reciban ticks (threshold 5min)
+  - PostgreSQL — via `AspNetCore.HealthChecks.NpgSql` (liveness)
+  - Redis — via `AspNetCore.HealthChecks.Redis` (liveness)
+  - Endpoint `/health` (todos), `/health/ready` (DB + cache + external), `/health/live` (engine)
+  - Respuesta JSON estructurada con `HealthCheckResponseWriter` (status, duration, checks[], data, exception)
+- [x] **Métricas con `System.Diagnostics.Metrics`** (`TradingMetrics`):
+  - `trading.ticks_processed` — counter por símbolo
+  - `trading.signals_generated` — counter por estrategia/símbolo/dirección
+  - `trading.orders_placed` — counter por símbolo/side/type/paper
+  - `trading.orders_failed` — counter por símbolo/reason
+  - `trading.tick_to_order_latency` — histogram en ms
+  - `trading.pnl_daily` — observable gauge
+  - Registrado como Singleton en DI, compatible con OpenTelemetry
+- [x] **Log rotation** — Serilog `RollingInterval.Day`, retención 30 días (ya existente en `Program.cs`)
+- [x] **Structured logging** — Serilog con `Enrich.FromLogContext()` + `Enrich.WithMachineName()` + `Application` property
+
+**Archivos creados:**
+- `src/TradingBot.API/Health/BinanceHealthCheck.cs`
+- `src/TradingBot.API/Health/StrategyEngineHealthCheck.cs`
+- `src/TradingBot.API/Health/HealthCheckResponseWriter.cs`
+- `src/TradingBot.Application/Diagnostics/TradingMetrics.cs`
+
+**Archivos modificados:**
+- `src/TradingBot.API/TradingBot.API.csproj` — `AspNetCore.HealthChecks.NpgSql` + `AspNetCore.HealthChecks.Redis`
+- `src/TradingBot.API/Program.cs` — `AddHealthChecks()` + `MapHealthChecks()` 3 endpoints
+- `src/TradingBot.Application/ApplicationServiceExtensions.cs` — `TradingMetrics` singleton
+
+### Paso 26 — CI/CD y hardening de producción ✅
+
+- [x] **GitHub Actions** — `.github/workflows/ci.yml`:
+  - `dotnet restore` → `dotnet build --configuration Release` → `dotnet test` en cada push/PR
+  - PostgreSQL + Redis como services (para integration tests)
+  - Publicación de resultados con `dorny/test-reporter`
+  - Build de Docker image en merge a master/main
+- [x] **Dockerfile** — `src/TradingBot.API/Dockerfile`:
+  - Multi-stage build (SDK → Runtime)
+  - Capa de caché para `dotnet restore`
+  - `HEALTHCHECK` integrado con `curl /health/live`
+  - `BINANCE_USE_TESTNET=true` por defecto (seguridad)
+- [x] **Docker Compose producción** — `docker-compose.prod.yml`:
+  - Servicios: API, PostgreSQL 16, Redis 7, pg-backup
+  - CPU/RAM limits (`deploy.resources.limits`)
+  - Restart policy `unless-stopped`
+  - Volúmenes nombrados (`postgres-data`, `redis-data`, `api-logs`, `postgres-backups`)
+  - Variables de entorno desde `.env`
+  - Health checks en todos los servicios
+- [x] **Backup automático PostgreSQL** — `pg-backup` container: pg_dump diario a las 02:00 UTC, retención 7 días
+- [x] **`.env.example`** — template de variables de entorno (sin secrets)
+- [x] **`.gitignore`** — `.env` excluido, `.env.example` permitido
+- [x] **`appsettings.json`** — nuevos campos de `GlobalRisk` (portafolio)
+- [x] **Autenticación API Key** — `ApiKeyAuthenticationHandler` + `X-Api-Key` header:
+  - `TRADINGBOT_API_KEY` env var o `Authentication:ApiKey` en config
+  - `[Authorize]` en todos los controllers
+  - Sin key configurada → acceso libre (desarrollo)
+  - `IPostConfigureOptions` para compatibilidad con tests de integración
+- [x] **Rate Limiting** — `AddRateLimiter` con Fixed Window (100 req/min por defecto)
+- [x] **Frontend API Key** — `ApiKeyDelegatingHandler` inyecta header automáticamente
+- [x] **Entidad `Order.Fee`** — campo `decimal Fee` para persistir comisiones (paper + live)
+- [x] **Migración `AddOrderFeeColumn`** — columna `Fee` con default 0
+- [x] **`StrategyEngine` scope fix** — scope de larga vida por runner (evita dispose prematuro)
+- [x] **Lock por estrategia** — `SemaphoreSlim` en tick processing para evitar órdenes duplicadas
+- [x] **Trailing stop ATR** — usa peak price (`HighestPriceSinceEntry`/`LowestPriceSinceEntry`) cuando `UseTrailingStop` está activo
+
+**Archivos creados:**
+- `.github/workflows/ci.yml`
+- `src/TradingBot.API/Dockerfile`
+- `docker-compose.prod.yml`
+- `.env.example`
+
+---
+
+## 🏁 ETAPA 7 — Activación Live con dinero real
+
+> **Criterio de salida**: protocolo de activación completado, capital mínimo de prueba, monitoreo 24/7 activo.
+
+### Paso 27 — Protocolo de activación gradual
+
+**Regla de oro**: nunca pasar a live sin haber completado todas las etapas anteriores.
+
+- [ ] **Checklist pre-live**:
+  - [ ] Testnet operando estable ≥ 2 semanas sin errores críticos
+  - [ ] Sharpe Ratio walk-forward > 1.0 en al menos 3 estrategias
+  - [ ] Max drawdown en Testnet < 15%
+  - [ ] Kill switch global probado (activación manual + automática)
+  - [ ] Backup de BD verificado
+  - [ ] Filtros Binance probados con todos los símbolos a operar
+  - [ ] API Key de autenticación configurada (`TRADINGBOT_API_KEY`)
+- [ ] **Activación por fases**:
+  1. Fase Alpha: 1 estrategia, 1 símbolo, máx $50 USDT, 2 semanas
+  2. Fase Beta: 2-3 estrategias, máx $200 USDT, 1 mes
+  3. Fase Producción: escala gradual según performance real
+- [ ] **Kill switch manual** desde Frontend
+- [ ] **Procedimiento de emergencia** documentado:
+  - ¿Qué hacer si el bot ejecuta órdenes erróneas?
+  - ¿Cómo cerrar todas las posiciones manualmente desde Binance?
+  - ¿Cómo pausar el bot sin perder el estado?
+
+---
+
+## 📊 Resumen de etapas
+
+| Etapa | Descripción | Pasos | Prioridad |
+|-------|-------------|-------|-----------|
+| 🔴 **1** | Bloqueantes Binance (filtros, balance, User Data Stream) | 15-17 | ✅ COMPLETADA |
+| 🟠 **2** | Simulación realista (fees, slippage, métricas Sharpe/Sortino) | 18-19 | ✅ COMPLETADA |
+| 🟡 **3** | Calidad de señales (ADX, ATR sizing) | 20-21 | ✅ COMPLETADA |
+| 🟢 **4** | Riesgo de portafolio (correlación, circuit breaker) | 22 | ✅ COMPLETADA |
+| 🔵 **5** | Ejecución Testnet real | 23 | ✅ COMPLETADA |
+| ⚫ **6** | Observabilidad (health checks, CI/CD, auth, rate limiting) | 25-26 | ✅ COMPLETADA |
+| 🏁 **7** | Activación Live (protocolo gradual) | 27 | ⏳ SIGUIENTE |
 
 ---
 

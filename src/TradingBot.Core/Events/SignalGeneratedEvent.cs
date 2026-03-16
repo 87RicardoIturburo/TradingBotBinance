@@ -12,4 +12,5 @@ public sealed record SignalGeneratedEvent(
     Symbol Symbol,
     OrderSide Direction,
     Price CurrentPrice,
-    string IndicatorSnapshot) : DomainEvent;
+    string IndicatorSnapshot,
+    decimal? AtrValue = null) : DomainEvent;

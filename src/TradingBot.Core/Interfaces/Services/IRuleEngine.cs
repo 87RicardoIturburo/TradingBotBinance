@@ -26,9 +26,14 @@ public interface IRuleEngine
     /// Evalúa las reglas de stop-loss y take-profit para posiciones abiertas.
     /// Se llama en cada tick para posiciones activas de la estrategia.
     /// </summary>
+    /// <param name="atrValue">Valor actual del ATR. Si no es <c>null</c> y <c>UseAtrSizing</c> está habilitado, se usa para stop-loss dinámico.</param>
+    /// <param name="indicatorSnapshot">Snapshot de valores actuales de indicadores (ej: "RSI(14)=28.50 | EMA(12)=...").
+    /// Si se provee, las condiciones de las reglas de salida pueden evaluarse contra indicadores reales.</param>
     Task<Result<Order?, DomainError>> EvaluateExitRulesAsync(
         TradingStrategy strategy,
         Position        position,
         Price           currentPrice,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        decimal?        atrValue = null,
+        string?         indicatorSnapshot = null);
 }

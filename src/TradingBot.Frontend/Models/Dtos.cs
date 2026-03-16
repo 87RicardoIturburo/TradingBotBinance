@@ -7,6 +7,30 @@ public sealed record SymbolInfoDto(
     string BaseAsset,
     string QuoteAsset);
 
+// ── Account Balance ───────────────────────────────────────────────────────
+
+public sealed record AccountBalanceDto(
+    string  Asset,
+    decimal Free,
+    decimal Locked,
+    decimal Total);
+
+// ── Portfolio Exposure ────────────────────────────────────────────────────
+
+public sealed record SymbolExposureDto(
+    string  Symbol,
+    decimal LongUsdt,
+    decimal ShortUsdt,
+    decimal NetUsdt);
+
+public sealed record PortfolioExposureDto(
+    decimal                    TotalLongUsdt,
+    decimal                    TotalShortUsdt,
+    decimal                    NetUsdt,
+    List<SymbolExposureDto>    BySymbol,
+    bool                       DrawdownTriggered = false,
+    decimal                    DrawdownPercent = 0m);
+
 // ── Strategies ────────────────────────────────────────────────────────────
 
 public sealed record StrategyDto(
@@ -35,7 +59,10 @@ public sealed record RiskConfigDto(
     decimal MaxDailyLossUsdt,
     decimal StopLossPercent,
     decimal TakeProfitPercent,
-    int     MaxOpenPositions);
+    int     MaxOpenPositions,
+    bool    UseAtrSizing = false,
+    decimal RiskPercentPerTrade = 1m,
+    decimal AtrMultiplier = 2m);
 
 public sealed record IndicatorDto(
     string                         Type,
@@ -67,6 +94,7 @@ public sealed record OrderDto(
     decimal?        StopPrice,
     decimal?        FilledQuantity,
     decimal?        ExecutedPrice,
+    decimal         Fee,
     string          Status,
     string          Mode,
     string?         BinanceOrderId,
@@ -86,7 +114,8 @@ public sealed record StrategyEngineStatusDto(
     DateTimeOffset LastTickAt,
     int            TicksProcessed,
     int            SignalsGenerated,
-    int            OrdersPlaced);
+    int            OrdersPlaced,
+    string         CurrentRegime = "Unknown");
 
 public sealed record MarketTickDto(
     string         Symbol,
@@ -105,7 +134,10 @@ public sealed record CreateStrategyRequest(
     decimal StopLossPercent,
     decimal TakeProfitPercent,
     int     MaxOpenPositions,
-    string? Description = null);
+    string? Description = null,
+    bool    UseAtrSizing = false,
+    decimal RiskPercentPerTrade = 1m,
+    decimal AtrMultiplier = 2m);
 
 public sealed record UpdateStrategyRequest(
     string  Name,
@@ -116,7 +148,10 @@ public sealed record UpdateStrategyRequest(
     decimal StopLossPercent,
     decimal TakeProfitPercent,
     int     MaxOpenPositions,
-    string? Description = null);
+    string? Description = null,
+    bool    UseAtrSizing = false,
+    decimal RiskPercentPerTrade = 1m,
+    decimal AtrMultiplier = 2m);
 
 public sealed record AddIndicatorRequest(
     string                      Type,
@@ -220,6 +255,9 @@ public sealed record BacktestResultDto(
     int                      WinningTrades,
     int                      LosingTrades,
     decimal                  WinRate,
+    decimal                  GrossPnL,
+    decimal                  TotalFeesUsdt,
+    decimal                  TotalSlippageUsdt,
     decimal                  TotalPnL,
     decimal                  TotalInvested,
     decimal                  ReturnOnInvestment,
@@ -227,15 +265,28 @@ public sealed record BacktestResultDto(
     decimal                  AveragePnLPerTrade,
     decimal                  BestTrade,
     decimal                  WorstTrade,
+    BacktestMetricsDto?      Metrics,
     List<BacktestTradeDto>   Trades,
     List<EquityPointDto>     EquityCurve);
+
+public sealed record BacktestMetricsDto(
+    decimal SharpeRatio,
+    decimal SortinoRatio,
+    decimal CalmarRatio,
+    decimal ProfitFactor,
+    int     MaxConsecutiveLosses,
+    int     MaxConsecutiveWins,
+    decimal Expectancy);
 
 public sealed record BacktestTradeDto(
     string         Side,
     decimal        EntryPrice,
     decimal        ExitPrice,
     decimal        Quantity,
-    decimal        PnL,
+    decimal        GrossPnL,
+    decimal        Fees,
+    decimal        SlippageCost,
+    decimal        NetPnL,
     DateTimeOffset EntryTime,
     DateTimeOffset ExitTime,
     string         ExitReason);
@@ -250,7 +301,8 @@ public sealed record RunOptimizationRequest(
     Guid                    StrategyId,
     DateTimeOffset          From,
     DateTimeOffset          To,
-    List<ParameterRangeDto> ParameterRanges);
+    List<ParameterRangeDto> ParameterRanges,
+    string?                 RankBy = null);
 
 public sealed record ParameterRangeDto(
     string  Name,
@@ -266,6 +318,7 @@ public sealed record OptimizationResultDto(
     int                                TotalCombinations,
     int                                CompletedCombinations,
     double                             DurationSeconds,
+    string?                            RankedBy,
     List<OptimizationRunSummaryDto>    Results);
 
 public sealed record OptimizationRunSummaryDto(
@@ -278,4 +331,5 @@ public sealed record OptimizationRunSummaryDto(
     decimal                     TotalInvested,
     decimal                     ReturnOnInvestment,
     decimal                     MaxDrawdownPercent,
-    decimal                     AveragePnLPerTrade);
+    decimal                     AveragePnLPerTrade,
+    BacktestMetricsDto?         Metrics);

@@ -46,4 +46,24 @@ public interface IRiskManager
     Task<decimal?> GetMathematicalExpectancyAsync(
         Guid strategyId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Verifica si el drawdown diario de la cuenta supera el límite configurado.
+    /// Devuelve si se debe activar el kill switch y el porcentaje de drawdown.
+    /// </summary>
+    Task<(bool IsTriggered, decimal DrawdownPercent)> CheckAccountDrawdownAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Devuelve la exposición total del portafolio (Long, Short, Neto) en USDT.
+    /// </summary>
+    Task<(decimal TotalLongUsdt, decimal TotalShortUsdt, decimal NetUsdt)> GetPortfolioExposureAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Devuelve la exposición del portafolio desglosada por símbolo.
+    /// Cada tupla contiene: (Symbol, LongUsdt, ShortUsdt, NetUsdt).
+    /// </summary>
+    Task<IReadOnlyList<(string Symbol, decimal LongUsdt, decimal ShortUsdt, decimal NetUsdt)>> GetExposureBySymbolAsync(
+        CancellationToken cancellationToken = default);
 }

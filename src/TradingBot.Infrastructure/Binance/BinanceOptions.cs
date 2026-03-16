@@ -20,4 +20,17 @@ public sealed class BinanceOptions
     /// Variable de entorno: <c>BINANCE_USE_TESTNET</c>.
     /// </summary>
     public bool UseTestnet { get; set; } = true;
+
+    /// <summary>
+    /// Si <c>true</c>, conecta a Binance Demo (<c>demo.binance.com</c>) en lugar de Testnet.
+    /// Las keys de demo.binance.com requieren este flag.
+    /// Variable de entorno: <c>BINANCE_USE_DEMO</c>.
+    /// </summary>
+    public bool UseDemo { get; set; }
+
+    /// <summary>
+    /// <c>true</c> si se resolvieron API Key y Secret válidos al arrancar.
+    /// Los servicios que requieren credenciales (User Data Stream, Account) consultan este flag.
+    /// </summary>
+    public bool HasCredentials { get; set; }
 }

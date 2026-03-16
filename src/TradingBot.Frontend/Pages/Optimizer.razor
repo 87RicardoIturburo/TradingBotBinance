@@ -57,7 +57,14 @@
         <div class="card-body">
             @if (parameterRanges.Count == 0)
             {
-                <p class="text-muted">Agregá rangos de parámetros para optimizar. Ejemplos:</p>
+                <p class="text-muted mb-2">Agregá rangos de parámetros para optimizar.</p>
+                <div class="alert alert-info py-2 mb-3 small">
+                    💡 <strong>Consejo:</strong> Para resultados distintos entre combinaciones,
+                    variá parámetros que afecten <em>cuándo</em> se generan señales:
+                    <code>RSI.oversold</code>, <code>RSI.overbought</code>, <code>RSI.period</code>.
+                    Parámetros de risk (<code>stopLossPercent</code>, <code>takeProfitPercent</code>)
+                    solo diferencian resultados si los trades no cierran por exit rule de indicador.
+                </div>
                 <div class="row g-2">
                     @foreach (var suggestion in GetSuggestions())
                     {
@@ -116,18 +123,32 @@
         </div>
     </div>
 
-    <button class="btn btn-primary btn-lg mb-4" @onclick="RunOptimizationAsync"
-            disabled="@(isRunning || parameterRanges.Count == 0 || totalCombinations > 500)">
-        @if (isRunning)
-        {
-            <span class="spinner-border spinner-border-sm me-1"></span>
-            @:Optimizando (@totalCombinations combinaciones)…
-        }
-        else
-        {
-            @:⚡ Ejecutar optimización (@totalCombinations combinaciones)
-        }
-    </button>
+    <div class="row mb-4 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label">📊 Ordenar resultados por</label>
+            <select class="form-select" @bind="selectedRankBy">
+                <option value="PnL">P&amp;L Neto</option>
+                <option value="SharpeRatio">Sharpe Ratio</option>
+                <option value="SortinoRatio">Sortino Ratio</option>
+                <option value="CalmarRatio">Calmar Ratio</option>
+                <option value="ProfitFactor">Profit Factor</option>
+            </select>
+        </div>
+        <div class="col-md-9 d-flex align-items-end">
+            <button class="btn btn-primary btn-lg" @onclick="RunOptimizationAsync"
+                    disabled="@(isRunning || parameterRanges.Count == 0 || totalCombinations > 500)">
+                @if (isRunning)
+                {
+                    <span class="spinner-border spinner-border-sm me-1"></span>
+                    @:Optimizando (@totalCombinations combinaciones)…
+                }
+                else
+                {
+                    @:⚡ Ejecutar optimización (@totalCombinations combinaciones)
+                }
+            </button>
+        </div>
+    </div>
 }
 
 @if (errorMessage is not null)
@@ -143,6 +164,7 @@
         @optimizationResult.Symbol —
         @optimizationResult.CompletedCombinations/@optimizationResult.TotalCombinations combinaciones
         en @optimizationResult.DurationSeconds.ToString("N1")s
+        — Ordenado por <strong>@(optimizationResult.RankedBy ?? "PnL")</strong>
     </p>
 
     @if (optimizationResult.Results.Count > 0)
@@ -173,6 +195,14 @@
                             <small class="text-muted">
                                 @top.TotalTrades trades · @top.WinRate.ToString("N1")% win · @top.MaxDrawdownPercent.ToString("N1")% DD
                             </small>
+                            @if (top.Metrics is not null)
+                            {
+                                <br />
+                                <small>
+                                    Sharpe: <span class="@(top.Metrics.SharpeRatio > 1 ? "text-success" : top.Metrics.SharpeRatio > 0 ? "text-warning" : "text-danger")">@top.Metrics.SharpeRatio.ToString("N2")</span>
+                                    · PF: <span class="@(top.Metrics.ProfitFactor > 1.5m ? "text-success" : top.Metrics.ProfitFactor >= 1 ? "text-warning" : "text-danger")">@top.Metrics.ProfitFactor.ToString("N2")</span>
+                                </small>
+                            }
                         </div>
                     </div>
                 </div>
@@ -199,6 +229,9 @@
                         <th>Trades</th>
                         <th>Win Rate</th>
                         <th>Drawdown</th>
+                        <th>Sharpe</th>
+                        <th>Sortino</th>
+                        <th>PF</th>
                         <th>P&amp;L/Trade</th>
                     </tr>
                 </thead>
@@ -217,6 +250,16 @@
                             <td>@row.TotalTrades</td>
                             <td>@row.WinRate.ToString("N1")%</td>
                             <td>@row.MaxDrawdownPercent.ToString("N1")%</td>
+                            @if (row.Metrics is not null)
+                            {
+                                <td class="@(row.Metrics.SharpeRatio > 1 ? "text-success" : row.Metrics.SharpeRatio > 0 ? "text-warning" : "text-danger")">@row.Metrics.SharpeRatio.ToString("N2")</td>
+                                <td class="@(row.Metrics.SortinoRatio > 1.5m ? "text-success" : row.Metrics.SortinoRatio > 0 ? "text-warning" : "text-danger")">@row.Metrics.SortinoRatio.ToString("N2")</td>
+                                <td class="@(row.Metrics.ProfitFactor > 1.5m ? "text-success" : row.Metrics.ProfitFactor >= 1 ? "text-warning" : "text-danger")">@row.Metrics.ProfitFactor.ToString("N2")</td>
+                            }
+                            else
+                            {
+                                <td>—</td><td>—</td><td>—</td>
+                            }
                             <td class="@GetPnLClass(row.AveragePnLPerTrade)">@FormatPnL(row.AveragePnLPerTrade)</td>
                         </tr>
                     }
@@ -242,6 +285,7 @@
 
     private List<ParameterRangeModel> parameterRanges = [];
     private int totalCombinations;
+    private string selectedRankBy = "PnL";
 
     private bool isSavingProfile;
 
@@ -333,8 +377,22 @@
         {
             foreach (var ind in selectedStrategy.Indicators)
             {
-                if (ind.Type == "RSI" && ind.Parameters.ContainsKey("period"))
-                    suggestions.Add(new() { Name = "RSI.period", Min = 10, Max = 20, Step = 2 });
+                if (ind.Type == "RSI")
+                {
+                    if (ind.Parameters.ContainsKey("period"))
+                        suggestions.Add(new() { Name = "RSI.period", Min = 10, Max = 20, Step = 2 });
+                    if (ind.Parameters.ContainsKey("oversold"))
+                        suggestions.Add(new() { Name = "RSI.oversold", Min = 25, Max = 40, Step = 5 });
+                    if (ind.Parameters.ContainsKey("overbought"))
+                        suggestions.Add(new() { Name = "RSI.overbought", Min = 60, Max = 75, Step = 5 });
+                }
+                if (ind.Type == "BollingerBands")
+                {
+                    if (ind.Parameters.ContainsKey("period"))
+                        suggestions.Add(new() { Name = "BollingerBands.period", Min = 15, Max = 25, Step = 2 });
+                    if (ind.Parameters.ContainsKey("stdDev"))
+                        suggestions.Add(new() { Name = "BollingerBands.stdDev", Min = 1.5m, Max = 2.5m, Step = 0.5m });
+                }
                 if (ind.Type == "EMA" && ind.Parameters.ContainsKey("period"))
                     suggestions.Add(new() { Name = "EMA.period", Min = 5, Max = 25, Step = 5 });
                 if (ind.Type == "SMA" && ind.Parameters.ContainsKey("period"))
@@ -380,7 +438,8 @@
                 Guid.Parse(selectedStrategyId),
                 new DateTimeOffset(fromDate, TimeSpan.Zero),
                 new DateTimeOffset(toDate, TimeSpan.Zero),
-                parameterRanges.Select(r => new ParameterRangeDto(r.Name, r.Min, r.Max, r.Step)).ToList());
+                parameterRanges.Select(r => new ParameterRangeDto(r.Name, r.Min, r.Max, r.Step)).ToList(),
+                selectedRankBy);
 
             optimizationResult = await Api.RunOptimizationAsync(request);
         }

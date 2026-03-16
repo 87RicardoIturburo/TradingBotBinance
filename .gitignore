@@ -3,12 +3,20 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Environment variables (secrets)
+.env
+!.env.example
+
 # User-specific files
 *.rsuser
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
+
+# Secrets — NUNCA commitear API keys
+appsettings.Development.json
+appsettings.*.local.json
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

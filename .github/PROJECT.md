@@ -26,23 +26,23 @@ que pueden modificarse **sin reiniciar el sistema** (hot-reload).
 
 ### Capas del Sistema
 ```
-┌─────────────────────────────────────────────┐ │         
-Blazor WebAssembly (Frontend)        │ │   Dashboard │ 
+┌─────────────────────────────────────────────┐         │         
+Blazor WebAssembly (Frontend)        │ │   Dashboard    │ 
 Config Estrategias │ Órdenes   │ 
-└──────────────────────┬──────────────────────┘ │
+└──────────────────────┬──────────────────────┘         │
 SignalR / HTTP 
-┌──────────────────────┴──────────────────────┐ │              
-.NET 9 Web API                  │ │         Controllers │ 
-SignalR Hubs           │ 
-└──────────────────────┬──────────────────────┘ │ 
-┌──────────────────────┴──────────────────────┐ │           
-Application Layer (CQRS)           │ │  StrategyEngine │ 
-RuleEngine │ RiskManager   │ │  OrderManager   │ 
+┌──────────────────────┴──────────────────────┐         │              
+.NET 10 Web API                 │ │         Controllers │ 
+SignalR Hubs           │
+└──────────────────────┬──────────────────────┘         │ 
+┌──────────────────────┴──────────────────────┐         │           
+Application Layer (CQRS)           │ │  StrategyEngine  │ 
+RuleEngine │ RiskManager   │ │  OrderManager            │ 
 MarketEngine               │ 
-└──────┬───────────────────────────┬──────────┘ │                           
-│ ┌──────┴───────┐         ┌─────────┴─────────┐ │  
-PostgreSQL  │         │   Binance API      │ │  + Redis     │         
-│  REST + WebSocket  │ └──────────────┘         
+└──────┬───────────────────────────┬──────────┘         │                           
+│ ┌──────┴───────┐         ┌─────────┴─────────┐        │  
+PostgreSQL  │         │   Binance API     │ │  + Redis  │         
+│  REST + WebSocket   │    └──────────────┘         
 └───────────────────┘
 ```
 ---
@@ -60,7 +60,7 @@ Responsable de mantener la conexión WebSocket con Binance y distribuir eventos 
 Aplica indicadores técnicos al flujo de datos y genera señales de trading.
 
 - Implementa `ITradingStrategy`
-- Indicadores disponibles: RSI, MACD, EMA, SMA, Bollinger Bands
+- Indicadores disponibles: RSI, MACD, EMA, SMA, Bollinger Bands, Fibonacci, LinearRegression, ADX, ATR
 - Hot-reload: recarga configuración sin detener el procesamiento
 
 ### 3. Rule Engine
@@ -73,9 +73,12 @@ Evalúa condiciones configuradas por el usuario y decide si se debe actuar.
 ### 4. Risk Manager
 Valida toda orden antes de su ejecución. **Obligatorio** en el flujo.
 
-- Límites: máximo por orden, máximo diario, máximo de exposición
-- Stop-loss automático configurable
-- Validación de saldo disponible en tiempo real
+- Límites: máximo por orden, pérdida diaria (por estrategia y global), máximo de posiciones abiertas
+- Exposición de portafolio: límites Long/Short, concentración por símbolo
+- Esperanza matemática: bloquea estrategias no rentables (E ≤ 0 con ≥30 trades)
+- Stop-loss automático: porcentual o dinámico (ATR-based), trailing stop
+- Validación de saldo disponible en tiempo real (con buffer 5% para comisiones)
+- Kill switch global: pérdida diaria total y drawdown de cuenta
 
 ### 5. Order Manager
 Ejecuta órdenes en Binance vía REST API.
@@ -111,14 +114,24 @@ Permite modificar estrategias y reglas en tiempo de ejecución.
 
 ### Estrategias
 
-| Método   | Endpoint                        | Descripción               |
-|----------|---------------------------------|---------------------------|
-| `GET`    | `/api/strategies`               | Lista todas las estrategias |
-| `GET`    | `/api/strategies/{id}`          | Obtiene una estrategia    |
-| `POST`   | `/api/strategies`               | Crea una nueva estrategia |
-| `PUT`    | `/api/strategies/{id}`          | Actualiza (hot-reload)    |
-| `DELETE` | `/api/strategies/{id}`          | Elimina una estrategia    |
-| `POST`   | `/api/strategies/{id}/activate` | Activa/desactiva          |
+| Método   | Endpoint                                      | Descripción                      |
+|----------|-----------------------------------------------|----------------------------------|
+| `GET`    | `/api/strategies`                             | Lista todas las estrategias      |
+| `GET`    | `/api/strategies/{id}`                        | Obtiene una estrategia           |
+| `POST`   | `/api/strategies`                             | Crea una nueva estrategia        |
+| `PUT`    | `/api/strategies/{id}`                        | Actualiza (hot-reload)           |
+| `DELETE` | `/api/strategies/{id}`                        | Elimina una estrategia           |
+| `POST`   | `/api/strategies/{id}/activate`               | Activa                           |
+| `POST`   | `/api/strategies/{id}/deactivate`             | Desactiva                        |
+| `POST`   | `/api/strategies/{id}/duplicate`              | Duplica con indicadores y reglas |
+| `POST`   | `/api/strategies/{id}/indicators`             | Agrega indicador                 |
+| `PUT`    | `/api/strategies/{id}/indicators`             | Actualiza indicador              |
+| `DELETE` | `/api/strategies/{id}/indicators/{type}`      | Elimina indicador                |
+| `POST`   | `/api/strategies/{id}/rules`                  | Agrega regla                     |
+| `PUT`    | `/api/strategies/{id}/rules/{ruleId}`         | Actualiza regla                  |
+| `DELETE` | `/api/strategies/{id}/rules/{ruleId}`         | Elimina regla                    |
+| `PUT`    | `/api/strategies/{id}/optimization-profile`   | Guarda perfil de optimización    |
+| `GET`    | `/api/strategies/templates`                   | Plantillas predefinidas          |
 
 ### Órdenes
 
@@ -128,14 +141,40 @@ Permite modificar estrategias y reglas en tiempo de ejecución.
 | `GET`    | `/api/orders/open` | Órdenes abiertas     |
 | `DELETE` | `/api/orders/{id}` | Cancela una orden    |
 
+### Posiciones
+
+| Método | Endpoint                   | Descripción                        |
+|--------|----------------------------|------------------------------------|
+| `GET`  | `/api/positions/open`      | Posiciones abiertas                |
+| `GET`  | `/api/positions/closed`    | Historial de posiciones cerradas   |
+| `GET`  | `/api/positions/summary`   | Resumen P&L por estrategia         |
+
+### Backtest / Optimizador
+
+| Método  | Endpoint                        | Descripción                         |
+|---------|---------------------------------|-------------------------------------|
+| `POST`  | `/api/backtest`                 | Ejecuta backtest de una estrategia  |
+| `POST`  | `/api/backtest/optimize`        | Optimización de parámetros          |
+| `POST`  | `/api/backtest/walk-forward`    | Walk-forward analysis               |
+
 ### Sistema
 
-| Método | Endpoint              | Descripción       |
-|--------|-----------------------|-------------------|
-| `GET`  | `/api/system/status`  | Estado del bot    |
-| `POST` | `/api/system/pause`   | Pausa el motor    |
-| `POST` | `/api/system/resume`  | Reanuda el motor  |
-| `GET`  | `/api/system/balance` | Balance de cuenta |
+| Método | Endpoint                | Descripción                       |
+|--------|-------------------------|-----------------------------------|
+| `GET`  | `/api/system/status`    | Estado del bot                    |
+| `POST` | `/api/system/pause`     | Pausa el motor                    |
+| `POST` | `/api/system/resume`    | Reanuda el motor                  |
+| `GET`  | `/api/system/symbols`   | Pares de trading (caché Redis 1h) |
+| `GET`  | `/api/system/balance`   | Balance de cuenta                 |
+| `GET`  | `/api/system/exposure`  | Exposición del portafolio         |
+
+### Health Checks
+
+| Endpoint         | Descripción                                       |
+|------------------|---------------------------------------------------|
+| `/health`        | Todos los checks                                  |
+| `/health/ready`  | DB + Redis + Binance (readiness)                  |
+| `/health/live`   | Strategy Engine (liveness)                        |
 
 ### SignalR Hub: `/hubs/trading`
 
@@ -151,20 +190,24 @@ Permite modificar estrategias y reglas en tiempo de ejecución.
 
 ## ⚙️ Configuración del Entorno
 
-### Variables de Entorno Requeridas
+### Variables de Entorno
 
+```bash
 # Binance
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
-BINANCE_USE_TESTNET=true
+BINANCE_USE_TESTNET=true          # true = testnet.binance.vision
+BINANCE_USE_DEMO=false            # true = demo.binance.com
 
 # Base de datos
-POSTGRES_CONNECTION=Host=localhost;Database=tradingbot;Username=postgres;Password=...
 REDIS_CONNECTION=localhost:6379
 
-# Seguridad
-DATA_PROTECTION_KEY_PATH=/keys
-JWT_SECRET=your_jwt_secret
+# Autenticación API
+TRADINGBOT_API_KEY=your_secret_api_key   # Header X-Api-Key
+```
+
+> **Nota**: Las connection strings de PostgreSQL se configuran en `appsettings.json`.
+> Si `TRADINGBOT_API_KEY` está vacío, la API funciona sin autenticación (solo desarrollo).
 
 ### Modos de Operación
 
@@ -211,13 +254,15 @@ TradingBot.Core/
 │   ├── Entity<TId>.cs          — Igualdad por identidad + domain events
 │   └── AggregateRoot<TId>.cs   — Límite transaccional + Version (optimistic concurrency)
 │
-├── Enums/  (10 archivos)
+├── Enums/  (11 archivos)
 │   OrderSide · OrderType · OrderStatus · StrategyStatus · TradingMode
 │   IndicatorType · RuleType · ConditionOperator · Comparator · ActionType
+│   MarketRegime
 │
-├── ValueObjects/  (9 archivos)
+├── ValueObjects/  (12 archivos)
 │   Symbol · Price · Quantity · Percentage · RiskConfig · IndicatorConfig
-│   LeafCondition · RuleCondition · RuleAction
+│   LeafCondition · RuleCondition · RuleAction · SavedParameterRange
+│   AccountBalance · ExchangeSymbolFilters
 │
 ├── Events/  (10 archivos)
 │   IDomainEvent · DomainEvent (base)
@@ -227,45 +272,57 @@ TradingBot.Core/
 ├── Entities/  (4 archivos)
 │   TradingRule · Order · Position · TradingStrategy (aggregate root)
 │
-└── Interfaces/
+└── Interfaces/  (19 archivos)
+    ├── IUnitOfWork
     ├── Trading/
     │   ITechnicalIndicator  — Update/Calculate/IsReady/Reset
-    │   ITradingStrategy     — ProcessTickAsync / ReloadConfigAsync
+    │   ITradingStrategy     — ProcessTickAsync / ReloadConfigAsync / CurrentRegime / CurrentAtrValue
     ├── Repositories/
-    │   IRepository<T,TId>  — CRUD genérico base
-    │   IOrderRepository    — + GetOpenOrders / GetPendingSync
-    │   IStrategyRepository — + GetActive / GetWithRules
-    │   IPositionRepository — + GetDailyPnL / GetOpenCount
+    │   IRepository<T,TId>   — CRUD genérico base
+    │   IOrderRepository     — + GetOpenOrders / GetPendingSync
+    │   IStrategyRepository  — + GetActive / GetWithRules
+    │   IPositionRepository  — + GetDailyPnL / GetOpenCount / GetTradeStats
     └── Services/
-        IMarketDataService     — WebSocket stream + REST snapshot
-        IStrategyConfigService — CRUD + hot-reload
-        IOrderService          — PlaceOrder / Cancel / SyncStatus
-        IRiskManager           — ValidateOrder (obligatorio antes de ejecutar)
-        IRuleEngine            — EvaluateAsync + EvaluateExitRules
-        IStrategyEngine        — Start/Stop/Pause/Resume + ReloadStrategy
+        IMarketDataService      — WebSocket stream + REST snapshot + Klines + Symbols
+        IStrategyConfigService  — CRUD + hot-reload
+        IOrderService           — PlaceOrder / Cancel / SyncStatus
+        IRiskManager            — ValidateOrder + exposición portafolio + esperanza
+        IRuleEngine             — EvaluateAsync + EvaluateExitRules (ATR/trailing)
+        IStrategyEngine         — Start/Stop/Pause/Resume + ReloadStrategy
+        ISpotOrderExecutor      — PlaceOrder / CancelOrder / GetStatus (Binance REST)
+        IAccountService         — GetBalance / GetSnapshot / InvalidateCache
+        IExchangeInfoService    — GetFilters (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
+        ICacheService           — Get/Set/Remove (Redis)
+        ITradingNotifier        — SignalR push (ticks, órdenes, señales, alertas)
+        IUserDataStreamService  — WebSocket User Data Stream (order fills, balance)
 ```
 ---
 
 ## 🚀 Roadmap
 
 ### Fase 1 — MVP
-- [ ] Conexión WebSocket a Binance (Testnet)
-- [ ] Dashboard de precios en tiempo real
-- [ ] CRUD de estrategias con hot-reload
-- [ ] Motor de reglas básico (RSI, precio)
-- [ ] Paper Trading funcional
+- [x] Conexión WebSocket a Binance (Testnet)
+- [x] Dashboard de precios en tiempo real
+- [x] CRUD de estrategias con hot-reload
+- [x] Motor de reglas básico (RSI, precio)
+- [x] Paper Trading funcional
 
 ### Fase 2 — Core Trading
-- [ ] Ejecución real de órdenes
-- [ ] Risk Manager completo
-- [ ] Indicadores: MACD, EMA, Bollinger Bands
-- [ ] Historial de operaciones con P&L
+- [x] Ejecución real de órdenes (Binance Testnet) — `BinanceSpotOrderExecutor` + `UserDataStreamService`
+- [x] Risk Manager completo (límites por orden, diario, global + esperanza matemática + portafolio)
+- [x] Indicadores: MACD, EMA, SMA, Bollinger Bands, Fibonacci, LinearRegression, ADX, ATR
+- [x] Historial de operaciones con P&L + fees
+- [x] Backtesting con datos históricos + fees + slippage
+- [x] Optimizador de parámetros (cartesiano, walk-forward, persistencia de perfil)
+- [x] Análisis de performance (Sharpe, Sortino, Calmar, ProfitFactor)
+- [x] Autenticación API Key + Rate Limiting
+- [x] Health Checks + métricas OpenTelemetry
+- [x] CI/CD (GitHub Actions) + Docker + Docker Compose producción
 
 ### Fase 3 — Avanzado
-- [ ] Backtesting con datos históricos
 - [ ] Múltiples exchanges (extensible)
-- [ ] Notificaciones (email, Telegram)
-- [ ] Análisis de performance de estrategias
+- [ ] Notificaciones (email)
+- [ ] Protocolo de activación Live con dinero real
 
 ---
 
@@ -287,24 +344,19 @@ TradingBot.Core/
 - [x] Documentación del proyecto → `.github/PROJECT.md`
 - [x] Estructura de la solución definida (8 proyectos: API, Core, Application, Infrastructure, Frontend, 3x Tests)
 
-#### Paso 2 — Dominio `TradingBot.Core` (.NET 10 / C# 13)
-- [x] **Enums** (10): `OrderSide`, `OrderType`, `OrderStatus`, `StrategyStatus`, `TradingMode`, `IndicatorType`, `RuleType`, `ConditionOperator`, `Comparator`, `ActionType`
+#### Paso 2 — Dominio `TradingBot.Core` (.NET 10 / C# 14)
+- [x] **Enums** (11): `OrderSide`, `OrderType`, `OrderStatus`, `StrategyStatus`, `TradingMode`, `IndicatorType`, `RuleType`, `ConditionOperator`, `Comparator`, `ActionType`, `MarketRegime`
 - [x] **Tipos comunes**: `Result<TValue, TError>`, `DomainError`
 - [x] **Base clases**: `Entity<TId>` (igualdad por identidad + domain events), `AggregateRoot<TId>` (+ `Version` para concurrencia optimista)
-- [x] **Value Objects** (9): `Symbol`, `Price`, `Quantity`, `Percentage`, `RiskConfig`, `IndicatorConfig`, `LeafCondition`, `RuleCondition`, `RuleAction`
+- [x] **Value Objects** (12): `Symbol`, `Price`, `Quantity`, `Percentage`, `RiskConfig`, `IndicatorConfig`, `LeafCondition`, `RuleCondition`, `RuleAction`, `SavedParameterRange`, `AccountBalance`, `ExchangeSymbolFilters`
 - [x] **Domain Events** (10): `MarketTickReceived`, `OrderPlaced`, `OrderFilled`, `OrderCancelled`, `SignalGenerated`, `StrategyUpdated`, `StrategyActivated`, `RiskLimitExceeded`
-- [x] **Entidades** (4): `TradingRule`, `Order` *(state machine)*, `Position` *(P&L en tiempo real)*, `TradingStrategy` *(aggregate root + hot-reload)*
-- [x] **Interfaces** (11):
-  - Trading: `ITechnicalIndicator`, `ITradingStrategy`
-  - Repositories: `IRepository<T,TId>`, `IOrderRepository`, `IStrategyRepository`, `IPositionRepository`
-  - Services: `IMarketDataService`, `IStrategyConfigService`, `IOrderService`, `IRiskManager`, `IRuleEngine`, `IStrategyEngine`
+- [x] **Entidades** (4): `TradingRule`, `Order` *(state machine + Fee)*, `Position` *(P&L en tiempo real + peak tracking)*, `TradingStrategy` *(aggregate root + hot-reload)*
+- [x] **Interfaces** (19): ver estructura de proyecto para listado completo
 
 ---
 
-### ⏳ En progreso — Próximo paso
-
-**Paso 3 — Capa de Infraestructura `TradingBot.Infrastructure`**
-- [x] EF Core DbContext + configuraciones (PostgreSQL)
+### ✅ Completado (pasos 3–12)
+#### Paso 3 — Capa de Infraestructura `TradingBot.Infrastructure` ✅
 - [x] Repositorios: `OrderRepository`, `StrategyRepository`, `PositionRepository`
 - [x] Binance.Net: `MarketDataService` (WebSocket + REST, reconexión con backoff exponencial)
 - [x] Redis: caché de estrategias activas y precios (`ICacheService` + `RedisCacheService`)
@@ -340,19 +392,19 @@ TradingBot.Core/
 El componente central del bot. Implementa `IStrategyEngine` + `BackgroundService`.
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │          StrategyEngine                   │
-                    │      (BackgroundService singleton)        │
-                    └──────────────────┬───────────────────────┘
-                                       │
-                    ┌──────────────────┴───────────────────────┐
-                    │      LoadAndStartActiveStrategies         │
-                    │  Lee IStrategyRepository.GetActive()      │
-                    │  Por cada una → StartStrategyRunner       │
-                    └──────────────────┬───────────────────────┘
-                                       │
-        ┌──────────────────────────────┼──────────────────────────────┐
-        ▼                              ▼                              ▼
+                  ┌──────────────────────────────────────────┐
+                  │          StrategyEngine                  │
+                  │      (BackgroundService singleton)       │
+                  └──────────────────┬───────────────────────┘
+                                     │
+                  ┌──────────────────┴───────────────────────┐
+                  │      LoadAndStartActiveStrategies        │
+                  │  Lee IStrategyRepository.GetActive()     │
+                  │  Por cada una → StartStrategyRunner      │
+                  └──────────────────┬───────────────────────┘
+                                     │
+         ┌───────────────────────────┼─────────────────────────┐
+         ▼                           ▼                         ▼
   ┌─────────────┐            ┌─────────────┐            ┌─────────────┐
   │ Runner BTC  │            │ Runner ETH  │            │ Runner SOL  │
   │ (async loop)│            │ (async loop)│            │ (async loop)│
@@ -414,12 +466,6 @@ El componente central del bot. Implementa `IStrategyEngine` + `BackgroundService
 
 ---
 
-### 📋 Pendiente
-
-| Paso | Capa | Contenido |
-|------|------|-----------|
-| **13** | Infrastructure + Application | Ejecución real de órdenes en Binance Testnet, sincronización de estado |
-
 #### Paso 8B — Edición de indicadores/reglas + Plantillas predefinidas ✅
 
 - [x] **Dominio**: `TradingStrategy.UpdateIndicator(IndicatorConfig)` — reemplaza indicador existente por tipo
@@ -461,15 +507,7 @@ El componente central del bot. Implementa `IStrategyEngine` + `BackgroundService
 - [x] **Tests `IndicatorFactoryTests`** (6): Create para RSI, EMA, SMA, MACD, BollingerBands, unsupported type
 - [x] **Tests totales: 169/169 passing** — Core (43) + Application (118) + Integration (8)
 
-**Archivos creados:**
-- `src/TradingBot.Application/Strategies/Indicators/MacdIndicator.cs`
-- `src/TradingBot.Application/Strategies/Indicators/BollingerBandsIndicator.cs`
-- `tests/TradingBot.Application.Tests/Indicators/MacdIndicatorTests.cs`
-- `tests/TradingBot.Application.Tests/Indicators/BollingerBandsIndicatorTests.cs`
-- `tests/TradingBot.Application.Tests/Indicators/IndicatorFactoryTests.cs`
-
-**Archivos modificados:**
-- `src/TradingBot.Application/Strategies/Indicators/IndicatorFactory.cs` — agregados MACD y BollingerBands al switch
+> Tests acumulados al finalizar Paso 12. Ver Paso D para el total actual.
 
 #### Paso 11 — Tests unitarios Application layer ✅
 
@@ -584,3 +622,100 @@ El componente central del bot. Implementa `IStrategyEngine` + `BackgroundService
 - `src/TradingBot.Frontend/Layout/NavMenu.razor` — navegación actualizada
 
 ---
+
+### ✅ Completado (pasos 13–F)
+
+#### Paso 13 — Página P&L y Posiciones ✅
+
+- [x] MediatR queries: `GetOpenPositionsQuery`, `GetClosedPositionsQuery`, `GetPnLSummaryQuery`
+- [x] `IPositionRepository.GetTotalRealizedPnLAsync` — query eficiente sin `DateTimeOffset.MinValue`
+- [x] API: `PositionsController` (3 endpoints: `/api/positions/open`, `/closed`, `/summary`)
+- [x] DTOs: `PositionDto`, `PnLSummaryDto`
+- [x] Frontend: `Positions.razor` — resumen P&L por estrategia, posiciones abiertas con P&L no realizado, historial cerradas con win/loss rate
+
+#### Paso 14 — Backtesting Engine ✅
+
+- [x] `IMarketDataService.GetKlinesAsync(symbol, from, to)` — descarga klines paginadas (1000/request) de Binance REST
+- [x] `BacktestEngine` — recorre velas en memoria, simula estrategia completa (señales → reglas → órdenes → stop-loss/take-profit → P&L)
+- [x] `BacktestResult` — métricas: P&L total, trades, win rate, max drawdown, equity curve, best/worst trade
+- [x] MediatR `RunBacktestCommand` — carga estrategia de BD, descarga klines, warm-up indicadores, ejecuta backtest
+- [x] API: `POST /api/backtest` → `BacktestController`
+- [x] Frontend: `Backtest.razor` — seleccionar estrategia + rango de fechas, ejecutar, ver métricas + equity curve + tabla de trades
+- [x] Tests: `BacktestEngineTests` (6 tests)
+
+#### Paso A — Selector de Symbols con búsqueda ✅
+
+- [x] `IMarketDataService.GetTradingSymbolsAsync(quoteAsset)` — `GetExchangeInfoAsync`, filtra por status Trading + quoteAsset
+- [x] API: `GET /api/system/symbols?quoteAsset=USDT` — con caché Redis 1 hora
+- [x] `SymbolSelector.razor` — componente reutilizable con input + dropdown filtrado en tiempo real
+- [x] `Strategies.razor` — usa `<SymbolSelector>` en vez de InputText manual
+
+#### Paso B — Editar estrategia + Duplicar ✅
+
+- [x] Dominio: `UpdateSymbol(Symbol)`, `UpdateMode(TradingMode)` — solo permitido si la estrategia está inactiva
+- [x] MediatR: `UpdateStrategyCommand` expandido con `Symbol?` y `Mode?`; `DuplicateStrategyCommand` — copia completa
+- [x] API: `PUT /api/strategies/{id}` acepta symbol y mode; `POST /api/strategies/{id}/duplicate`
+- [x] Frontend `StrategyDetail`: botón ✏️ Editar + botón 📋 Duplicar
+- [x] Tests: 4 tests dominio nuevos
+
+#### Paso C — Optimizador de parámetros ✅
+
+- [x] `OptimizationEngine` — combinaciones cartesianas de `ParameterRange`, ejecuta `BacktestEngine` por cada una reutilizando klines
+- [x] Límite de 500 combinaciones para evitar timeouts
+- [x] API: `POST /api/backtest/optimize`
+- [x] Frontend: `Optimizer.razor` — rangos dinámicos con sugerencias, tabla de resultados con Top 3 destacado
+- [x] Tests: `OptimizationEngineTests` (7 tests)
+
+#### Paso D — Indicadores Fibonacci + LinearRegression + RiskManager esperanza matemática ✅
+
+- [x] `FibonacciIndicator` — niveles 0.236/0.382/0.500/0.618/0.786, `GetNearestLevel(price, tolerance%)`, sliding window
+- [x] `LinearRegressionIndicator` — mínimos cuadrados (Slope, R², proyección), R² > 0.5 para confirmar tendencia
+- [x] `DefaultTradingStrategy` multi-indicador — `CountConfirmations()` con votos de MACD, Bollinger, EMA/SMA, LinReg, Fibonacci (mayoría simple)
+- [x] `RiskManager` esperanza matemática — `E = (WinRate × AvgWin) − (LossRate × AvgLoss)`. E ≤ 0 con ≥10 trades → bloquea órdenes
+- [x] `IPositionRepository.GetTradeStatsAsync` — query GroupBy eficiente
+- [x] Tests: FibonacciIndicatorTests (10), LinearRegressionIndicatorTests (10), DefaultTradingStrategy multi-indicador (4), RiskManager esperanza (7)
+- [x] **Tests totales: 234/234 passing** — Core (47) + Application (179) + Integration (8)
+
+#### Paso D+ — Persistencia de perfil de optimización ✅
+
+- [x] `SavedParameterRange` value object — Name/Min/Max/Step
+- [x] `TradingStrategy.UpdateOptimizationRanges()` — guarda rangos para reutilización
+- [x] EF Core: columna `SavedOptimizationRanges` (jsonb) + migración `AddOptimizationRanges`
+- [x] MediatR: `SaveOptimizationProfileCommand`; API: `PUT /api/strategies/{id}/optimization-profile`
+- [x] `Optimizer.razor`: carga automática de rangos guardados + botón 💾 Guardar perfil
+
+#### Paso E — Hardening pre-Testnet (resiliencia y seguridad) ✅
+
+- [x] **Fix SignalR de órdenes**: `NotifyOrderExecutedAsync` al colocar orden entrada/salida; `NotifyAlertAsync` al rechazar por RiskManager
+- [x] **Kill Switch global**: `GlobalRiskSettings` — `MaxDailyLossUsdt`, `MaxGlobalOpenPositions`; log `Critical` con emoji 🛑
+- [x] **Dispose `CancellationTokenSource`**: `StrategyRunnerState : IDisposable` — evita memory leak
+- [x] **`HandlePositionAsync` simétrico**: busca posición del lado opuesto (soporta shorts)
+- [x] **Tick Watchdog**: loop 60s, alerta SignalR si estrategia lleva >5 min sin ticks
+- [x] **Startup evaluation**: posiciones abiertas evaluadas al reiniciar (stop-loss/take-profit durante downtime)
+
+#### Paso F — Mejoras pre-Testnet (estrategias, visual, tests) ✅
+
+- [x] **Signal Cooldown**: `DefaultTradingStrategy` — mínimo 1 minuto entre señales consecutivas
+- [x] **Dashboard mejorado**: P&L global + por estrategia, señales recientes, órdenes recientes, toast notifications con auto-dismiss (8s)
+- [x] **Detección de desconexión**: banner rojo cuando API o SignalR caídos; card "Conexión" triple-check (API/SignalR/Binance WS); ticks se limpian al desconectar
+- [x] **Tests global risk limits** (3): `GlobalDailyLossExceeded`, `GlobalOpenPositionsExceeded`, `GlobalLimitsDisabled`
+- [x] **Tests Signal Cooldown** (2): `WhenSignalWithinCooldown_SuppressesSecondSignal`, `WhenSignalAfterCooldown_GeneratesSignal`
+
+---
+
+## ⏳ Próximo paso — Etapa 7 (Protocolo Live)
+
+| Etapa | Pasos | Estado |
+|-------|-------|--------|
+| 🔴 **1** — Bloqueantes Binance (filtros, balance, User Data Stream) | 15-17 | ✅ Completada |
+| 🟠 **2** — Simulación realista (fees, slippage, métricas Sharpe/Sortino) | 18-19 | ✅ Completada |
+| 🟡 **3** — Calidad de señales (ADX régimen, ATR sizing dinámico) | 20-21 | ✅ Completada |
+| 🟢 **4** — Riesgo de portafolio (correlación, circuit breaker de cuenta) | 22 | ✅ Completada |
+| 🔵 **5** — Ejecución Testnet real | 23 | ✅ Completada |
+| ⚫ **6** — Observabilidad (health checks, CI/CD, auth, rate limiting) | 25-26 | ✅ Completada |
+| 🏁 **7** — Protocolo de activación Live con dinero real | 27 | ⏳ Siguiente |
+
+> Ver `.github/Pasos_A_Seguir.md` para el detalle completo de cada etapa.
+
+---
+

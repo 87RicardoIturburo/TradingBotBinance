@@ -17,7 +17,10 @@ public sealed record CreateStrategyCommand(
     decimal     StopLossPercent,
     decimal     TakeProfitPercent,
     int         MaxOpenPositions,
-    string?     Description = null) : IRequest<Result<TradingStrategy, DomainError>>;
+    string?     Description = null,
+    bool        UseAtrSizing = false,
+    decimal     RiskPercentPerTrade = 1m,
+    decimal     AtrMultiplier = 2m) : IRequest<Result<TradingStrategy, DomainError>>;
 
 internal sealed class CreateStrategyCommandHandler(
     IStrategyConfigService configService) : IRequestHandler<CreateStrategyCommand, Result<TradingStrategy, DomainError>>
@@ -35,7 +38,10 @@ internal sealed class CreateStrategyCommandHandler(
             request.MaxDailyLossUsdt,
             request.StopLossPercent,
             request.TakeProfitPercent,
-            request.MaxOpenPositions);
+            request.MaxOpenPositions,
+            request.UseAtrSizing,
+            request.RiskPercentPerTrade,
+            request.AtrMultiplier);
 
         if (riskResult.IsFailure)
             return Result<TradingStrategy, DomainError>.Failure(riskResult.Error);

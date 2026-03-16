@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using TradingBot.Application.Strategies;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -29,6 +30,16 @@ public sealed record ParameterRange(
     public int ValueCount => Step <= 0 ? 0 : (int)((Max - Min) / Step) + 1;
 }
 
+/// <summary>Métrica por la cual se ordena el ranking de la optimización.</summary>
+public enum OptimizationRankBy
+{
+    PnL,
+    SharpeRatio,
+    SortinoRatio,
+    CalmarRatio,
+    ProfitFactor
+}
+
 /// <summary>Resultado resumido de una combinación de parámetros.</summary>
 public sealed record OptimizationRunSummary(
     int                              Rank,
@@ -40,7 +51,8 @@ public sealed record OptimizationRunSummary(
     decimal                          TotalInvested,
     decimal                          ReturnOnInvestment,
     decimal                          MaxDrawdownPercent,
-    decimal                          AveragePnLPerTrade);
+    decimal                          AveragePnLPerTrade,
+    BacktestMetrics                  Metrics);
 
 /// <summary>Resultado completo de una optimización.</summary>
 public sealed record OptimizationResult(
@@ -51,6 +63,7 @@ public sealed record OptimizationResult(
     int                                  TotalCombinations,
     int                                  CompletedCombinations,
     TimeSpan                             Duration,
+    OptimizationRankBy                   RankedBy,
     IReadOnlyList<OptimizationRunSummary> Results);
 
 /// <summary>
@@ -81,6 +94,7 @@ internal sealed class OptimizationEngine
         IReadOnlyList<ParameterRange> parameterRanges,
         IReadOnlyList<Kline> klines,
         Func<TradingStrategy, CancellationToken, Task<(ITradingStrategy, IRuleEngine)>> strategyFactory,
+        OptimizationRankBy rankBy = OptimizationRankBy.PnL,
         CancellationToken cancellationToken = default)
     {
         var startTime = DateTimeOffset.UtcNow;
@@ -92,6 +106,7 @@ internal sealed class OptimizationEngine
 
         var results = new List<OptimizationRunSummary>();
         var completed = 0;
+        BacktestResult? firstResult = null;
 
         foreach (var combo in combinations)
         {
@@ -99,9 +114,20 @@ internal sealed class OptimizationEngine
 
             var modifiedStrategy = ApplyParameters(baseStrategy, combo);
 
+            // Log de los parámetros efectivos aplicados a cada combinación
+            var paramsLog = string.Join(", ", combo.Select(kv => $"{kv.Key}={kv.Value}"));
+            var indicatorsLog = string.Join(", ", modifiedStrategy.Indicators.Select(
+                ind => $"{ind.Type}({string.Join(",", ind.Parameters.Select(p => $"{p.Key}={p.Value}"))})"));
+            _logger.LogDebug(
+                "Optimización combo [{N}/{Total}]: params=[{Params}] indicadores=[{Indicators}] SL={SL}% TP={TP}%",
+                completed + 1, combinations.Count, paramsLog, indicatorsLog,
+                modifiedStrategy.RiskConfig.StopLossPercent.Value,
+                modifiedStrategy.RiskConfig.TakeProfitPercent.Value);
+
             var (tradingStrategy, ruleEngine) = await strategyFactory(modifiedStrategy, cancellationToken);
 
-            // Warm-up
+            // Warm-up: alimentar indicadores SIN evaluar señales para no contaminar
+            // _lastSignalAt ni _previousRsi con señales fantasma del warm-up
             var maxPeriod = modifiedStrategy.Indicators
                 .Select(i => (int)i.GetParameter("period", 14))
                 .DefaultIfEmpty(0)
@@ -109,16 +135,12 @@ internal sealed class OptimizationEngine
 
             var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
             for (var i = 0; i < warmUpCount; i++)
-            {
-                var k = klines[i];
-                var price = Price.Create(k.Close);
-                if (price.IsFailure) continue;
+                tradingStrategy.WarmUpPrice(klines[i].Close);
 
-                var tick = new Core.Events.MarketTickReceivedEvent(
-                    modifiedStrategy.Symbol, price.Value, price.Value, price.Value, k.Volume, k.OpenTime);
-
-                await tradingStrategy.ProcessTickAsync(tick, cancellationToken);
-            }
+            // Sincronizar estado previo de RSI/MACD para evitar señales falsas
+            // en el primer tick del backtest (sin setear cooldown)
+            if (tradingStrategy is DefaultTradingStrategy dts)
+                dts.SyncPreviousIndicatorState();
 
             var backtestKlines = klines.Skip(warmUpCount).ToList();
             if (backtestKlines.Count == 0) continue;
@@ -126,6 +148,7 @@ internal sealed class OptimizationEngine
             var backtestResult = await _backtestEngine.RunAsync(
                 modifiedStrategy, tradingStrategy, ruleEngine, backtestKlines, cancellationToken);
 
+            firstResult ??= backtestResult;
             completed++;
             results.Add(new OptimizationRunSummary(
                 Rank: 0, // se asigna después de ordenar
@@ -137,7 +160,8 @@ internal sealed class OptimizationEngine
                 TotalInvested: backtestResult.TotalInvested,
                 ReturnOnInvestment: backtestResult.ReturnOnInvestment,
                 MaxDrawdownPercent: backtestResult.MaxDrawdownPercent,
-                AveragePnLPerTrade: backtestResult.AveragePnLPerTrade));
+                AveragePnLPerTrade: backtestResult.AveragePnLPerTrade,
+                Metrics: backtestResult.Metrics));
 
             if (completed % 10 == 0)
                 _logger.LogDebug(
@@ -145,18 +169,58 @@ internal sealed class OptimizationEngine
                     completed, combinations.Count);
         }
 
-        // Ordenar por P&L descendente y asignar ranking
+        // Ordenar por la métrica seleccionada y asignar ranking
         var ranked = results
-            .OrderByDescending(r => r.TotalPnL)
+            .OrderByDescending(r => GetRankingValue(r, rankBy))
             .Select((r, i) => r with { Rank = i + 1 })
             .ToList();
 
         var duration = DateTimeOffset.UtcNow - startTime;
 
         _logger.LogInformation(
-            "Optimización completada en {Duration:N1}s: {Completed} combinaciones, mejor P&L={BestPnL:N2} USDT",
-            duration.TotalSeconds, completed,
+            "Optimización completada en {Duration:N1}s: {Completed} combinaciones, RankBy={RankBy}, mejor P&L={BestPnL:N2} USDT",
+            duration.TotalSeconds, completed, rankBy,
             ranked.Count > 0 ? ranked[0].TotalPnL : 0m);
+
+        // Diagnóstico: detectar cuando todas las combinaciones producen resultados idénticos
+        if (ranked.Count > 1)
+        {
+            var distinctTrades = ranked.Select(r => r.TotalTrades).Distinct().Count();
+            var distinctPnL = ranked.Select(r => r.TotalPnL).Distinct().Count();
+
+            if (distinctTrades == 1 && distinctPnL == 1)
+            {
+                var trades = ranked[0].TotalTrades;
+                if (trades == 0)
+                {
+                    _logger.LogWarning(
+                        "⚠ Todas las {Count} combinaciones produjeron 0 trades. Posibles causas: " +
+                        "(1) RSI nunca cruza los umbrales oversold/overbought en el rango de datos, " +
+                        "(2) régimen HighVolatility suprime todas las señales (ADX/BB/ATR presentes), " +
+                        "(3) confirmación multi-indicador rechaza todas las señales, " +
+                        "(4) rango de fechas demasiado corto",
+                        ranked.Count);
+                }
+                else
+                {
+                    // Diagnosticar razones de cierre del primer backtest
+                    var exitReasonsSummary = firstResult?.Trades
+                        .GroupBy(t => t.ExitReason)
+                        .Select(g => $"{g.Key}×{g.Count()}")
+                        .DefaultIfEmpty("N/A");
+
+                    _logger.LogWarning(
+                        "⚠ Todas las {Count} combinaciones produjeron resultados idénticos " +
+                        "({Trades} trades, P&L={PnL:N4}). " +
+                        "Razones de cierre: [{ExitReasons}]. " +
+                        "Si todos cierran por 'Exit rule' (RSI), el período del RSI no cambia los cruces " +
+                        "suficientemente. Si cierran por SL/TP, los % son demasiado similares al precio de entrada. " +
+                        "Intentá variar RSI.oversold (ej: 25-40) o ampliar el rango de fechas.",
+                        ranked.Count, trades, ranked[0].TotalPnL,
+                        string.Join(", ", exitReasonsSummary!));
+                }
+            }
+        }
 
         return new OptimizationResult(
             baseStrategy.Name,
@@ -166,8 +230,19 @@ internal sealed class OptimizationEngine
             combinations.Count,
             completed,
             duration,
+            rankBy,
             ranked);
     }
+
+    /// <summary>Obtiene el valor de ranking según la métrica seleccionada.</summary>
+    private static decimal GetRankingValue(OptimizationRunSummary r, OptimizationRankBy rankBy) => rankBy switch
+    {
+        OptimizationRankBy.SharpeRatio  => r.Metrics.SharpeRatio,
+        OptimizationRankBy.SortinoRatio => r.Metrics.SortinoRatio,
+        OptimizationRankBy.CalmarRatio  => r.Metrics.CalmarRatio,
+        OptimizationRankBy.ProfitFactor => r.Metrics.ProfitFactor,
+        _                              => r.TotalPnL
+    };
 
     /// <summary>
     /// Genera todas las combinaciones de parámetros como producto cartesiano.
@@ -210,7 +285,7 @@ internal sealed class OptimizationEngine
         TradingStrategy baseStrategy,
         Dictionary<string, decimal> parameters)
     {
-        // Clonar la estrategia base
+        // Clonar la estrategia base preservando TODOS los campos de RiskConfig
         var riskConfig = baseStrategy.RiskConfig;
         var slPercent = (decimal)riskConfig.StopLossPercent;
         var tpPercent = (decimal)riskConfig.TakeProfitPercent;
@@ -226,7 +301,10 @@ internal sealed class OptimizationEngine
         var newRisk = RiskConfig.Create(
             maxOrder, maxDailyLoss,
             slPercent, tpPercent,
-            riskConfig.MaxOpenPositions).Value;
+            riskConfig.MaxOpenPositions,
+            riskConfig.UseAtrSizing,
+            riskConfig.RiskPercentPerTrade,
+            riskConfig.AtrMultiplier).Value;
 
         var copy = TradingStrategy.Create(
             baseStrategy.Name, baseStrategy.Symbol,
@@ -272,4 +350,121 @@ internal sealed class OptimizationEngine
 
         return copy;
     }
+
+    /// <summary>
+    /// Walk-forward analysis: divide klines en 70% train / 30% test.
+    /// Optimiza en train, valida el mejor resultado en test.
+    /// Reporta degradación de métricas entre train y test (señal de overfitting).
+    /// </summary>
+    public async Task<WalkForwardResult> RunWalkForwardAsync(
+        TradingStrategy baseStrategy,
+        IReadOnlyList<ParameterRange> parameterRanges,
+        IReadOnlyList<Kline> klines,
+        Func<TradingStrategy, CancellationToken, Task<(ITradingStrategy, IRuleEngine)>> strategyFactory,
+        OptimizationRankBy rankBy = OptimizationRankBy.SharpeRatio,
+        decimal trainRatio = 0.7m,
+        CancellationToken cancellationToken = default)
+    {
+        var splitIndex = (int)(klines.Count * trainRatio);
+        if (splitIndex < 50 || klines.Count - splitIndex < 20)
+        {
+            _logger.LogWarning(
+                "Walk-forward: datos insuficientes (train={Train}, test={Test}). Se requieren al menos 50/20 klines.",
+                splitIndex, klines.Count - splitIndex);
+            throw new InvalidOperationException(
+                $"Datos insuficientes para walk-forward: train={splitIndex}, test={klines.Count - splitIndex} klines.");
+        }
+
+        var trainKlines = klines.Take(splitIndex).ToList();
+        var testKlines  = klines.Skip(splitIndex).ToList();
+
+        _logger.LogInformation(
+            "Walk-forward: {Train} klines train / {Test} klines test ({TrainPct:N0}%/{TestPct:N0}%)",
+            trainKlines.Count, testKlines.Count,
+            trainRatio * 100, (1 - trainRatio) * 100);
+
+        // 1. Optimizar en train
+        var trainResult = await RunAsync(
+            baseStrategy, parameterRanges, trainKlines, strategyFactory,
+            rankBy, cancellationToken);
+
+        if (trainResult.Results.Count == 0)
+            throw new InvalidOperationException("Walk-forward: la optimización en train no produjo resultados.");
+
+        var bestParams = trainResult.Results[0].Parameters;
+        var trainMetrics = trainResult.Results[0].Metrics;
+        var trainPnL = trainResult.Results[0].TotalPnL;
+
+        _logger.LogInformation(
+            "Walk-forward: mejor combinación en train — PnL={PnL:N2}, Sharpe={Sharpe:N2}",
+            trainPnL, trainMetrics.SharpeRatio);
+
+        // 2. Ejecutar la mejor combinación en test (out-of-sample)
+        var testStrategy = ApplyParameters(baseStrategy, bestParams);
+        var (testTradingStrategy, testRuleEngine) = await strategyFactory(testStrategy, cancellationToken);
+
+        // Warm-up con datos de train para que los indicadores estén precalentados
+        var maxPeriod = testStrategy.Indicators
+            .Select(i => (int)i.GetParameter("period", 14))
+            .DefaultIfEmpty(0)
+            .Max();
+        var warmUpCount = Math.Min(maxPeriod + 10, trainKlines.Count);
+        for (var i = Math.Max(0, trainKlines.Count - warmUpCount); i < trainKlines.Count; i++)
+            testTradingStrategy.WarmUpPrice(trainKlines[i].Close);
+
+        if (testTradingStrategy is Strategies.DefaultTradingStrategy dts)
+            dts.SyncPreviousIndicatorState();
+
+        var testBacktest = await _backtestEngine.RunAsync(
+            testStrategy, testTradingStrategy, testRuleEngine, testKlines, cancellationToken);
+
+        var testMetrics = testBacktest.Metrics;
+
+        // 3. Calcular degradación
+        var trainRankValue = GetRankingValue(trainResult.Results[0], rankBy);
+        var testRankValue = rankBy switch
+        {
+            OptimizationRankBy.SharpeRatio  => testMetrics.SharpeRatio,
+            OptimizationRankBy.SortinoRatio => testMetrics.SortinoRatio,
+            OptimizationRankBy.CalmarRatio  => testMetrics.CalmarRatio,
+            OptimizationRankBy.ProfitFactor => testMetrics.ProfitFactor,
+            _                              => testBacktest.TotalPnL
+        };
+
+        var degradation = trainRankValue != 0
+            ? (1m - testRankValue / trainRankValue) * 100m
+            : 0m;
+
+        var isOverfit = degradation > 30m;
+
+        _logger.LogInformation(
+            "Walk-forward completado: train {TrainMetric:N2} → test {TestMetric:N2} ({RankBy}), degradación={Deg:N1}% {Warn}",
+            trainRankValue, testRankValue, rankBy, degradation,
+            isOverfit ? "⚠️ OVERFIT WARNING" : "✓");
+
+        return new WalkForwardResult(
+            BestParameters: bestParams,
+            TrainPnL: trainPnL,
+            TestPnL: testBacktest.TotalPnL,
+            TrainMetrics: trainMetrics,
+            TestMetrics: testMetrics,
+            TrainKlines: trainKlines.Count,
+            TestKlines: testKlines.Count,
+            DegradationPercent: Math.Round(degradation, 2),
+            IsOverfit: isOverfit,
+            RankedBy: rankBy);
+    }
 }
+
+/// <summary>Resultado de un walk-forward analysis (train/test split).</summary>
+public sealed record WalkForwardResult(
+    Dictionary<string, decimal> BestParameters,
+    decimal                     TrainPnL,
+    decimal                     TestPnL,
+    BacktestMetrics             TrainMetrics,
+    BacktestMetrics             TestMetrics,
+    int                         TrainKlines,
+    int                         TestKlines,
+    decimal                     DegradationPercent,
+    bool                        IsOverfit,
+    OptimizationRankBy          RankedBy);

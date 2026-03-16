@@ -25,6 +25,10 @@ internal static class IndicatorFactory
                                               (int)config.GetParameter("period", 50)),
         IndicatorType.LinearRegression => new LinearRegressionIndicator(
                                               (int)config.GetParameter("period", 20)),
+        IndicatorType.ADX              => new AdxIndicator(
+                                              (int)config.GetParameter("period", 14)),
+        IndicatorType.ATR              => new AtrIndicator(
+                                              (int)config.GetParameter("period", 14)),
         _                              => throw new NotSupportedException($"Indicador '{config.Type}' no soportado aún.")
     };
 }

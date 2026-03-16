@@ -1,7 +1,11 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using TradingBot.Application.Backtesting;
+using TradingBot.Application.RiskManagement;
+using TradingBot.Application.Rules;
+using TradingBot.Application.Strategies;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -14,7 +18,9 @@ namespace TradingBot.Application.Tests.Backtesting;
 
 public sealed class OptimizationEngineTests
 {
-    private readonly BacktestEngine _backtestEngine = new(NullLogger<BacktestEngine>.Instance);
+    private readonly BacktestEngine _backtestEngine = new(
+        Options.Create(new TradingFeeConfig()),
+        NullLogger<BacktestEngine>.Instance);
     private readonly OptimizationEngine _optimizer;
 
     public OptimizationEngineTests()
@@ -117,7 +123,7 @@ public sealed class OptimizationEngineTests
         var result = await _optimizer.RunAsync(
             strategy, ranges, klines,
             (_, _) => Task.FromResult((mockStrategy, mockRuleEngine)),
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
 
         result.TotalCombinations.Should().Be(2);
         result.CompletedCombinations.Should().Be(2);
@@ -144,7 +150,7 @@ public sealed class OptimizationEngineTests
         var result = await _optimizer.RunAsync(
             strategy, ranges, klines,
             (_, _) => Task.FromResult((mockStrategy, mockRuleEngine)),
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
 
         result.Results.Should().BeInDescendingOrder(r => r.TotalPnL);
         result.Results[0].Rank.Should().Be(1);
@@ -170,7 +176,7 @@ public sealed class OptimizationEngineTests
         var act = () => _optimizer.RunAsync(
             strategy, ranges, klines,
             (_, _) => Task.FromResult((mockStrategy, mockRuleEngine)),
-            cts.Token);
+            cancellationToken: cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -195,10 +201,106 @@ public sealed class OptimizationEngineTests
         var result = await _optimizer.RunAsync(
             strategy, ranges, klines,
             (_, _) => Task.FromResult((mockStrategy, mockRuleEngine)),
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
 
         result.Results.Should().HaveCount(1);
         result.Results[0].Parameters.Should().ContainKey("stopLossPercent").WhoseValue.Should().Be(3);
         result.Results[0].Parameters.Should().ContainKey("RSI.period").WhoseValue.Should().Be(14);
+    }
+
+    // ── Tests diagnósticos con instancias REALES ──────────────────────────
+
+    [Fact]
+    public async Task RunAsync_WithRealStrategy_DifferentRsiPeriods_ProducesDifferentResults()
+    {
+        var strategy = CreateStrategy(); // RSI(14), SL=5%, TP=5%, BuyMarket 50 USDT when RSI<30
+        var klines = GenerateStrongOscillatingKlines(600);
+        var ranges = new List<ParameterRange>
+        {
+            new("RSI.period", 7, 21, 7) // 3 values: 7, 14, 21
+        };
+
+        var result = await _optimizer.RunAsync(
+            strategy, ranges, klines,
+            async (modifiedStrategy, ct) =>
+            {
+                ITradingStrategy ts = new DefaultTradingStrategy(
+                    NullLogger<DefaultTradingStrategy>.Instance);
+                await ts.InitializeAsync(modifiedStrategy, ct);
+                IRuleEngine re = new RuleEngine(NullLogger<RuleEngine>.Instance);
+                return (ts, re);
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.CompletedCombinations.Should().Be(3);
+
+        // Con datos oscilantes fuertes, los 3 periodos deberían generar trades
+        result.Results.Should().OnlyContain(
+            r => r.TotalTrades > 0,
+            "los datos oscilantes deberían generar señales RSI para todos los periodos");
+
+        // Diferentes periodos DEBEN producir distinto número de trades o distinto P&L
+        var tradeCounts = result.Results.Select(r => r.TotalTrades).ToList();
+        var pnlValues = result.Results.Select(r => r.TotalPnL).ToList();
+
+        (tradeCounts.Distinct().Count() > 1 || pnlValues.Distinct().Count() > 1)
+            .Should().BeTrue(
+                $"diferentes periodos RSI deben producir resultados distintos, " +
+                $"pero trades=[{string.Join(",", tradeCounts)}] pnl=[{string.Join(",", pnlValues.Select(p => p.ToString("F4")))}]");
+    }
+
+    [Fact]
+    public async Task RunAsync_WithRealStrategy_DifferentStopLoss_ProducesDifferentResults()
+    {
+        var strategy = CreateStrategy();
+        var klines = GenerateStrongOscillatingKlines(600);
+        var ranges = new List<ParameterRange>
+        {
+            new("stopLossPercent", 1, 5, 2) // 3 values: 1, 3, 5
+        };
+
+        var result = await _optimizer.RunAsync(
+            strategy, ranges, klines,
+            async (modifiedStrategy, ct) =>
+            {
+                ITradingStrategy ts = new DefaultTradingStrategy(
+                    NullLogger<DefaultTradingStrategy>.Instance);
+                await ts.InitializeAsync(modifiedStrategy, ct);
+                IRuleEngine re = new RuleEngine(NullLogger<RuleEngine>.Instance);
+                return (ts, re);
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.CompletedCombinations.Should().Be(3);
+
+        // Para stop-loss distinto
+        // pero el P&L o los trades deberían diferir por cierre en diferentes niveles
+        var pnlValues = result.Results.Select(r => r.TotalPnL).ToList();
+        pnlValues.Distinct().Count().Should().BeGreaterThan(1,
+            $"stop-loss distintos deben producir P&L distintos, " +
+            $"pero pnl=[{string.Join(",", pnlValues.Select(p => p.ToString("F4")))}]");
+    }
+
+    /// <summary>
+    /// Genera klines con ciclos claros de subida/bajada para forzar cruces RSI.
+    /// Ciclo: 30 klines subiendo (+200), 30 klines bajando (-200).
+    /// Amplitud total por ciclo: ±6000 (~12% sobre 50000).
+    /// </summary>
+    private static List<Kline> GenerateStrongOscillatingKlines(int count)
+    {
+        var klines = new List<Kline>();
+        var baseTime = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var price = 50000m;
+
+        for (var i = 0; i < count; i++)
+        {
+            var cyclePos = i % 60;
+            price += cyclePos < 30 ? 200m : -200m;
+
+            klines.Add(new Kline(
+                baseTime.AddMinutes(i), price, price + 50, price - 50, price, 100m));
+        }
+
+        return klines;
     }
 }

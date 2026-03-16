@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -21,6 +23,9 @@ internal sealed class OrderService : IOrderService
     private readonly IRiskManager _riskManager;
     private readonly IMarketDataService _marketDataService;
     private readonly ISpotOrderExecutor _spotOrderExecutor;
+    private readonly IAccountService _accountService;
+    private readonly IExchangeInfoService _exchangeInfoService;
+    private readonly TradingFeeConfig _feeConfig;
     private readonly ILogger<OrderService> _logger;
 
     public OrderService(
@@ -30,15 +35,21 @@ internal sealed class OrderService : IOrderService
         IRiskManager riskManager,
         IMarketDataService marketDataService,
         ISpotOrderExecutor spotOrderExecutor,
+        IAccountService accountService,
+        IExchangeInfoService exchangeInfoService,
+        IOptions<TradingFeeConfig> feeConfig,
         ILogger<OrderService> logger)
     {
-        _orderRepository = orderRepository;
-        _positionRepository = positionRepository;
-        _unitOfWork = unitOfWork;
-        _riskManager = riskManager;
-        _marketDataService = marketDataService;
-        _spotOrderExecutor = spotOrderExecutor;
-        _logger = logger;
+        _orderRepository     = orderRepository;
+        _positionRepository  = positionRepository;
+        _unitOfWork          = unitOfWork;
+        _riskManager         = riskManager;
+        _marketDataService   = marketDataService;
+        _spotOrderExecutor   = spotOrderExecutor;
+        _accountService      = accountService;
+        _exchangeInfoService = exchangeInfoService;
+        _feeConfig           = feeConfig.Value;
+        _logger              = logger;
     }
 
     public async Task<Result<Order, DomainError>> PlaceOrderAsync(
@@ -50,10 +61,15 @@ internal sealed class OrderService : IOrderService
         if (riskResult.IsFailure)
             return Result<Order, DomainError>.Failure(riskResult.Error);
 
-        // 2. Persistir la orden
+        // 2. Validar y ajustar contra filtros del exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
+        var filterResult = await ValidateExchangeFiltersAsync(order, cancellationToken);
+        if (filterResult.IsFailure)
+            return Result<Order, DomainError>.Failure(filterResult.Error);
+
+        // 3. Persistir la orden
         await _orderRepository.AddAsync(order, cancellationToken);
 
-        // 3. Ejecutar según modo
+        // 4. Ejecutar según modo
         if (order.IsPaperTrade)
         {
             return await SimulatePaperTradeAsync(order, cancellationToken);
@@ -173,6 +189,53 @@ internal sealed class OrderService : IOrderService
         return Result<IReadOnlyList<Order>, DomainError>.Success(orders);
     }
 
+    /// <summary>
+    /// Valida y ajusta cantidad/precio contra los filtros del exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL).
+    /// Si los filtros no están disponibles (p. ej. exchange caído), la orden se permite sin ajustar.
+    /// </summary>
+    private async Task<Result<bool, DomainError>> ValidateExchangeFiltersAsync(
+        Order order,
+        CancellationToken cancellationToken)
+    {
+        var filtersResult = await _exchangeInfoService.GetFiltersAsync(
+            order.Symbol.Value, cancellationToken);
+
+        if (filtersResult.IsFailure)
+        {
+            _logger.LogWarning(
+                "No se pudieron obtener filtros de exchange para {Symbol}: {Error}. Continuando sin validar filtros.",
+                order.Symbol.Value, filtersResult.Error.Message);
+            return Result<bool, DomainError>.Success(true);
+        }
+
+        var filters = filtersResult.Value;
+        var validateResult = filters.ValidateAndAdjust(
+            order.Quantity.Value,
+            order.LimitPrice?.Value);
+
+        if (validateResult.IsFailure)
+        {
+            _logger.LogWarning(
+                "Orden {OrderId} rechazada por filtros de exchange: {Error}",
+                order.Id, validateResult.Error.Message);
+            return Result<bool, DomainError>.Failure(validateResult.Error);
+        }
+
+        var (adjustedQty, adjustedPrice) = validateResult.Value;
+
+        if (adjustedQty != order.Quantity.Value || adjustedPrice != order.LimitPrice?.Value)
+        {
+            _logger.LogDebug(
+                "Orden {OrderId} ajustada por filtros de exchange: qty {OrigQty}→{AdjQty}, price {OrigPrice}→{AdjPrice}",
+                order.Id, order.Quantity.Value, adjustedQty,
+                order.LimitPrice?.Value, adjustedPrice);
+
+            order.AdjustForExchange(adjustedQty, adjustedPrice);
+        }
+
+        return Result<bool, DomainError>.Success(true);
+    }
+
     private async Task<Result<Order, DomainError>> ExecuteSpotOrderAsync(
         Order order,
         CancellationToken cancellationToken)
@@ -228,6 +291,9 @@ internal sealed class OrderService : IOrderService
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+        // Invalidar caché de balance — el saldo cambió tras la orden
+        await _accountService.InvalidateCacheAsync(cancellationToken);
+
         _logger.LogInformation(
             "Orden {OrderId} ejecutada en Binance: {Side} {Qty} {Symbol} BinanceId={BinanceId} Status={Status}",
             order.Id, order.Side, order.Quantity.Value, order.Symbol.Value,
@@ -245,9 +311,10 @@ internal sealed class OrderService : IOrderService
             return submitResult;
 
         // Determinar el precio de ejecución:
-        // - Limit orders: usar el LimitPrice
-        // - Market orders: obtener precio actual de Binance REST
+        // - Limit orders: usar el LimitPrice (sin slippage)
+        // - Market orders: obtener precio actual de Binance REST + slippage
         Price executionPrice;
+        var isMarketOrder = order.LimitPrice is null;
         if (order.LimitPrice is not null)
         {
             executionPrice = order.LimitPrice;
@@ -266,11 +333,24 @@ internal sealed class OrderService : IOrderService
                 return Result<Order, DomainError>.Success(order);
             }
 
-            executionPrice = priceResult.Value;
+            // Aplicar slippage al precio de mercado
+            var rawPrice = priceResult.Value.Value;
+            var slippedPrice = FeeAndSlippageCalculator.ApplySlippage(
+                rawPrice, order.Side, _feeConfig.SlippagePercent);
+            executionPrice = Price.Create(slippedPrice).Value;
         }
 
+        // Calcular fee
+        var feePercent = isMarketOrder ? _feeConfig.EffectiveTakerFee : _feeConfig.EffectiveMakerFee;
+        var fee = FeeAndSlippageCalculator.CalculateFee(
+            executionPrice.Value, order.Quantity.Value, feePercent);
+
+        _logger.LogDebug(
+            "Paper trade fees: {Fee:F4} USDT (rate={Rate:P3}, slippage={Slippage:P3})",
+            fee, feePercent, isMarketOrder ? _feeConfig.SlippagePercent : 0m);
+
         // En paper trading se llena inmediatamente
-        var fillResult = order.Fill(order.Quantity, executionPrice);
+        var fillResult = order.Fill(order.Quantity, executionPrice, fee);
         if (fillResult.IsFailure)
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -282,9 +362,9 @@ internal sealed class OrderService : IOrderService
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
-            "Paper trade completado: {Side} {Qty} {Symbol} @ {Price}",
+            "Paper trade completado: {Side} {Qty} {Symbol} @ {Price} (fee: {Fee:F4} USDT)",
             order.Side, order.Quantity.Value, order.Symbol.Value,
-            order.ExecutedPrice?.Value);
+            order.ExecutedPrice?.Value, order.Fee);
 
         return Result<Order, DomainError>.Success(order);
     }
@@ -309,14 +389,22 @@ internal sealed class OrderService : IOrderService
                 "Posición {PosId} cerrada: {Side} {Symbol} PnL={PnL:F2}",
                 positionToClose.Id, positionToClose.Side, order.Symbol.Value, positionToClose.RealizedPnL);
         }
-        else
+        else if (order.Side == OrderSide.Buy)
         {
-            // Abrir nueva posición
+            // Abrir nueva posición Long (Spot solo permite Long)
             var position = Position.Open(
                 order.StrategyId, order.Symbol, order.Side,
                 order.ExecutedPrice!, order.FilledQuantity!);
 
             await _positionRepository.AddAsync(position, cancellationToken);
+        }
+        else
+        {
+            // Sell sin posición Long que cerrar — no se puede abrir Short en Spot
+            _logger.LogWarning(
+                "Orden Sell {OrderId} completada pero no hay posición Long abierta para cerrar en {Symbol}. " +
+                "No se crea posición Short (Spot trading no soporta shorts).",
+                order.Id, order.Symbol.Value);
         }
     }
 }

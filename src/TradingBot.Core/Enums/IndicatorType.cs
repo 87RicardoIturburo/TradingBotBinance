@@ -10,5 +10,7 @@ public enum IndicatorType
     Price,
     Volume,
     Fibonacci,
-    LinearRegression
+    LinearRegression,
+    ADX,
+    ATR
 }

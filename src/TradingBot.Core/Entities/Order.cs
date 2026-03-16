@@ -18,11 +18,14 @@ public sealed class Order : AggregateRoot<Guid>
     public Quantity       Quantity       { get; private set; } = null!;
     public Price?         LimitPrice     { get; private set; }
     public Price?         StopPrice      { get; private set; }
+    public Price?         EstimatedPrice { get; private set; }
     public Quantity?      FilledQuantity { get; private set; }
     public Price?         ExecutedPrice  { get; private set; }
     public OrderStatus    Status         { get; private set; }
     public TradingMode    Mode           { get; private set; }
     public string?        BinanceOrderId { get; private set; }
+    /// <summary>Comisión cobrada por el exchange (o simulada en paper trading) en quote asset.</summary>
+    public decimal        Fee            { get; private set; }
     public DateTimeOffset CreatedAt      { get; private set; }
     public DateTimeOffset UpdatedAt      { get; private set; }
     public DateTimeOffset? FilledAt      { get; private set; }
@@ -32,6 +35,14 @@ public sealed class Order : AggregateRoot<Guid>
                                        or OrderStatus.Cancelled
                                        or OrderStatus.Rejected
                                        or OrderStatus.Expired;
+
+    /// <summary>
+    /// Valor notional estimado de la orden en USDT.
+    /// Usa LimitPrice para Limit orders, EstimatedPrice para Market orders pre-ejecución,
+    /// o ExecutedPrice para órdenes ya ejecutadas.
+    /// </summary>
+    public decimal NotionalValue => Quantity.Value *
+        (LimitPrice?.Value ?? EstimatedPrice?.Value ?? ExecutedPrice?.Value ?? 0m);
 
     private Order(Guid id) : base(id) { }
     private Order() : base(Guid.Empty) { } // EF Core
@@ -44,7 +55,8 @@ public sealed class Order : AggregateRoot<Guid>
         Quantity   quantity,
         TradingMode mode,
         Price?     limitPrice = null,
-        Price?     stopPrice  = null)
+        Price?     stopPrice  = null,
+        Price?     estimatedPrice = null)
     {
         if (type == OrderType.Limit && limitPrice is null)
             return Result<Order, DomainError>.Failure(
@@ -57,18 +69,37 @@ public sealed class Order : AggregateRoot<Guid>
         var now = DateTimeOffset.UtcNow;
         return Result<Order, DomainError>.Success(new Order(Guid.NewGuid())
         {
-            StrategyId = strategyId,
-            Symbol     = symbol,
-            Side       = side,
-            Type       = type,
-            Quantity   = quantity,
-            Mode       = mode,
-            LimitPrice = limitPrice,
-            StopPrice  = stopPrice,
-            Status     = OrderStatus.Pending,
-            CreatedAt  = now,
-            UpdatedAt  = now
+            StrategyId     = strategyId,
+            Symbol         = symbol,
+            Side           = side,
+            Type           = type,
+            Quantity       = quantity,
+            Mode           = mode,
+            LimitPrice     = limitPrice,
+            StopPrice      = stopPrice,
+            EstimatedPrice = estimatedPrice,
+            Status         = OrderStatus.Pending,
+            CreatedAt      = now,
+            UpdatedAt      = now
         });
+    }
+
+    /// <summary>
+    /// Ajusta cantidad y/o precio para cumplir con los filtros del exchange (LOT_SIZE, PRICE_FILTER).
+    /// Solo debe llamarse ANTES de la ejecución.
+    /// </summary>
+    public void AdjustForExchange(decimal adjustedQuantity, decimal? adjustedPrice)
+    {
+        var newQty = Quantity.Create(adjustedQuantity);
+        if (newQty.IsSuccess)
+            Quantity = newQty.Value;
+
+        if (adjustedPrice.HasValue)
+        {
+            var newPrice = Price.Create(adjustedPrice.Value);
+            if (newPrice.IsSuccess)
+                LimitPrice = newPrice.Value;
+        }
     }
 
     /// <summary>Envía la orden al exchange (o la registra en paper trading).</summary>
@@ -106,7 +137,7 @@ public sealed class Order : AggregateRoot<Guid>
     }
 
     /// <summary>Marca la orden como completamente ejecutada.</summary>
-    public Result<Order, DomainError> Fill(Quantity filledQuantity, Price executedPrice)
+    public Result<Order, DomainError> Fill(Quantity filledQuantity, Price executedPrice, decimal fee = 0m)
     {
         if (Status is not (OrderStatus.Submitted or OrderStatus.PartiallyFilled))
             return Result<Order, DomainError>.Failure(
@@ -114,6 +145,7 @@ public sealed class Order : AggregateRoot<Guid>
 
         FilledQuantity = filledQuantity;
         ExecutedPrice  = executedPrice;
+        Fee            = fee;
         Status         = OrderStatus.Filled;
         FilledAt       = DateTimeOffset.UtcNow;
         UpdatedAt      = FilledAt.Value;

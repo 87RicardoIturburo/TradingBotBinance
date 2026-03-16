@@ -72,4 +72,26 @@ public sealed class IndicatorFactoryTests
         act.Should().Throw<NotSupportedException>()
             .WithMessage("*Price*");
     }
+
+    [Fact]
+    public void Create_WhenAdx_ReturnsAdxIndicator()
+    {
+        var config = IndicatorConfig.Adx(14).Value;
+
+        var indicator = IndicatorFactory.Create(config);
+
+        indicator.Type.Should().Be(IndicatorType.ADX);
+        indicator.Name.Should().Be("ADX(14)");
+    }
+
+    [Fact]
+    public void Create_WhenAtr_ReturnsAtrIndicator()
+    {
+        var config = IndicatorConfig.Atr(14).Value;
+
+        var indicator = IndicatorFactory.Create(config);
+
+        indicator.Type.Should().Be(IndicatorType.ATR);
+        indicator.Name.Should().Be("ATR(14)");
+    }
 }

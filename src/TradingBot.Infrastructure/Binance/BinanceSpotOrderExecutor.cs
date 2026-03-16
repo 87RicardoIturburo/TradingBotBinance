@@ -8,25 +8,47 @@ using TradingBot.Core.Entities;
 using TradingBot.Core.Interfaces.Services;
 using CoreOrderSide = TradingBot.Core.Enums.OrderSide;
 using CoreOrderType = TradingBot.Core.Enums.OrderType;
+using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Infrastructure.Binance;
 
 /// <summary>
 /// Ejecuta órdenes Spot en Binance vía REST API.
 /// Usa Polly para reintentos con backoff exponencial + jitter.
+/// Errores no retryables: -1013 (filter), -2010 (insufficient balance), -1021 (timestamp).
 /// </summary>
 internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
 {
     private readonly IBinanceRestClient _restClient;
+    private readonly IExchangeInfoService _exchangeInfoService;
     private readonly ILogger<BinanceSpotOrderExecutor> _logger;
     private readonly ResiliencePipeline _retryPipeline;
 
+    /// <summary>Códigos de error Binance que NO deben reintentar (fallo determinístico).</summary>
+    private static readonly HashSet<int> NonRetryableErrorCodes = [
+        -1013, // Filter failure (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
+        -2010, // Insufficient balance
+        -1021, // Timestamp outside recvWindow
+        -1100, // Illegal characters in parameter
+        -1102, // Mandatory parameter missing
+        -1116, // Invalid order type
+        -1117, // Invalid side
+    ];
+
+    /// <summary>Códigos de error Binance que indican mantenimiento/sobrecarga.</summary>
+    private static readonly HashSet<int> MaintenanceErrorCodes = [
+        -1003, // Too many requests (rate limit)
+        -1015, // Too many new orders
+    ];
+
     public BinanceSpotOrderExecutor(
         IBinanceRestClient restClient,
+        IExchangeInfoService exchangeInfoService,
         ILogger<BinanceSpotOrderExecutor> logger)
     {
-        _restClient = restClient;
-        _logger     = logger;
+        _restClient          = restClient;
+        _exchangeInfoService = exchangeInfoService;
+        _logger              = logger;
 
         _retryPipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
@@ -36,7 +58,7 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
                 UseJitter        = true,
                 Delay            = TimeSpan.FromMilliseconds(500),
                 ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
-                    ex is not InvalidOperationException),
+                    ex is not BinanceNonRetryableException),
                 OnRetry = args =>
                 {
                     logger.LogWarning(
@@ -56,6 +78,43 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
     {
         try
         {
+            // 1. Obtener y aplicar filtros del exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
+            var filtersResult = await _exchangeInfoService.GetFiltersAsync(
+                order.Symbol.Value, cancellationToken);
+
+            decimal adjustedQty   = order.Quantity.Value;
+            decimal? adjustedPrice = order.LimitPrice?.Value;
+
+            if (filtersResult.IsSuccess)
+            {
+                var filterResult = BinanceOrderFilter.ValidateAndAdjust(
+                    order.Quantity.Value,
+                    order.LimitPrice?.Value,
+                    filtersResult.Value);
+
+                if (filterResult.IsFailure)
+                {
+                    _logger.LogWarning(
+                        "Orden {OrderId} rechazada por filtros de exchange: {Error}",
+                        order.Id, filterResult.Error.Message);
+                    return Result<SpotOrderResult, DomainError>.Failure(filterResult.Error);
+                }
+
+                (adjustedQty, adjustedPrice) = filterResult.Value;
+
+                if (adjustedQty != order.Quantity.Value || adjustedPrice != order.LimitPrice?.Value)
+                    _logger.LogDebug(
+                        "Orden {OrderId} ajustada: qty {OrigQty}→{AdjQty}, price {OrigPrice}→{AdjPrice}",
+                        order.Id, order.Quantity.Value, adjustedQty,
+                        order.LimitPrice?.Value, adjustedPrice);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "No se pudieron obtener filtros para {Symbol}; enviando con valores originales. {Error}",
+                    order.Symbol.Value, filtersResult.Error.Message);
+            }
+
             var binanceSide = order.Side == CoreOrderSide.Buy
                 ? BinanceEnums.OrderSide.Buy
                 : BinanceEnums.OrderSide.Sell;
@@ -68,8 +127,8 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
                     symbol: order.Symbol.Value,
                     side: binanceSide,
                     type: binanceType,
-                    quantity: order.Quantity.Value,
-                    price: order.LimitPrice?.Value,
+                    quantity: adjustedQty,
+                    price: adjustedPrice,
                     stopPrice: order.StopPrice?.Value,
                     timeInForce: binanceType == BinanceEnums.SpotOrderType.Market
                         ? null
@@ -77,8 +136,23 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
                     ct: ct);
 
                 if (!callResult.Success)
-                    throw new InvalidOperationException(
-                        callResult.Error?.Message ?? "Error desconocido al colocar orden en Binance.");
+                {
+                    var errorCode = callResult.Error?.Code;
+                    var errorMsg = callResult.Error?.Message ?? "Error desconocido al colocar orden en Binance.";
+
+                    // Clasificar errores Binance
+                    if (errorCode.HasValue && NonRetryableErrorCodes.Contains(errorCode.Value))
+                        throw new BinanceNonRetryableException(errorCode.Value, errorMsg);
+
+                    if (errorCode.HasValue && MaintenanceErrorCodes.Contains(errorCode.Value))
+                    {
+                        _logger.LogWarning(
+                            "Binance sobrecargado/mantenimiento (código {Code}): {Message}",
+                            errorCode.Value, errorMsg);
+                    }
+
+                    throw new InvalidOperationException(errorMsg);
+                }
 
                 return callResult;
             }, cancellationToken);
@@ -103,9 +177,17 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
                 ExecutedPrice: data.AverageFillPrice ?? data.Price,
                 Status: data.Status.ToString()));
         }
+        catch (BinanceNonRetryableException ex)
+        {
+            _logger.LogWarning(
+                "Orden {OrderId} rechazada por Binance (código {Code}): {Message}",
+                order.Id, ex.ErrorCode, ex.Message);
+            return Result<SpotOrderResult, DomainError>.Failure(
+                DomainError.ExternalService($"Binance error {ex.ErrorCode}: {ex.Message}"));
+        }
         catch (InvalidOperationException ex)
         {
-            _logger.LogError(ex, "Error fatal al colocar orden {OrderId}", order.Id);
+            _logger.LogError(ex, "Error al colocar orden {OrderId} tras reintentos", order.Id);
             return Result<SpotOrderResult, DomainError>.Failure(
                 DomainError.ExternalService(ex.Message));
         }
@@ -216,4 +298,14 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
         CoreOrderType.StopLimit => BinanceEnums.SpotOrderType.StopLossLimit,
         _                       => BinanceEnums.SpotOrderType.Market
     };
+}
+
+/// <summary>
+/// Excepción para errores de Binance que no deben reintentarse
+/// (filtros, saldo insuficiente, timestamp inválido).
+/// </summary>
+internal sealed class BinanceNonRetryableException(int errorCode, string message)
+    : Exception(message)
+{
+    public int ErrorCode { get; } = errorCode;
 }

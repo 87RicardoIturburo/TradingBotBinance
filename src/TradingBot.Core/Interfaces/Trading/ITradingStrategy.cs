@@ -25,6 +25,12 @@ public interface ITradingStrategy
     /// <summary>Indica si la estrategia está lista para procesar ticks.</summary>
     bool IsInitialized { get; }
 
+    /// <summary>Régimen de mercado detectado en el último tick procesado.</summary>
+    MarketRegime CurrentRegime { get; }
+
+    /// <summary>Valor actual del ATR, o <c>null</c> si no está configurado o no está listo.</summary>
+    decimal? CurrentAtrValue { get; }
+
     /// <summary>
     /// Inicializa la estrategia con la configuración persistida.
     /// Llamado una vez al arrancar y en cada hot-reload.
@@ -47,4 +53,18 @@ public interface ITradingStrategy
 
     /// <summary>Reinicia los buffers internos de todos los indicadores.</summary>
     void Reset();
+
+    /// <summary>
+    /// Alimenta un precio a los indicadores sin evaluar señales ni afectar
+    /// el estado de trading (cooldown, cruce previo, régimen).
+    /// Usado durante warm-up de backtesting y optimización.
+    /// </summary>
+    void WarmUpPrice(decimal price);
+
+    /// <summary>
+    /// Devuelve un snapshot de los valores actuales de todos los indicadores listos,
+    /// en el formato "RSI(14)=28.5000 | EMA(12)=50100.0000".
+    /// Usado por el RuleEngine para evaluar condiciones de reglas de salida.
+    /// </summary>
+    string GetCurrentSnapshot();
 }

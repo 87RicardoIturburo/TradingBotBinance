@@ -89,6 +89,23 @@ else
         </div>
     }
 
+    @* ── Régimen de mercado ────────────────────────────────────────── *@
+    @if (strategyStatus is not null)
+    {
+        <div class="card mb-4 @GetRegimeCardClass(strategyStatus.CurrentRegime)">
+            <div class="card-body d-flex align-items-center gap-3">
+                <span class="fs-3">@GetRegimeIcon(strategyStatus.CurrentRegime)</span>
+                <div>
+                    <strong>Régimen actual:</strong> @GetRegimeLabel(strategyStatus.CurrentRegime)
+                    <br/>
+                    <small class="text-muted">
+                        Ticks: @strategyStatus.TicksProcessed · Señales: @strategyStatus.SignalsGenerated · Órdenes: @strategyStatus.OrdersPlaced
+                    </small>
+                </div>
+            </div>
+        </div>
+    }
+
     @* ── Indicadores ────────────────────────────────────────────────── *@
     <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -390,6 +407,9 @@ else
     private int editMaxPositions;
     private string? editDescription;
 
+    // ── Market regime ────────────────────────────────────────────────
+    private StrategyEngineStatusDto? strategyStatus;
+
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync();
@@ -402,6 +422,20 @@ else
         {
             strategy = await Api.GetStrategyAsync(Id);
             errorMessage = null;
+
+            // Cargar estado del motor para mostrar régimen de mercado
+            try
+            {
+                var systemStatus = await Api.GetSystemStatusAsync();
+                if (systemStatus?.Strategies?.TryGetValue(Id, out var status) == true)
+                    strategyStatus = status;
+                else
+                    strategyStatus = null;
+            }
+            catch
+            {
+                strategyStatus = null;
+            }
         }
         catch (Exception ex)
         {
@@ -718,4 +752,30 @@ else
         public string  Comparator = "LessThan";
         public decimal Value      = 30m;
     }
+
+    // ── Market regime helpers ────────────────────────────────────────
+
+    private static string GetRegimeIcon(string regime) => regime switch
+    {
+        "Trending"       => "📈",
+        "Ranging"        => "↔️",
+        "HighVolatility" => "⚡",
+        _                => "❓"
+    };
+
+    private static string GetRegimeLabel(string regime) => regime switch
+    {
+        "Trending"       => "Tendencia — señales en dirección de tendencia",
+        "Ranging"        => "Lateral — señales RSI oversold/overbought activas",
+        "HighVolatility" => "Alta volatilidad — señales suprimidas",
+        _                => "Desconocido — indicadores insuficientes"
+    };
+
+    private static string GetRegimeCardClass(string regime) => regime switch
+    {
+        "Trending"       => "border-success",
+        "Ranging"        => "border-info",
+        "HighVolatility" => "border-danger",
+        _                => "border-secondary"
+    };
 }

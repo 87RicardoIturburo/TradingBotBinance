@@ -1,4 +1,7 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
+using TradingBot.API.Authentication;
+using TradingBot.API.Health;
 using TradingBot.API.Hubs;
 using TradingBot.API.Middleware;
 using TradingBot.API.Services;
@@ -36,6 +39,34 @@ try
     builder.Services.AddApplication(builder.Configuration);
     builder.Services.AddInfrastructure(builder.Configuration);
 
+    // ── Autenticación API Key ─────────────────────────────────────────────
+    builder.Services
+        .AddAuthentication(ApiKeyAuthenticationOptions.SchemeName)
+        .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(
+            ApiKeyAuthenticationOptions.SchemeName, _ => { });
+
+    // Configurar la API Key post-build via IPostConfigureOptions para que
+    // las overrides de tests (ConfigureAppConfiguration) se apliquen correctamente.
+    builder.Services.AddSingleton<
+        Microsoft.Extensions.Options.IPostConfigureOptions<ApiKeyAuthenticationOptions>,
+        ConfigureApiKeyOptions>();
+
+    builder.Services.AddAuthorization();
+
+    // ── Rate Limiting ─────────────────────────────────────────────────────
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+        options.AddFixedWindowLimiter("api", limiter =>
+        {
+            limiter.PermitLimit = 100;
+            limiter.Window = TimeSpan.FromMinutes(1);
+            limiter.QueueLimit = 10;
+            limiter.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        });
+    });
+
     builder.Services.AddControllers()
         .AddJsonOptions(opts =>
         {
@@ -54,6 +85,18 @@ try
     builder.Services.AddSignalR();
     builder.Services.AddSingleton<ITradingNotifier, SignalRTradingNotifier>();
     builder.Services.AddOpenApi();
+
+    // ── Health Checks ─────────────────────────────────────────────────────
+    var postgresConn = builder.Configuration.GetConnectionString("Postgres") ?? "";
+    var redisConn = Environment.GetEnvironmentVariable("REDIS_CONNECTION")
+                    ?? builder.Configuration.GetConnectionString("Redis")
+                    ?? "localhost:6379";
+
+    builder.Services.AddHealthChecks()
+        .AddNpgSql(postgresConn, name: "postgresql", tags: ["db", "ready"])
+        .AddRedis(redisConn, name: "redis", tags: ["cache", "ready"])
+        .AddCheck<BinanceHealthCheck>("binance", tags: ["external", "ready"])
+        .AddCheck<StrategyEngineHealthCheck>("strategy-engine", tags: ["engine", "live"]);
 
     // CORS — permite al frontend Blazor WASM comunicarse con la API
     builder.Services.AddCors(options =>
@@ -82,11 +125,46 @@ try
         app.MapOpenApi();
     }
 
-    app.UseHttpsRedirection();
     app.UseCors("Frontend");
+    app.UseHttpsRedirection();
+    app.UseRateLimiter();
 
-    app.MapControllers();
-    app.MapHub<TradingHub>("/hubs/trading");
+    // Autenticación — siempre se activa en el pipeline; el handler
+    // devuelve NoResult si no hay key configurada, permitiendo acceso libre.
+    // Si hay key, [Authorize] bloqueará requests sin X-Api-Key válido.
+    var resolvedApiKey = Environment.GetEnvironmentVariable("TRADINGBOT_API_KEY")
+                         ?? app.Configuration.GetValue<string>("Authentication:ApiKey")
+                         ?? string.Empty;
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    if (string.IsNullOrWhiteSpace(resolvedApiKey))
+    {
+        Log.Warning("⚠ TRADINGBOT_API_KEY no configurada. La API está ABIERTA sin autenticación. " +
+                    "Configure la variable de entorno TRADINGBOT_API_KEY antes de usar en producción.");
+    }
+
+    app.MapControllers()
+        .RequireRateLimiting("api");
+    app.MapHub<TradingHub>("/hubs/trading")
+        .RequireCors("Frontend");
+
+    // ── Health Check endpoints ────────────────────────────────────────────
+    app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        ResponseWriter = HealthCheckResponseWriter.WriteAsync
+    });
+    app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready"),
+        ResponseWriter = HealthCheckResponseWriter.WriteAsync
+    });
+    app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("live"),
+        ResponseWriter = HealthCheckResponseWriter.WriteAsync
+    });
 
     app.Run();
 }

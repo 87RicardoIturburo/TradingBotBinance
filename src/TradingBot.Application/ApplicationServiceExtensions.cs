@@ -2,7 +2,9 @@ using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using TradingBot.Application.Backtesting;
 using TradingBot.Application.Behaviors;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Application.Rules;
 using TradingBot.Application.Services;
@@ -39,11 +41,33 @@ public static class ApplicationServiceExtensions
                     opts.MaxDailyLossUsdt = mdl;
                 if (int.TryParse(section[nameof(GlobalRiskSettings.MaxGlobalOpenPositions)], out var mop))
                     opts.MaxGlobalOpenPositions = mop;
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioLongExposureUsdt)], out var mple))
+                    opts.MaxPortfolioLongExposureUsdt = mple;
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioShortExposureUsdt)], out var mpse))
+                    opts.MaxPortfolioShortExposureUsdt = mpse;
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxExposurePerSymbolPercent)], out var mesp))
+                    opts.MaxExposurePerSymbolPercent = mesp;
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxAccountDrawdownPercent)], out var madd))
+                    opts.MaxAccountDrawdownPercent = madd;
+            });
+
+            var feeSection = configuration.GetSection(TradingFeeConfig.SectionName);
+            services.Configure<TradingFeeConfig>(opts =>
+            {
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.MakerFeePercent)], out var mf))
+                    opts.MakerFeePercent = mf;
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.TakerFeePercent)], out var tf))
+                    opts.TakerFeePercent = tf;
+                if (bool.TryParse(feeSection[nameof(TradingFeeConfig.UseBnbDiscount)], out var bnb))
+                    opts.UseBnbDiscount = bnb;
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.SlippagePercent)], out var sp))
+                    opts.SlippagePercent = sp;
             });
         }
         else
         {
             services.Configure<GlobalRiskSettings>(_ => { });
+            services.Configure<TradingFeeConfig>(_ => { });
         }
 
         // Servicios de dominio
@@ -54,6 +78,12 @@ public static class ApplicationServiceExtensions
 
         // Estrategia por defecto (transient para que cada instancia tenga su estado)
         services.AddTransient<ITradingStrategy, DefaultTradingStrategy>();
+
+        // Backtesting — transient (sin estado entre ejecuciones)
+        services.AddTransient<BacktestEngine>();
+
+        // Métricas de trading — singleton (contadores globales)
+        services.AddSingleton<TradingMetrics>();
 
         // StrategyEngine — singleton registrado como IHostedService + IStrategyEngine
         services.AddSingleton<StrategyEngine>();

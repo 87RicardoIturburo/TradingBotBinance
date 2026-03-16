@@ -44,6 +44,8 @@ public sealed record IndicatorConfig
             IndicatorType.BollingerBands   => ValidateBollingerBands(parameters),
             IndicatorType.Fibonacci        => ValidatePeriod(parameters, "Fibonacci"),
             IndicatorType.LinearRegression => ValidatePeriod(parameters, "LinearRegression"),
+            IndicatorType.ADX              => ValidatePeriod(parameters, "ADX"),
+            IndicatorType.ATR              => ValidatePeriod(parameters, "ATR"),
             _                              => null
         };
 
@@ -80,6 +82,12 @@ public sealed record IndicatorConfig
 
     public static Result<IndicatorConfig, DomainError> LinearRegression(int period = 20)
         => Create(IndicatorType.LinearRegression, new() { ["period"] = period });
+
+    public static Result<IndicatorConfig, DomainError> Adx(int period = 14)
+        => Create(IndicatorType.ADX, new() { ["period"] = period });
+
+    public static Result<IndicatorConfig, DomainError> Atr(int period = 14)
+        => Create(IndicatorType.ATR, new() { ["period"] = period });
 
     // ── Validaciones privadas ──────────────────────────────────────────────
 

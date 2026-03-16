@@ -1,4 +1,5 @@
 using MediatR;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.API.Middleware;
@@ -8,6 +9,7 @@ using TradingBot.Application.Queries.Strategies;
 namespace TradingBot.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public sealed class StrategiesController(ISender mediator) : ControllerBase
 {
@@ -35,7 +37,8 @@ public sealed class StrategiesController(ISender mediator) : ControllerBase
             request.Name, request.Symbol, request.Mode,
             request.MaxOrderAmountUsdt, request.MaxDailyLossUsdt,
             request.StopLossPercent, request.TakeProfitPercent,
-            request.MaxOpenPositions, request.Description), ct);
+            request.MaxOpenPositions, request.Description,
+            request.UseAtrSizing, request.RiskPercentPerTrade, request.AtrMultiplier), ct);
 
         return result.ToHttpResult(StrategyDto.FromDomain, StatusCodes.Status201Created);
     }
@@ -48,7 +51,8 @@ public sealed class StrategiesController(ISender mediator) : ControllerBase
             id, request.Name, request.Symbol, request.Mode,
             request.MaxOrderAmountUsdt, request.MaxDailyLossUsdt,
             request.StopLossPercent, request.TakeProfitPercent,
-            request.MaxOpenPositions, request.Description), ct);
+            request.MaxOpenPositions, request.Description,
+            request.UseAtrSizing, request.RiskPercentPerTrade, request.AtrMultiplier), ct);
 
         return result.ToHttpResult(StrategyDto.FromDomain);
     }
@@ -181,7 +185,10 @@ public sealed record CreateStrategyRequest(
     decimal                  StopLossPercent,
     decimal                  TakeProfitPercent,
     int                      MaxOpenPositions,
-    string?                  Description = null);
+    string?                  Description = null,
+    bool                     UseAtrSizing = false,
+    decimal                  RiskPercentPerTrade = 1m,
+    decimal                  AtrMultiplier = 2m);
 
 public sealed record UpdateStrategyRequest(
     string                    Name,
@@ -192,7 +199,10 @@ public sealed record UpdateStrategyRequest(
     decimal                   StopLossPercent,
     decimal                   TakeProfitPercent,
     int                       MaxOpenPositions,
-    string?                   Description = null);
+    string?                   Description = null,
+    bool                      UseAtrSizing = false,
+    decimal                   RiskPercentPerTrade = 1m,
+    decimal                   AtrMultiplier = 2m);
 
 public sealed record AddIndicatorRequest(
     Core.Enums.IndicatorType        Type,

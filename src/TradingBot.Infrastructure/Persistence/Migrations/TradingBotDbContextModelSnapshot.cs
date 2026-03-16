@@ -38,6 +38,11 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                     b.Property<decimal?>("ExecutedPrice")
                         .HasColumnType("numeric");
 
+                    b.Property<decimal>("Fee")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric")
+                        .HasDefaultValue(0m);
+
                     b.Property<DateTimeOffset?>("FilledAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -108,8 +113,14 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("EntryPrice")
                         .HasColumnType("numeric");
 
+                    b.Property<decimal>("HighestPriceSinceEntry")
+                        .HasColumnType("numeric");
+
                     b.Property<bool>("IsOpen")
                         .HasColumnType("boolean");
+
+                    b.Property<decimal>("LowestPriceSinceEntry")
+                        .HasColumnType("numeric");
 
                     b.Property<DateTimeOffset>("OpenedAt")
                         .HasColumnType("timestamp with time zone");

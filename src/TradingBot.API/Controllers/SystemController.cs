@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.Core.Interfaces.Services;
@@ -5,11 +6,14 @@ using TradingBot.Core.Interfaces.Services;
 namespace TradingBot.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public sealed class SystemController(
     IStrategyEngine    strategyEngine,
     IMarketDataService marketDataService,
-    ICacheService      cacheService) : ControllerBase
+    ICacheService      cacheService,
+    IAccountService    accountService,
+    IRiskManager       riskManager) : ControllerBase
 {
     /// <summary>Devuelve el estado del bot y de todas las estrategias activas.</summary>
     [HttpGet("status")]
@@ -67,5 +71,37 @@ public sealed class SystemController(
         await cacheService.SetAsync(cacheKey, dtos, TimeSpan.FromHours(1), ct);
 
         return Results.Ok(dtos);
+    }
+
+    /// <summary>Devuelve el balance de la cuenta (solo assets con saldo &gt; 0).</summary>
+    [HttpGet("balance")]
+    public async Task<IResult> GetBalance(CancellationToken ct)
+    {
+        var result = await accountService.GetAccountSnapshotAsync(ct);
+        if (result.IsFailure)
+            return Results.Problem(result.Error.Message, statusCode: 502);
+
+        var dtos = result.Value
+            .Select(b => new AccountBalanceDto(b.Asset, b.Free, b.Locked, b.Total))
+            .ToList();
+
+        return Results.Ok(dtos);
+    }
+
+    /// <summary>Devuelve la exposición del portafolio por símbolo (long/short).</summary>
+    [HttpGet("exposure")]
+    public async Task<IResult> GetExposure(CancellationToken ct)
+    {
+        var (totalLong, totalShort, net) = await riskManager.GetPortfolioExposureAsync(ct);
+        var bySymbol = await riskManager.GetExposureBySymbolAsync(ct);
+        var (isDrawdown, drawdownPct) = await riskManager.CheckAccountDrawdownAsync(ct);
+
+        var symbolDtos = bySymbol
+            .Select(s => new SymbolExposureDto(s.Symbol, s.LongUsdt, s.ShortUsdt, s.NetUsdt))
+            .OrderByDescending(s => s.LongUsdt + s.ShortUsdt)
+            .ToList();
+
+        return Results.Ok(new PortfolioExposureDto(
+            totalLong, totalShort, net, symbolDtos, isDrawdown, drawdownPct));
     }
 }

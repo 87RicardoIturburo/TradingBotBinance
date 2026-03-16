@@ -61,7 +61,8 @@ internal sealed class RunBacktestCommandHandler(
         var tradingStrategy = serviceProvider.GetRequiredService<ITradingStrategy>();
         await tradingStrategy.InitializeAsync(strategy, cancellationToken);
 
-        // 4. Pre-calentar indicadores con las primeras velas
+        // 4. Pre-calentar indicadores SIN evaluar señales (evita contaminar
+        //    _lastSignalAt y _previousRsi con señales fantasma del warm-up)
         var maxPeriod = strategy.Indicators
             .Select(i => (int)i.GetParameter("period", 14))
             .DefaultIfEmpty(0)
@@ -69,16 +70,11 @@ internal sealed class RunBacktestCommandHandler(
 
         var warmUpCount = Math.Min(maxPeriod + 10, klinesResult.Value.Count);
         for (var i = 0; i < warmUpCount; i++)
-        {
-            var k = klinesResult.Value[i];
-            var price = Price.Create(k.Close);
-            if (price.IsFailure) continue;
+            tradingStrategy.WarmUpPrice(klinesResult.Value[i].Close);
 
-            var syntheticTick = new Core.Events.MarketTickReceivedEvent(
-                strategy.Symbol, price.Value, price.Value, price.Value, k.Volume, k.OpenTime);
-
-            await tradingStrategy.ProcessTickAsync(syntheticTick, cancellationToken);
-        }
+        // Sincronizar estado previo de indicadores para evitar señales falsas
+        if (tradingStrategy is Strategies.DefaultTradingStrategy dts)
+            dts.SyncPreviousIndicatorState();
 
         // 5. Ejecutar backtest con las velas restantes (después del warm-up)
         var backtestKlines = klinesResult.Value.Skip(warmUpCount).ToList();
@@ -87,8 +83,7 @@ internal sealed class RunBacktestCommandHandler(
                 DomainError.Validation("No hay suficientes datos después del warm-up de indicadores."));
 
         var ruleEngine = serviceProvider.GetRequiredService<IRuleEngine>();
-        var engine = new BacktestEngine(
-            serviceProvider.GetRequiredService<ILogger<BacktestEngine>>());
+        var engine = serviceProvider.GetRequiredService<BacktestEngine>();
 
         var result = await engine.RunAsync(
             strategy, tradingStrategy, ruleEngine, backtestKlines, cancellationToken);

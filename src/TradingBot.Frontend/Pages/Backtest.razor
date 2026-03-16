@@ -68,7 +68,17 @@
         <div class="col-md-2">
             <div class="card text-center">
                 <div class="card-body">
-                    <h6 class="text-muted">P&amp;L Total</h6>
+                    <h6 class="text-muted">P&amp;L Bruto</h6>
+                    <span class="fs-5 @GetPnLClass(result.GrossPnL)">
+                        @FormatPnL(result.GrossPnL)
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center border-2 @(result.TotalPnL >= 0 ? "border-success" : "border-danger")">
+                <div class="card-body">
+                    <h6 class="text-muted">P&amp;L Neto</h6>
                     <span class="fs-4 fw-bold @GetPnLClass(result.TotalPnL)">
                         @FormatPnL(result.TotalPnL)
                     </span>
@@ -78,8 +88,16 @@
         <div class="col-md-2">
             <div class="card text-center">
                 <div class="card-body">
-                    <h6 class="text-muted">Invertido</h6>
-                    <span class="fs-4 fw-bold">@result.TotalInvested.ToString("N2") USDT</span>
+                    <h6 class="text-muted">Fees</h6>
+                    <span class="fs-5 text-warning">-@result.TotalFeesUsdt.ToString("N4") USDT</span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-2">
+            <div class="card text-center">
+                <div class="card-body">
+                    <h6 class="text-muted">Slippage</h6>
+                    <span class="fs-5 text-warning">-@result.TotalSlippageUsdt.ToString("N4") USDT</span>
                 </div>
             </div>
         </div>
@@ -96,24 +114,6 @@
         <div class="col-md-2">
             <div class="card text-center">
                 <div class="card-body">
-                    <h6 class="text-muted">Trades</h6>
-                    <span class="fs-4 fw-bold">@result.TotalTrades</span>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-2">
-            <div class="card text-center">
-                <div class="card-body">
-                    <h6 class="text-muted">Win Rate</h6>
-                    <span class="fs-4 fw-bold @(result.WinRate >= 50 ? "text-success" : "text-danger")">
-                        @result.WinRate.ToString("N1")%
-                    </span>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-2">
-            <div class="card text-center">
-                <div class="card-body">
                     <h6 class="text-muted">Max Drawdown</h6>
                     <span class="fs-4 fw-bold text-danger">
                         @result.MaxDrawdownPercent.ToString("N1")%
@@ -121,36 +121,97 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-2 mt-2">
-            <div class="card text-center">
-                <div class="card-body">
-                    <h6 class="text-muted">Mejor Trade</h6>
-                    <span class="fs-5 fw-bold text-success">@FormatPnL(result.BestTrade)</span>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-2 mt-2">
-            <div class="card text-center">
-                <div class="card-body">
-                    <h6 class="text-muted">Peor Trade</h6>
-                    <span class="fs-5 fw-bold text-danger">@FormatPnL(result.WorstTrade)</span>
-                </div>
-            </div>
-        </div>
     </div>
 
     <div class="row mb-4">
-        <div class="col-md-4">
+        <div class="col-md-2">
+            <strong>Trades:</strong> @result.TotalTrades
+        </div>
+        <div class="col-md-2">
             <strong>Ganadores:</strong> <span class="text-success">@result.WinningTrades</span>
             &nbsp; <strong>Perdedores:</strong> <span class="text-danger">@result.LosingTrades</span>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-2">
+            <strong>Win Rate:</strong>
+            <span class="@(result.WinRate >= 50 ? "text-success" : "text-danger")">
+                @result.WinRate.ToString("N1")%
+            </span>
+        </div>
+        <div class="col-md-3">
             <strong>P&amp;L promedio/trade:</strong>
             <span class="@GetPnLClass(result.AveragePnLPerTrade)">
                 @FormatPnL(result.AveragePnLPerTrade)
             </span>
         </div>
+        <div class="col-md-3">
+            <strong>Mejor:</strong> <span class="text-success">@FormatPnL(result.BestTrade)</span>
+            &nbsp; <strong>Peor:</strong> <span class="text-danger">@FormatPnL(result.WorstTrade)</span>
+        </div>
     </div>
+
+    @* ── Métricas de calidad ──────────────────────────────────────── *@
+    @if (result.Metrics is not null)
+    {
+        <h5>📐 Métricas de Calidad</h5>
+        <div class="row mb-4">
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Sharpe</small>
+                        <div class="fs-5 fw-bold @(result.Metrics.SharpeRatio > 1 ? "text-success" : result.Metrics.SharpeRatio > 0 ? "text-warning" : "text-danger")">
+                            @result.Metrics.SharpeRatio.ToString("N2")
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Sortino</small>
+                        <div class="fs-5 fw-bold @(result.Metrics.SortinoRatio > 1.5m ? "text-success" : result.Metrics.SortinoRatio > 0 ? "text-warning" : "text-danger")">
+                            @result.Metrics.SortinoRatio.ToString("N2")
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Profit Factor</small>
+                        <div class="fs-5 fw-bold @(result.Metrics.ProfitFactor > 1.5m ? "text-success" : result.Metrics.ProfitFactor >= 1 ? "text-warning" : "text-danger")">
+                            @result.Metrics.ProfitFactor.ToString("N2")
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Expectancy</small>
+                        <div class="fs-5 fw-bold @GetPnLClass(result.Metrics.Expectancy)">
+                            @FormatPnL(result.Metrics.Expectancy)
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Consec. Wins</small>
+                        <div class="fs-5 fw-bold text-success">@result.Metrics.MaxConsecutiveWins</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card text-center">
+                    <div class="card-body py-2">
+                        <small class="text-muted">Consec. Losses</small>
+                        <div class="fs-5 fw-bold text-danger">@result.Metrics.MaxConsecutiveLosses</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
 
     @* ── Equity Curve ─────────────────────────────────────────────── *@
     @if (result.EquityCurve.Count > 1)
@@ -193,7 +254,9 @@
                         <th>Cantidad</th>
                         <th>Precio Entrada</th>
                         <th>Precio Salida</th>
-                        <th>P&amp;L</th>
+                        <th>Bruto</th>
+                        <th>Fees</th>
+                        <th>Neto</th>
                         <th>Razón</th>
                     </tr>
                 </thead>
@@ -213,7 +276,9 @@
                             <td>@t.Quantity.ToString("N6")</td>
                             <td>@t.EntryPrice.ToString("N2")</td>
                             <td>@t.ExitPrice.ToString("N2")</td>
-                            <td class="fw-bold @GetPnLClass(t.PnL)">@FormatPnL(t.PnL)</td>
+                            <td class="@GetPnLClass(t.GrossPnL)">@FormatPnL(t.GrossPnL)</td>
+                            <td class="text-warning">-@t.Fees.ToString("N4")</td>
+                            <td class="fw-bold @GetPnLClass(t.NetPnL)">@FormatPnL(t.NetPnL)</td>
                             <td><span class="badge bg-secondary">@t.ExitReason</span></td>
                         </tr>
                     }

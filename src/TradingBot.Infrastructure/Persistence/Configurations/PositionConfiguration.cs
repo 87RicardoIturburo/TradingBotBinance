@@ -29,6 +29,14 @@ internal sealed class PositionConfiguration : IEntityTypeConfiguration<Position>
             .HasConversion(p => p.Value, v => Price.Create(v).Value)
             .IsRequired();
 
+        builder.Property(x => x.HighestPriceSinceEntry)
+            .HasConversion(p => p.Value, v => Price.Create(v).Value)
+            .IsRequired();
+
+        builder.Property(x => x.LowestPriceSinceEntry)
+            .HasConversion(p => p.Value, v => Price.Create(v).Value)
+            .IsRequired();
+
         builder.Property(x => x.Quantity)
             .HasConversion(q => q.Value, v => Quantity.Create(v).Value)
             .IsRequired();

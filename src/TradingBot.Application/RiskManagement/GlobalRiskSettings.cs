@@ -13,4 +13,19 @@ public sealed class GlobalRiskSettings
 
     /// <summary>Máximo de posiciones abiertas globales (todas las estrategias). 0 = deshabilitado.</summary>
     public int MaxGlobalOpenPositions { get; set; }
+
+    /// <summary>Exposición máxima Long del portafolio en USDT. 0 = deshabilitado.</summary>
+    public decimal MaxPortfolioLongExposureUsdt { get; set; }
+
+    /// <summary>Exposición máxima Short del portafolio en USDT. 0 = deshabilitado.</summary>
+    public decimal MaxPortfolioShortExposureUsdt { get; set; }
+
+    /// <summary>Porcentaje máximo de exposición en un solo símbolo sobre el total del portafolio (0-100). 0 = deshabilitado.</summary>
+    public decimal MaxExposurePerSymbolPercent { get; set; }
+
+    /// <summary>
+    /// Porcentaje máximo de drawdown diario de la cuenta antes de suspender todas las estrategias (0-100). 0 = deshabilitado.
+    /// Se calcula sobre el balance al inicio del día.
+    /// </summary>
+    public decimal MaxAccountDrawdownPercent { get; set; }
 }

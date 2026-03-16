@@ -23,18 +23,43 @@ public sealed record RiskConfig
     /// <summary>Número máximo de posiciones abiertas simultáneas para esta estrategia.</summary>
     public int MaxOpenPositions { get; }
 
+    /// <summary>Si <c>true</c>, el tamaño de posición se calcula dinámicamente con ATR.</summary>
+    public bool UseAtrSizing { get; }
+
+    /// <summary>Porcentaje del balance a arriesgar por trade (ej: 1.0 = 1%). Solo aplica si <see cref="UseAtrSizing"/> es <c>true</c>.</summary>
+    public decimal RiskPercentPerTrade { get; }
+
+    /// <summary>Multiplicador del ATR para la distancia de stop-loss (ej: 2.0). Solo aplica si <see cref="UseAtrSizing"/> es <c>true</c>.</summary>
+    public decimal AtrMultiplier { get; }
+
+    /// <summary>Si <c>true</c>, el stop-loss se ajusta dinámicamente al precio máximo alcanzado (trailing stop).</summary>
+    public bool UseTrailingStop { get; }
+
+    /// <summary>Porcentaje de retroceso desde el máximo para activar el trailing stop (ej: 1.5 = 1.5%). Solo aplica si <see cref="UseTrailingStop"/> es <c>true</c>.</summary>
+    public decimal TrailingStopPercent { get; }
+
     private RiskConfig(
         decimal maxOrderAmountUsdt,
         decimal maxDailyLossUsdt,
         Percentage stopLossPercent,
         Percentage takeProfitPercent,
-        int maxOpenPositions)
+        int maxOpenPositions,
+        bool useAtrSizing,
+        decimal riskPercentPerTrade,
+        decimal atrMultiplier,
+        bool useTrailingStop,
+        decimal trailingStopPercent)
     {
-        MaxOrderAmountUsdt  = maxOrderAmountUsdt;
-        MaxDailyLossUsdt    = maxDailyLossUsdt;
-        StopLossPercent     = stopLossPercent;
-        TakeProfitPercent   = takeProfitPercent;
-        MaxOpenPositions    = maxOpenPositions;
+        MaxOrderAmountUsdt   = maxOrderAmountUsdt;
+        MaxDailyLossUsdt     = maxDailyLossUsdt;
+        StopLossPercent      = stopLossPercent;
+        TakeProfitPercent    = takeProfitPercent;
+        MaxOpenPositions     = maxOpenPositions;
+        UseAtrSizing         = useAtrSizing;
+        RiskPercentPerTrade  = riskPercentPerTrade;
+        AtrMultiplier        = atrMultiplier;
+        UseTrailingStop      = useTrailingStop;
+        TrailingStopPercent  = trailingStopPercent;
     }
 
     public static Result<RiskConfig, DomainError> Create(
@@ -42,7 +67,12 @@ public sealed record RiskConfig
         decimal maxDailyLossUsdt,
         decimal stopLossPercent,
         decimal takeProfitPercent,
-        int maxOpenPositions = 5)
+        int maxOpenPositions = 5,
+        bool useAtrSizing = false,
+        decimal riskPercentPerTrade = 1m,
+        decimal atrMultiplier = 2m,
+        bool useTrailingStop = false,
+        decimal trailingStopPercent = 1.5m)
     {
         if (maxOrderAmountUsdt <= 0)
             return Result<RiskConfig, DomainError>.Failure(
@@ -55,6 +85,14 @@ public sealed record RiskConfig
         if (maxOpenPositions <= 0)
             return Result<RiskConfig, DomainError>.Failure(
                 DomainError.Validation("El número máximo de posiciones abiertas debe ser mayor que cero."));
+
+        if (riskPercentPerTrade <= 0 || riskPercentPerTrade > 100)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("El porcentaje de riesgo por trade debe estar entre 0 y 100."));
+
+        if (atrMultiplier <= 0)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("El multiplicador ATR debe ser mayor que cero."));
 
         var stopLossResult = Percentage.Create(stopLossPercent);
         if (stopLossResult.IsFailure)
@@ -71,7 +109,12 @@ public sealed record RiskConfig
             maxDailyLossUsdt,
             stopLossResult.Value,
             takeProfitResult.Value,
-            maxOpenPositions));
+            maxOpenPositions,
+            useAtrSizing,
+            riskPercentPerTrade,
+            atrMultiplier,
+            useTrailingStop,
+            trailingStopPercent));
     }
 
     /// <summary>Configuración conservadora por defecto: 100 USDT/orden, SL 2%, TP 4%.</summary>

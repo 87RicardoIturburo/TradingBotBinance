@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using TradingBot.Application.Backtesting;
+using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -14,7 +16,9 @@ namespace TradingBot.Application.Tests.Backtesting;
 
 public sealed class BacktestEngineTests
 {
-    private readonly BacktestEngine _engine = new(NullLogger<BacktestEngine>.Instance);
+    private readonly BacktestEngine _engine = new(
+        Options.Create(new TradingFeeConfig()),
+        NullLogger<BacktestEngine>.Instance);
     private readonly ITradingStrategy _strategy = Substitute.For<ITradingStrategy>();
     private readonly IRuleEngine _ruleEngine = Substitute.For<IRuleEngine>();
 
@@ -164,7 +168,7 @@ public sealed class BacktestEngineTests
 
         result.TotalTrades.Should().Be(1);
         result.Trades[0].ExitReason.Should().Be("Stop-loss");
-        result.Trades[0].PnL.Should().BeNegative();
+        result.Trades[0].NetPnL.Should().BeNegative();
     }
 
     [Fact]
@@ -246,7 +250,190 @@ public sealed class BacktestEngineTests
 
         result.TotalTrades.Should().Be(1);
         result.Trades[0].ExitReason.Should().Be("Take-profit");
-        result.Trades[0].PnL.Should().BePositive();
+        result.Trades[0].NetPnL.Should().BePositive();
         result.WinningTrades.Should().Be(1);
+    }
+
+    // ── Tests de Risk Config en Backtest ─────────────────────────────────
+
+    [Fact]
+    public async Task RunAsync_WhenMaxOrderAmountCapsQty_InvestedIsLowerThanRuleAmount()
+    {
+        // La regla dice 500 USDT por trade, pero maxOrderAmountUsdt=50 → capea a 50
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var risk = RiskConfig.Create(
+            maxOrderAmountUsdt: 50,    // ← cap
+            maxDailyLossUsdt: 500,
+            stopLossPercent: 2,
+            takeProfitPercent: 4).Value;
+
+        var strategy = TradingStrategy.Create("Test", symbol, TradingMode.PaperTrading, risk).Value;
+        var rule = TradingRule.Create(strategy.Id, "Buy", RuleType.Entry,
+            new RuleCondition(ConditionOperator.And,
+                [new LeafCondition(IndicatorType.RSI, Comparator.LessThan, 30)]),
+            new RuleAction(ActionType.BuyMarket, 500)).Value; // ← 500 USDT en la regla
+        strategy.AddRule(rule);
+
+        var baseTime = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var klines = new List<Kline>
+        {
+            new(baseTime,              50000m, 50050, 49950, 50000m, 100), // señal + entrada
+            new(baseTime.AddMinutes(1), 48000m, 48050, 47950, 48000m, 100), // -4% → take-profit
+        };
+
+        var signal = new SignalGeneratedEvent(
+            strategy.Id, symbol, OrderSide.Buy,
+            Price.Create(50000m).Value, "RSI(14)=28.0000");
+
+        _strategy.ProcessTickAsync(
+            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime),
+            Arg.Any<CancellationToken>())
+            .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(signal));
+        _strategy.ProcessTickAsync(
+            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != baseTime),
+            Arg.Any<CancellationToken>())
+            .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
+
+        var orderQty = Quantity.Create(500m / 50000m).Value; // qty para 500 USDT
+        var order = Order.Create(
+            strategy.Id, symbol, OrderSide.Buy, OrderType.Market,
+            orderQty, TradingMode.PaperTrading).Value;
+
+        _ruleEngine.EvaluateAsync(strategy, signal, Arg.Any<CancellationToken>())
+            .Returns(Result<Order?, DomainError>.Success(order));
+        _ruleEngine.EvaluateExitRulesAsync(
+            Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
+            Arg.Any<Price>(), Arg.Any<CancellationToken>())
+            .Returns(Result<Order?, DomainError>.Success(null));
+
+        var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
+
+        result.TotalTrades.Should().Be(1);
+        // Con maxOrderAmountUsdt=50 a precio 50000, qty capeada ≈ 0.001
+        // Invertido ≈ 50 USDT (no 500)
+        result.TotalInvested.Should().BeLessThan(100m,
+            "el trade debe estar capeado a maxOrderAmountUsdt=50, no a los 500 de la regla");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenDailyLossLimitHit_BlocksNewEntries()
+    {
+        // maxDailyLossUsdt=5: después de 1 trade perdedor de −6 USDT, no se abren más posiciones
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var risk = RiskConfig.Create(
+            maxOrderAmountUsdt: 100,
+            maxDailyLossUsdt: 3,       // ← límite 3 USDT; el primer trade pierde ≈ −4 USDT
+            stopLossPercent: 2,
+            takeProfitPercent: 4).Value;
+
+        var strategy = TradingStrategy.Create("Test", symbol, TradingMode.PaperTrading, risk).Value;
+        var rule = TradingRule.Create(strategy.Id, "Buy", RuleType.Entry,
+            new RuleCondition(ConditionOperator.And,
+                [new LeafCondition(IndicatorType.RSI, Comparator.LessThan, 30)]),
+            new RuleAction(ActionType.BuyMarket, 100)).Value;
+        strategy.AddRule(rule);
+
+        var baseTime = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var klines = new List<Kline>
+        {
+            new(baseTime,              50000m, 50050, 49950, 50000m, 100), // señal → entrada 1
+            new(baseTime.AddMinutes(1), 48000m, 48050, 47950, 48000m, 100), // -4% → SL (-2% config) → cierre 1
+            new(baseTime.AddMinutes(2), 47000m, 47050, 46950, 47000m, 100), // señal → NO debe abrir (daily loss superado)
+        };
+
+        var buySignal = new SignalGeneratedEvent(
+            strategy.Id, symbol, OrderSide.Buy,
+            Price.Create(50000m).Value, "RSI(14)=28.0000");
+
+        // Señal en tick 0 y tick 2
+        _strategy.ProcessTickAsync(
+            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime || t.Timestamp == baseTime.AddMinutes(2)),
+            Arg.Any<CancellationToken>())
+            .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(buySignal));
+        _strategy.ProcessTickAsync(
+            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime.AddMinutes(1)),
+            Arg.Any<CancellationToken>())
+            .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
+
+        var orderQty = Quantity.Create(100m / 50000m).Value;
+        var order = Order.Create(
+            strategy.Id, symbol, OrderSide.Buy, OrderType.Market,
+            orderQty, TradingMode.PaperTrading).Value;
+
+        _ruleEngine.EvaluateAsync(strategy, buySignal, Arg.Any<CancellationToken>())
+            .Returns(Result<Order?, DomainError>.Success(order));
+        _ruleEngine.EvaluateExitRulesAsync(
+            Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
+            Arg.Any<Price>(), Arg.Any<CancellationToken>())
+            .Returns(Result<Order?, DomainError>.Success(null));
+
+        var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
+
+        // Solo 1 trade: el segundo fue bloqueado por el circuit breaker diario
+        result.TotalTrades.Should().Be(1,
+            "el segundo trade debe ser bloqueado porque la pérdida diaria supera maxDailyLossUsdt=3");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenDifferentMaxOrderAmounts_ProduceDifferentInvestedAmounts()
+    {
+        // Verificar que variando maxOrderAmountUsdt se obtienen distintos resultados de inversión
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var baseTime = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var klines = new List<Kline>
+        {
+            new(baseTime,              50000m, 50050, 49950, 50000m, 100),
+            new(baseTime.AddMinutes(1), 53000m, 53050, 52950, 53000m, 100),
+        };
+
+        var buySignal = new SignalGeneratedEvent(
+            Guid.NewGuid(),
+            symbol, OrderSide.Buy,
+            Price.Create(50000m).Value, "RSI(14)=28.0000");
+
+        decimal RunWithMaxOrder(decimal maxOrderAmount)
+        {
+            var risk = RiskConfig.Create(maxOrderAmount, 500, 2, 4).Value;
+            var strat = TradingStrategy.Create("T", symbol, TradingMode.PaperTrading, risk).Value;
+            var r = TradingRule.Create(strat.Id, "B", RuleType.Entry,
+                new RuleCondition(ConditionOperator.And,
+                    [new LeafCondition(IndicatorType.RSI, Comparator.LessThan, 30)]),
+                new RuleAction(ActionType.BuyMarket, 1000)).Value; // regla de 1000 USDT (siempre superará el cap)
+            strat.AddRule(r);
+
+            var signal = new SignalGeneratedEvent(strat.Id, symbol, OrderSide.Buy,
+                Price.Create(50000m).Value, "RSI(14)=28.0000");
+
+            var mockTs = Substitute.For<ITradingStrategy>();
+            mockTs.ProcessTickAsync(
+                Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime),
+                Arg.Any<CancellationToken>())
+                .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(signal));
+            mockTs.ProcessTickAsync(
+                Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != baseTime),
+                Arg.Any<CancellationToken>())
+                .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
+
+            var orderQty = Quantity.Create(1000m / 50000m).Value;
+            var ord = Order.Create(strat.Id, symbol, OrderSide.Buy, OrderType.Market,
+                orderQty, TradingMode.PaperTrading).Value;
+
+            var mockRe = Substitute.For<IRuleEngine>();
+            mockRe.EvaluateAsync(strat, signal, Arg.Any<CancellationToken>())
+                .Returns(Result<Order?, DomainError>.Success(ord));
+            mockRe.EvaluateExitRulesAsync(
+                Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
+                Arg.Any<Price>(), Arg.Any<CancellationToken>())
+                .Returns(Result<Order?, DomainError>.Success(null));
+
+            return _engine.RunAsync(strat, mockTs, mockRe, klines).GetAwaiter().GetResult().TotalInvested;
+        }
+
+        var invested50  = RunWithMaxOrder(50m);
+        var invested100 = RunWithMaxOrder(100m);
+        var invested200 = RunWithMaxOrder(200m);
+
+        invested50.Should().BeLessThan(invested100);
+        invested100.Should().BeLessThan(invested200);
     }
 }

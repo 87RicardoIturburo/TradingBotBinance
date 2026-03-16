@@ -28,10 +28,21 @@ namespace TradingBot.Integration.Tests;
 /// </summary>
 public sealed class TradingBotWebFactory : WebApplicationFactory<TradingBot.API.Controllers.StrategiesController>
 {
+    /// <summary>API Key de prueba usada por los tests de integración.</summary>
+    public const string TestApiKey = "test-api-key-for-integration-tests";
+
     public IStrategyRepository MockStrategyRepo { get; } = Substitute.For<IStrategyRepository>();
     public IOrderRepository    MockOrderRepo    { get; } = Substitute.For<IOrderRepository>();
     public IPositionRepository MockPositionRepo { get; } = Substitute.For<IPositionRepository>();
     public IMarketDataService  MockMarketData   { get; } = Substitute.For<IMarketDataService>();
+
+    /// <summary>Crea un HttpClient que envía el header X-Api-Key automáticamente.</summary>
+    public HttpClient CreateAuthenticatedClient()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", TestApiKey);
+        return client;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -43,6 +54,7 @@ public sealed class TradingBotWebFactory : WebApplicationFactory<TradingBot.API.
             {
                 ["ConnectionStrings:Postgres"] = "Host=fake;Database=test;Username=test;Password=test",
                 ["ConnectionStrings:Redis"]    = "fake:6379",
+                ["Authentication:ApiKey"]      = TestApiKey,
             });
         });
 
@@ -115,13 +127,13 @@ public sealed class SystemControllerTests
 
     public SystemControllerTests(TradingBotWebFactory factory)
     {
-        _client = factory.CreateClient();
+        _client = factory.CreateAuthenticatedClient();
     }
 
     [Fact]
     public async Task GetStatus_ReturnsOk()
     {
-        var response = await _client.GetAsync("/api/system/status");
+        var response = await _client.GetAsync("/api/system/status", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -129,7 +141,7 @@ public sealed class SystemControllerTests
     [Fact]
     public async Task Pause_ReturnsOk()
     {
-        var response = await _client.PostAsync("/api/system/pause", null);
+        var response = await _client.PostAsync("/api/system/pause", null, TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -137,7 +149,7 @@ public sealed class SystemControllerTests
     [Fact]
     public async Task Resume_ReturnsOk()
     {
-        var response = await _client.PostAsync("/api/system/resume", null);
+        var response = await _client.PostAsync("/api/system/resume", null, TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -154,7 +166,7 @@ public sealed class StrategiesControllerTests
     public StrategiesControllerTests(TradingBotWebFactory factory)
     {
         _factory = factory;
-        _client  = factory.CreateClient();
+        _client  = factory.CreateAuthenticatedClient();
     }
 
     [Fact]
@@ -164,7 +176,7 @@ public sealed class StrategiesControllerTests
             .GetAllAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<TradingStrategy>>(Array.Empty<TradingStrategy>()));
 
-        var response = await _client.GetAsync("/api/strategies");
+        var response = await _client.GetAsync("/api/strategies", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -177,7 +189,7 @@ public sealed class StrategiesControllerTests
             .GetWithRulesAsync(id, Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<TradingStrategy?>(null));
 
-        var response = await _client.GetAsync($"/api/strategies/{id}");
+        var response = await _client.GetAsync($"/api/strategies/{id}", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -201,7 +213,7 @@ public sealed class StrategiesControllerTests
             .AddAsync(Arg.Any<TradingStrategy>(), Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
 
-        var response = await _client.PostAsJsonAsync("/api/strategies", payload);
+        var response = await _client.PostAsJsonAsync("/api/strategies", payload, TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }
@@ -218,7 +230,7 @@ public sealed class OrdersControllerTests
     public OrdersControllerTests(TradingBotWebFactory factory)
     {
         _factory = factory;
-        _client  = factory.CreateClient();
+        _client  = factory.CreateAuthenticatedClient();
     }
 
     [Fact]
@@ -228,7 +240,7 @@ public sealed class OrdersControllerTests
             .GetOpenOrdersAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<Order>>(Array.Empty<Order>()));
 
-        var response = await _client.GetAsync("/api/orders/open");
+        var response = await _client.GetAsync("/api/orders/open", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -241,7 +253,7 @@ public sealed class OrdersControllerTests
             .GetByIdAsync(id, Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<Order?>(null));
 
-        var response = await _client.DeleteAsync($"/api/orders/{id}");
+        var response = await _client.DeleteAsync($"/api/orders/{id}", TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }

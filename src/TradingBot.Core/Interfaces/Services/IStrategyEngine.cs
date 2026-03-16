@@ -1,5 +1,6 @@
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
+using TradingBot.Core.Enums;
 using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Core.Interfaces.Services;
@@ -53,4 +54,5 @@ public sealed record StrategyEngineStatus(
     DateTimeOffset LastTickAt,
     int            TicksProcessed,
     int            SignalsGenerated,
-    int            OrdersPlaced);
+    int            OrdersPlaced,
+    MarketRegime   CurrentRegime = MarketRegime.Unknown);

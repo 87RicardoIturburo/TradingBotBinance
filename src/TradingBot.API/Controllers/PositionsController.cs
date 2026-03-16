@@ -1,4 +1,5 @@
 using MediatR;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.Application.Queries.Positions;
@@ -6,6 +7,7 @@ using TradingBot.Application.Queries.Positions;
 namespace TradingBot.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public sealed class PositionsController(ISender mediator) : ControllerBase
 {
