@@ -92,10 +92,11 @@ internal sealed class BacktestEngine
                     fakePosition.UpdatePrice(Price.Create(openPosition.LowestPriceSinceEntry).Value);
                 fakePosition.UpdatePrice(price.Value);
 
+                var currentSnapshot = tradingStrategy.GetCurrentSnapshot();
                 var exitResult = await ruleEngine.EvaluateExitRulesAsync(
                     strategy, fakePosition, price.Value, cancellationToken,
                     atrValue: tradingStrategy.CurrentAtrValue,
-                    indicatorSnapshot: tradingStrategy.GetCurrentSnapshot());
+                    indicatorSnapshot: currentSnapshot);
 
                 // Si EvaluateExitRulesAsync falla (p. ej. Order.Create rechazó la orden),
                 // usar el check directo de BacktestPosition como red de seguridad.
@@ -127,14 +128,23 @@ internal sealed class BacktestEngine
                     totalFees += trade.Fees;
                     totalSlippage += trade.SlippageCost;
 
-                    _logger.LogDebug(
-                        "Backtest [{Name}] Trade #{N} cerrado por '{Reason}' | " +
-                        "Entrada: {Entry:F2} → Salida: {Exit:F2} | PnL: {PnL:F4} USDT | " +
-                        "SL={SL}% TP={TP}%",
+                    var priceChangePct = openPosition.EntryPrice > 0
+                        ? (kline.Close - openPosition.EntryPrice) / openPosition.EntryPrice * 100m
+                        : 0m;
+                    var durationMinutes = (kline.OpenTime - openPosition.OpenedAt).TotalMinutes;
+
+                    _logger.LogInformation(
+                        "Backtest [{Name}] ■ Trade #{N} '{Reason}' | "
+                        + "{Entry:F2}→{Exit:F2} ({PricePct:+0.00;-0.00;0.00}%;PnL%={PnLPct:+0.00;-0.00;0.00}%) | NetPnL={PnL:F4} USDT | "
+                        + "SL={SL}% TP={TP}% | Dur={Dur:F0}min | [{Snapshot}]",
                         strategy.Name, trades.Count, exitReason,
-                        openPosition.EntryPrice, kline.Close, trade.NetPnL,
+                        openPosition.EntryPrice, kline.Close,
+                        priceChangePct, openPosition.UnrealizedPnLPercent,
+                        trade.NetPnL,
                         strategy.RiskConfig.StopLossPercent.Value,
-                        strategy.RiskConfig.TakeProfitPercent.Value);
+                        strategy.RiskConfig.TakeProfitPercent.Value,
+                        durationMinutes,
+                        currentSnapshot);
 
                     openPosition = null;
                 }
@@ -173,7 +183,22 @@ internal sealed class BacktestEngine
                         }
                         else if (kline.Close > 0)
                         {
-                            qty = Math.Min(qty, strategy.RiskConfig.MaxOrderAmountUsdt / kline.Close);
+                            var rawQty  = qty;
+                            var cappedQty = strategy.RiskConfig.MaxOrderAmountUsdt / kline.Close;
+                            qty = Math.Min(rawQty, cappedQty);
+
+                            // Advertir si la regla tenía un amountUsdt mucho mayor que el MaxOrderAmountUsdt
+                            // porque puede significar una mala configuración de la estrategia.
+                            var ruleAmountUsdt = rawQty * kline.Close;
+                            if (ruleAmountUsdt > strategy.RiskConfig.MaxOrderAmountUsdt * 1.01m)
+                                _logger.LogWarning(
+                                    "Backtest [{Name}] amountUsdt de la regla ({RuleAmount:F2} USDT) " +
+                                    "supera MaxOrderAmountUsdt ({MaxAmount:F2} USDT). " +
+                                    "La cantidad fue limitada de {RawQty:F6} a {CappedQty:F6} {Symbol}. " +
+                                    "Verificá el amountUsdt de la regla de entrada en la configuración.",
+                                    strategy.Name, ruleAmountUsdt,
+                                    strategy.RiskConfig.MaxOrderAmountUsdt,
+                                    rawQty, qty, strategy.Symbol.Value);
                         }
 
                         if (qty > 0)
@@ -185,6 +210,20 @@ internal sealed class BacktestEngine
                                 order.Side, entryPrice, entryPrice, qty, kline.OpenTime,
                                 HighestPriceSinceEntry: entryPrice,
                                 LowestPriceSinceEntry:  entryPrice);
+
+                            var slPrice = order.Side == OrderSide.Buy
+                                ? entryPrice * (1m - strategy.RiskConfig.StopLossPercent.AsDecimalFactor)
+                                : entryPrice * (1m + strategy.RiskConfig.StopLossPercent.AsDecimalFactor);
+
+                            _logger.LogInformation(
+                                "Backtest [{Name}] ▶ Trade #{N} ENTRADA {Side} | "
+                                + "Market={Market:F2} Efectivo={Entry:F2} | Qty={Qty:F6} | "
+                                + "SL esperado={SL:F2} ({SLPct}%) | Fees={FeeRate:P3} | [{Snapshot}]",
+                                strategy.Name, trades.Count + 1, order.Side,
+                                kline.Close, entryPrice, qty,
+                                slPrice, strategy.RiskConfig.StopLossPercent.Value,
+                                _feeConfig.EffectiveTakerFee,
+                                signal.IndicatorSnapshot);
                         }
                     }
                 }
@@ -253,9 +292,15 @@ internal sealed class BacktestEngine
             Trades: trades,
             EquityCurve: equityCurve);
 
+        var exitSummary = trades.Count > 0
+            ? string.Join(" | ", trades
+                .GroupBy(t => t.ExitReason)
+                .Select(g => $"{g.Key}×{g.Count()}(avg={g.Average(t => t.NetPnL):F4} USDT)"))
+            : "sin trades";
+
         _logger.LogInformation(
-            "Backtest completado: {Trades} trades, P&L={PnL:N2} USDT, Win rate={WinRate:N1}%",
-            trades.Count, realizedPnL, result.WinRate);
+            "Backtest completado: {Trades} trades, P&L={PnL:N2} USDT, Win rate={WinRate:N1}% | {ExitSummary}",
+            trades.Count, realizedPnL, result.WinRate, exitSummary);
 
         return result;
     }
@@ -316,7 +361,10 @@ internal sealed class BacktestEngine
     private static string DetermineExitReason(BacktestPosition position, TradingStrategy strategy)
     {
         var pnlPercent = position.UnrealizedPnLPercent;
-        if (pnlPercent < 0)
+        // Solo etiquetar como stop-loss si se alcanzó el umbral configurado.
+        // Un PnL negativo pequeño puede ser una salida por regla (RSI > 65) con precio
+        // ligeramente por debajo del entry — eso es "Exit rule", no "Stop-loss".
+        if (pnlPercent <= -(decimal)strategy.RiskConfig.StopLossPercent)
             return "Stop-loss";
         if (pnlPercent >= (decimal)strategy.RiskConfig.TakeProfitPercent)
             return "Take-profit";
@@ -324,7 +372,7 @@ internal sealed class BacktestEngine
         // Detectar trailing stop: la posición estaba en ganancia y el precio
         // retrocedió desde el pico histórico hasta el umbral de trailing stop.
         var risk = strategy.RiskConfig;
-        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0 && pnlPercent > 0)
+        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0)
         {
             if (position.Side == OrderSide.Buy
                 && position.HighestPriceSinceEntry > position.EntryPrice

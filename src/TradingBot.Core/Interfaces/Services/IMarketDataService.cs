@@ -70,7 +70,8 @@ public interface IMarketDataService
         Symbol symbol,
         DateTimeOffset from,
         DateTimeOffset to,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        CandleInterval interval = CandleInterval.OneMinute);
 
     /// <summary>
     /// Obtiene los pares de trading disponibles en Binance, filtrados por quote asset.

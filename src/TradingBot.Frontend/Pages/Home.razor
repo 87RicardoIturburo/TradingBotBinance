@@ -488,8 +488,19 @@ else
         {
             var apiUrl = Config["ApiBaseUrl"] ?? "https://localhost:7114";
 
+            var hubApiKey = Config["ApiKey"] ?? string.Empty;
             hubConnection = new HubConnectionBuilder()
-                .WithUrl($"{apiUrl}/hubs/trading")
+                .WithUrl($"{apiUrl}/hubs/trading", options =>
+                {
+                    if (!string.IsNullOrWhiteSpace(hubApiKey))
+                    {
+                        // HTTP transports (negotiate, SSE, long-polling): header personalizado
+                        options.Headers.Add("X-Api-Key", hubApiKey);
+                        // WebSocket: los navegadores no pueden enviar headers en WS upgrades;
+                        // SignalR añade automáticamente ?access_token=<key> en la URL del WS
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(hubApiKey);
+                    }
+                })
                 .WithAutomaticReconnect()
                 .Build();
 

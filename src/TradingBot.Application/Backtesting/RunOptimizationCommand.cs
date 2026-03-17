@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TradingBot.Core.Common;
+using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Repositories;
 using TradingBot.Core.Interfaces.Services;
 using TradingBot.Core.Interfaces.Trading;
@@ -18,7 +19,8 @@ public sealed record RunOptimizationCommand(
     DateTimeOffset                From,
     DateTimeOffset                To,
     IReadOnlyList<ParameterRange> ParameterRanges,
-    OptimizationRankBy            RankBy = OptimizationRankBy.PnL) : IRequest<Result<OptimizationResult, DomainError>>;
+    OptimizationRankBy            RankBy = OptimizationRankBy.PnL,
+    CandleInterval                Interval = CandleInterval.OneMinute) : IRequest<Result<OptimizationResult, DomainError>>;
 
 internal sealed class RunOptimizationCommandHandler(
     IStrategyRepository strategyRepository,
@@ -57,11 +59,11 @@ internal sealed class RunOptimizationCommandHandler(
 
         // 2. Descargar klines UNA vez
         logger.LogInformation(
-            "Descargando klines para optimización: {Symbol} ({From} → {To})",
-            strategy.Symbol.Value, request.From, request.To);
+            "Descargando klines para optimización: {Symbol} ({From} → {To}) intervalo={Interval}",
+            strategy.Symbol.Value, request.From, request.To, request.Interval);
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken);
+            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
 
         if (klinesResult.IsFailure)
             return Result<OptimizationResult, DomainError>.Failure(klinesResult.Error);
@@ -69,6 +71,27 @@ internal sealed class RunOptimizationCommandHandler(
         if (klinesResult.Value.Count == 0)
             return Result<OptimizationResult, DomainError>.Failure(
                 DomainError.Validation("No se encontraron datos históricos para el rango especificado."));
+
+        // Validar calidad de datos antes de correr 500 combinaciones
+        var klines = klinesResult.Value;
+        var maxJump = 0m;
+        for (var idx = 1; idx < Math.Min(klines.Count, 200); idx++)
+        {
+            var prev = klines[idx - 1].Close;
+            var curr = klines[idx].Close;
+            if (prev > 0) maxJump = Math.Max(maxJump, Math.Abs(curr - prev) / prev * 100m);
+        }
+        logger.LogInformation(
+            "Calidad de datos: {Count} velas | Precio inicial={First:F2} | Precio final={Last:F2} | "
+            + "Salto máximo entre velas (muestra 200)={MaxJump:F2}%",
+            klines.Count, klines[0].Close, klines[^1].Close, maxJump);
+        if (maxJump > 20m)
+            logger.LogWarning(
+                "⚠ CALIDAD DE DATOS: salto extremo de {MaxJump:F2}% entre velas consecutivas. "
+                + "Datos sintéticos del entorno Demo producirán P&L irreal en todas las combinaciones. "
+                + "Probá con un período diferente o usá Testnet en lugar de Demo. "
+                + "Precios observados: {First:F2} → {Last:F2} USDT",
+                maxJump, klines[0].Close, klines[^1].Close);
 
         // 3. Ejecutar optimización
         var backtestEngine = serviceProvider.GetRequiredService<BacktestEngine>();
@@ -80,7 +103,7 @@ internal sealed class RunOptimizationCommandHandler(
         var result = await optimizer.RunAsync(
             strategy,
             request.ParameterRanges,
-            klinesResult.Value,
+            klines,
             async (modifiedStrategy, ct) =>
             {
                 var tradingStrategy = serviceProvider.GetRequiredService<ITradingStrategy>();
@@ -104,7 +127,8 @@ public sealed record RunWalkForwardCommand(
     DateTimeOffset                From,
     DateTimeOffset                To,
     IReadOnlyList<ParameterRange> ParameterRanges,
-    OptimizationRankBy            RankBy = OptimizationRankBy.SharpeRatio) : IRequest<Result<WalkForwardResult, DomainError>>;
+    OptimizationRankBy            RankBy = OptimizationRankBy.SharpeRatio,
+    CandleInterval                Interval = CandleInterval.OneMinute) : IRequest<Result<WalkForwardResult, DomainError>>;
 
 internal sealed class RunWalkForwardCommandHandler(
     IStrategyRepository strategyRepository,
@@ -130,7 +154,7 @@ internal sealed class RunWalkForwardCommandHandler(
                 DomainError.Validation("Debe especificar al menos un rango de parámetros."));
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken);
+            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
 
         if (klinesResult.IsFailure)
             return Result<WalkForwardResult, DomainError>.Failure(klinesResult.Error);

@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TradingBot.Core.Common;
+using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Repositories;
 using TradingBot.Core.Interfaces.Services;
 using TradingBot.Core.Interfaces.Trading;
@@ -16,7 +17,8 @@ namespace TradingBot.Application.Backtesting;
 public sealed record RunBacktestCommand(
     Guid           StrategyId,
     DateTimeOffset From,
-    DateTimeOffset To) : IRequest<Result<BacktestResult, DomainError>>;
+    DateTimeOffset To,
+    CandleInterval Interval = CandleInterval.OneMinute) : IRequest<Result<BacktestResult, DomainError>>;
 
 internal sealed class RunBacktestCommandHandler(
     IStrategyRepository strategyRepository,
@@ -44,11 +46,11 @@ internal sealed class RunBacktestCommandHandler(
 
         // 2. Descargar klines históricas de Binance REST
         logger.LogInformation(
-            "Descargando klines para backtest: {Symbol} ({From} → {To})",
-            strategy.Symbol.Value, request.From, request.To);
+            "Descargando klines para backtest: {Symbol} ({From} → {To}) intervalo={Interval}",
+            strategy.Symbol.Value, request.From, request.To, request.Interval);
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken);
+            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
 
         if (klinesResult.IsFailure)
             return Result<BacktestResult, DomainError>.Failure(klinesResult.Error);
@@ -56,6 +58,29 @@ internal sealed class RunBacktestCommandHandler(
         if (klinesResult.Value.Count == 0)
             return Result<BacktestResult, DomainError>.Failure(
                 DomainError.Validation("No se encontraron datos históricos para el rango especificado."));
+
+        // Validar calidad de datos: alertar si hay saltos de precio extremos entre velas.
+        // Un salto > 20% entre velas consecutivas suele indicar datos sintéticos (ej: Binance Demo)
+        // o un timeframe incorrecto, y arruina los resultados del backtest.
+        var klines = klinesResult.Value;
+        var maxJump = 0m;
+        for (var idx = 1; idx < Math.Min(klines.Count, 200); idx++)
+        {
+            var prev = klines[idx - 1].Close;
+            var curr = klines[idx].Close;
+            if (prev > 0)
+                maxJump = Math.Max(maxJump, Math.Abs(curr - prev) / prev * 100m);
+        }
+        logger.LogInformation(
+            "Calidad de datos: {Count} velas | Precio inicial={First:F2} | Precio final={Last:F2} | "
+            + "Salto máximo entre velas (muestra 200)={MaxJump:F2}%",
+            klines.Count, klines[0].Close, klines[^1].Close, maxJump);
+        if (maxJump > 20m)
+            logger.LogWarning(
+                "⚠ CALIDAD DE DATOS: salto de {MaxJump:F2}% entre velas consecutivas. "
+                + "Los datos del entorno Demo pueden ser sintéticos e irreales. "
+                + "Probá con un período diferente o usá Testnet en lugar de Demo.",
+                maxJump);
 
         // 3. Crear instancia fresca de ITradingStrategy para el backtest
         var tradingStrategy = serviceProvider.GetRequiredService<ITradingStrategy>();
@@ -68,16 +93,16 @@ internal sealed class RunBacktestCommandHandler(
             .DefaultIfEmpty(0)
             .Max();
 
-        var warmUpCount = Math.Min(maxPeriod + 10, klinesResult.Value.Count);
+        var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
         for (var i = 0; i < warmUpCount; i++)
-            tradingStrategy.WarmUpPrice(klinesResult.Value[i].Close);
+            tradingStrategy.WarmUpPrice(klines[i].Close);
 
         // Sincronizar estado previo de indicadores para evitar señales falsas
         if (tradingStrategy is Strategies.DefaultTradingStrategy dts)
             dts.SyncPreviousIndicatorState();
 
         // 5. Ejecutar backtest con las velas restantes (después del warm-up)
-        var backtestKlines = klinesResult.Value.Skip(warmUpCount).ToList();
+        var backtestKlines = klines.Skip(warmUpCount).ToList();
         if (backtestKlines.Count == 0)
             return Result<BacktestResult, DomainError>.Failure(
                 DomainError.Validation("No hay suficientes datos después del warm-up de indicadores."));

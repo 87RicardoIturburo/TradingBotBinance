@@ -1,3 +1,4 @@
+using System.Globalization;
 using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.Configuration;
@@ -51,16 +52,21 @@ public static class ApplicationServiceExtensions
                     opts.MaxAccountDrawdownPercent = madd;
             });
 
+            // Usar InvariantCulture para evitar errores de locale en sistemas es-ES:
+            // en español "." es separador de miles, por lo que "0.001" se parsearía como 1.0
             var feeSection = configuration.GetSection(TradingFeeConfig.SectionName);
             services.Configure<TradingFeeConfig>(opts =>
             {
-                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.MakerFeePercent)], out var mf))
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.MakerFeePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mf))
                     opts.MakerFeePercent = mf;
-                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.TakerFeePercent)], out var tf))
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.TakerFeePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var tf))
                     opts.TakerFeePercent = tf;
                 if (bool.TryParse(feeSection[nameof(TradingFeeConfig.UseBnbDiscount)], out var bnb))
                     opts.UseBnbDiscount = bnb;
-                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.SlippagePercent)], out var sp))
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.SlippagePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var sp))
                     opts.SlippagePercent = sp;
             });
         }

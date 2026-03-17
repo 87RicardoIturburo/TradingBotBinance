@@ -213,7 +213,8 @@ public sealed record PnLSummaryDto(
 public sealed record RunBacktestRequest(
     Guid           StrategyId,
     DateTimeOffset From,
-    DateTimeOffset To);
+    DateTimeOffset To,
+    string?        Interval = null);
 
 /// <summary>Resultado completo de un backtest para el frontend.</summary>
 public sealed record BacktestResultDto(
@@ -300,7 +301,8 @@ public sealed record RunOptimizationRequest(
     DateTimeOffset             From,
     DateTimeOffset             To,
     List<ParameterRangeDto>    ParameterRanges,
-    string?                    RankBy = null);
+    string?                    RankBy    = null,
+    string?                    Interval  = null);
 
 public sealed record ParameterRangeDto(
     string  Name,

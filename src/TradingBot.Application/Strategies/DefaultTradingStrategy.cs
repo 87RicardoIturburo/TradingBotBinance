@@ -170,6 +170,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         _previousRsi           = null;
         _previousMacdHistogram = null;
         _previousEmaRelation   = 0;
+        _lastSignalAt          = default;
         _lastRegime            = null;
 
         foreach (var indicatorConfig in config.Indicators)

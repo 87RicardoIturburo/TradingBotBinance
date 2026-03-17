@@ -327,12 +327,14 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
         Symbol symbol,
         DateTimeOffset from,
         DateTimeOffset to,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CandleInterval interval = CandleInterval.OneMinute)
     {
         try
         {
             var allKlines = new List<Kline>();
             var currentFrom = from;
+            var binanceInterval = MapInterval(interval);
 
             // Binance devuelve máx. 1000 klines por request — paginar
             while (currentFrom < to)
@@ -343,7 +345,7 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
                 {
                     var result = await _restClient.SpotApi.ExchangeData.GetKlinesAsync(
                         symbol.Value,
-                        KlineInterval.OneMinute,
+                        binanceInterval,
                         startTime: currentFrom.UtcDateTime,
                         endTime: to.UtcDateTime,
                         limit: 1000,

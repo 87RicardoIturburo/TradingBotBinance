@@ -22,12 +22,25 @@ internal sealed class ApiKeyAuthenticationHandler(
         if (string.IsNullOrWhiteSpace(Options.ApiKey))
             return Task.FromResult(AuthenticateResult.Success(CreateAnonymousTicket()));
 
-        if (!Request.Headers.TryGetValue(ApiKeyAuthenticationOptions.HeaderName, out var apiKeyHeader))
+        // 1. Intentar leer desde el header X-Api-Key (REST y SignalR negotiate HTTP)
+        // 2. Fallback: query string ?access_token= (SignalR WebSocket —
+        //    los navegadores no pueden enviar headers personalizados en WS upgrades,
+        //    SignalR usa AccessTokenProvider para pasar el token como query param)
+        string providedKey;
+        if (Request.Headers.TryGetValue(ApiKeyAuthenticationOptions.HeaderName, out var headerKey)
+            && !string.IsNullOrWhiteSpace(headerKey.ToString()))
+        {
+            providedKey = headerKey.ToString();
+        }
+        else if (Request.Query.TryGetValue("access_token", out var queryKey)
+            && !string.IsNullOrWhiteSpace(queryKey.ToString()))
+        {
+            providedKey = queryKey.ToString();
+        }
+        else
+        {
             return Task.FromResult(AuthenticateResult.Fail("Header X-Api-Key no proporcionado."));
-
-        var providedKey = apiKeyHeader.ToString();
-        if (string.IsNullOrWhiteSpace(providedKey))
-            return Task.FromResult(AuthenticateResult.Fail("API Key vacía."));
+        }
 
         if (!string.Equals(providedKey, Options.ApiKey, StringComparison.Ordinal))
             return Task.FromResult(AuthenticateResult.Fail("API Key inválida."));

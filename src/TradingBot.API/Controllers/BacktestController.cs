@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.API.Middleware;
 using TradingBot.Application.Backtesting;
+using TradingBot.Core.Enums;
 
 namespace TradingBot.API.Controllers;
 
@@ -21,7 +22,10 @@ public sealed class BacktestController(ISender mediator) : ControllerBase
         [FromBody] RunBacktestRequest request,
         CancellationToken ct)
     {
-        var command = new RunBacktestCommand(request.StrategyId, request.From, request.To);
+        var interval = Enum.TryParse<CandleInterval>(request.Interval, true, out var parsedInterval)
+            ? parsedInterval
+            : CandleInterval.OneMinute;
+        var command = new RunBacktestCommand(request.StrategyId, request.From, request.To, interval);
         var result = await mediator.Send(command, ct);
         return result.ToHttpResult(BacktestResultDto.FromDomain);
     }
@@ -43,8 +47,12 @@ public sealed class BacktestController(ISender mediator) : ControllerBase
             ? parsed
             : OptimizationRankBy.PnL;
 
+        var interval = Enum.TryParse<CandleInterval>(request.Interval, true, out var parsedInterval)
+            ? parsedInterval
+            : CandleInterval.OneMinute;
+
         var command = new RunOptimizationCommand(
-            request.StrategyId, request.From, request.To, ranges, rankBy);
+            request.StrategyId, request.From, request.To, ranges, rankBy, interval);
 
         var result = await mediator.Send(command, ct);
         return result.ToHttpResult(OptimizationResultDto.FromDomain);
@@ -67,8 +75,12 @@ public sealed class BacktestController(ISender mediator) : ControllerBase
             ? parsed
             : OptimizationRankBy.SharpeRatio;
 
+        var interval = Enum.TryParse<CandleInterval>(request.Interval, true, out var parsedInterval)
+            ? parsedInterval
+            : CandleInterval.OneMinute;
+
         var command = new RunWalkForwardCommand(
-            request.StrategyId, request.From, request.To, ranges, rankBy);
+            request.StrategyId, request.From, request.To, ranges, rankBy, interval);
 
         var result = await mediator.Send(command, ct);
         return result.ToHttpResult(WalkForwardResultDto.FromDomain);

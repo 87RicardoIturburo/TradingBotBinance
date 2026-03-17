@@ -148,6 +148,20 @@ internal sealed class OptimizationEngine
             var backtestResult = await _backtestEngine.RunAsync(
                 modifiedStrategy, tradingStrategy, ruleEngine, backtestKlines, cancellationToken);
 
+            // Log diagnóstico por combinación: desglose de razones de cierre con P&L promedio
+            var exitBreakdown = backtestResult.Trades.Count > 0
+                ? string.Join(" | ", backtestResult.Trades
+                    .GroupBy(t => t.ExitReason)
+                    .Select(g => $"{g.Key}×{g.Count()}(avg={g.Average(t => t.NetPnL):F4} USDT)"))
+                : "sin trades";
+
+            _logger.LogInformation(
+                "Combo [{N}/{Total}] [{Params}] → {Trades} trades | "
+                + "Win={Wins}/{Trades} ({WR:F0}%) | P&L={PnL:F4} USDT | [{Exits}]",
+                completed + 1, combinations.Count, paramsLog,
+                backtestResult.TotalTrades, backtestResult.WinningTrades, backtestResult.WinRate,
+                backtestResult.TotalPnL, exitBreakdown);
+
             firstResult ??= backtestResult;
             completed++;
             results.Add(new OptimizationRunSummary(
@@ -174,6 +188,26 @@ internal sealed class OptimizationEngine
             .OrderByDescending(r => GetRankingValue(r, rankBy))
             .Select((r, i) => r with { Rank = i + 1 })
             .ToList();
+
+        // Diagnóstico final: alertar si la mayoría de combinaciones son negativas
+        if (ranked.Count >= 5)
+        {
+            var negativeCount  = ranked.Count(r => r.TotalTrades > 0 && r.TotalPnL < 0);
+            var noTradesCount  = ranked.Count(r => r.TotalTrades == 0);
+            var positiveCount  = ranked.Count(r => r.TotalPnL > 0);
+
+            if (negativeCount > ranked.Count * 0.8m)
+            {
+                _logger.LogWarning(
+                    "⚠ DIAGNÓSTICO OPTIMIZADOR: {Neg}/{Total} combos con P&L negativo, "
+                    + "{Zero} sin trades, {Pos} positivos. "
+                    + "Causas probables: (1) período de mercado bajista/lateral, "
+                    + "(2) SL demasiado ajustado vs volatilidad del activo, "
+                    + "(3) reglas de salida cierran antes del TP. "
+                    + "Activá logging DEBUG para ver snapshot de indicadores en cada ENTRADA/SALIDA.",
+                    negativeCount, ranked.Count, noTradesCount, positiveCount);
+            }
+        }
 
         var duration = DateTimeOffset.UtcNow - startTime;
 
@@ -304,7 +338,10 @@ internal sealed class OptimizationEngine
             riskConfig.MaxOpenPositions,
             riskConfig.UseAtrSizing,
             riskConfig.RiskPercentPerTrade,
-            riskConfig.AtrMultiplier).Value;
+            riskConfig.AtrMultiplier,
+            riskConfig.UseTrailingStop,
+            riskConfig.TrailingStopPercent,
+            riskConfig.MaxSpreadPercent).Value;
 
         var copy = TradingStrategy.Create(
             baseStrategy.Name, baseStrategy.Symbol,
@@ -332,7 +369,9 @@ internal sealed class OptimizationEngine
                 copy.AddIndicator(indicator);
         }
 
-        // Copiar reglas, aplicando amountUsdt si está en los parámetros
+        // Copiar reglas, aplicando amountUsdt y sincronizando umbrales de indicadores.
+        // Cuando se optimiza RSI.oversold=25, las condiciones de regla "RSI < X" también
+        // se actualizan a 25 para que señal y regla usen el mismo umbral.
         var overrideAmount = parameters.TryGetValue("amountUsdt", out var amt) ? amt : (decimal?)null;
 
         foreach (var rule in baseStrategy.Rules)
@@ -341,14 +380,54 @@ internal sealed class OptimizationEngine
                 ? new RuleAction(rule.Action.Type, overrideAmount.Value, rule.Action.LimitPriceOffsetPercent)
                 : rule.Action;
 
+            var updatedCondition = RebuildCondition(rule.Condition, parameters);
+
             var ruleResult = TradingRule.Create(
                 copy.Id, rule.Name, rule.Type,
-                rule.Condition, action);
+                updatedCondition, action);
             if (ruleResult.IsSuccess)
                 copy.AddRule(ruleResult.Value);
         }
 
         return copy;
+    }
+
+    /// <summary>
+    /// Reconstruye un árbol de condiciones sincronizando los umbrales de indicadores
+    /// con los parámetros de la combinación actual del optimizador.
+    /// Ejemplo: RSI.oversold=25 actualiza todas las hojas (RSI, LessThan, X) → (RSI, LessThan, 25).
+    /// </summary>
+    private static RuleCondition RebuildCondition(RuleCondition condition, Dictionary<string, decimal> parameters)
+    {
+        var newLeaves = condition.Conditions
+            .Select(leaf => RebuildLeaf(leaf, parameters))
+            .ToArray();
+        return condition with { Conditions = newLeaves };
+    }
+
+    /// <summary>
+    /// Actualiza el umbral de una condición atómica si el parámetro de optimización
+    /// correspondiente (oversold / overbought) está en la combinación.
+    /// </summary>
+    private static LeafCondition RebuildLeaf(LeafCondition leaf, Dictionary<string, decimal> parameters)
+    {
+        var indicatorName = leaf.Indicator.ToString();
+
+        // oversold → condiciones LessThan / LessThanOrEqual / CrossBelow
+        if (leaf.Comparator is Comparator.LessThan or Comparator.LessThanOrEqual or Comparator.CrossBelow
+            && parameters.TryGetValue($"{indicatorName}.oversold", out var oversoldValue))
+        {
+            return leaf with { Value = oversoldValue };
+        }
+
+        // overbought → condiciones GreaterThan / GreaterThanOrEqual / CrossAbove
+        if (leaf.Comparator is Comparator.GreaterThan or Comparator.GreaterThanOrEqual or Comparator.CrossAbove
+            && parameters.TryGetValue($"{indicatorName}.overbought", out var overboughtValue))
+        {
+            return leaf with { Value = overboughtValue };
+        }
+
+        return leaf;
     }
 
     /// <summary>

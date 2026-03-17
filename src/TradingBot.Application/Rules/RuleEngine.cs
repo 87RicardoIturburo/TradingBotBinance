@@ -38,11 +38,16 @@ internal sealed class RuleEngine : IRuleEngine
         foreach (var rule in entryRules)
         {
             if (!EvaluateCondition(rule.Condition, signal))
+            {
+                _logger.LogDebug(
+                    "Regla '{RuleName}' NO cumplida | {Symbol} {Direction} | [{Snapshot}]",
+                    rule.Name, signal.Symbol.Value, signal.Direction, signal.IndicatorSnapshot);
                 continue;
+            }
 
-            _logger.LogInformation(
-                "Regla '{RuleName}' activada para {Symbol} (señal: {Direction})",
-                rule.Name, signal.Symbol.Value, signal.Direction);
+            _logger.LogDebug(
+                "Regla entrada '{RuleName}' ACTIVADA | {Symbol} {Direction} | [{Snapshot}]",
+                rule.Name, signal.Symbol.Value, signal.Direction, signal.IndicatorSnapshot);
 
             var orderResult = CreateOrderFromAction(
                 strategy, rule.Action, signal.Direction, signal.CurrentPrice);
