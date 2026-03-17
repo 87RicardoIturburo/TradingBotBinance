@@ -48,6 +48,20 @@ public sealed record RiskConfig
     /// </summary>
     public int LimitOrderTimeoutSeconds { get; }
 
+    /// <summary>
+    /// Período de la EMA usada en el timeframe de confirmación (HTF).
+    /// Solo aplica si <see cref="TradingStrategy.ConfirmationTimeframe"/> está configurado.
+    /// Default: 20.
+    /// </summary>
+    public int ConfirmationEmaPeriod { get; }
+
+    /// <summary>
+    /// Porcentaje del intervalo de vela usado como cooldown entre señales consecutivas (0-100).
+    /// Ej: 50 con timeframe 1H = cooldown de 30 minutos.
+    /// Default: 50. Valor 0 = sin cooldown.
+    /// </summary>
+    public decimal SignalCooldownPercent { get; }
+
     private RiskConfig(
         decimal maxOrderAmountUsdt,
         decimal maxDailyLossUsdt,
@@ -60,7 +74,9 @@ public sealed record RiskConfig
         bool useTrailingStop,
         decimal trailingStopPercent,
         decimal maxSpreadPercent,
-        int limitOrderTimeoutSeconds)
+        int limitOrderTimeoutSeconds,
+        int confirmationEmaPeriod,
+        decimal signalCooldownPercent)
     {
         MaxOrderAmountUsdt       = maxOrderAmountUsdt;
         MaxDailyLossUsdt         = maxDailyLossUsdt;
@@ -74,6 +90,8 @@ public sealed record RiskConfig
         TrailingStopPercent      = trailingStopPercent;
         MaxSpreadPercent         = maxSpreadPercent;
         LimitOrderTimeoutSeconds = limitOrderTimeoutSeconds;
+        ConfirmationEmaPeriod    = confirmationEmaPeriod;
+        SignalCooldownPercent    = signalCooldownPercent;
     }
 
     public static Result<RiskConfig, DomainError> Create(
@@ -88,7 +106,9 @@ public sealed record RiskConfig
         bool useTrailingStop = false,
         decimal trailingStopPercent = 1.5m,
         decimal maxSpreadPercent = 1.0m,
-        int limitOrderTimeoutSeconds = 0)
+        int limitOrderTimeoutSeconds = 0,
+        int confirmationEmaPeriod = 20,
+        decimal signalCooldownPercent = 50m)
     {
         if (maxOrderAmountUsdt <= 0)
             return Result<RiskConfig, DomainError>.Failure(
@@ -109,6 +129,14 @@ public sealed record RiskConfig
         if (atrMultiplier <= 0)
             return Result<RiskConfig, DomainError>.Failure(
                 DomainError.Validation("El multiplicador ATR debe ser mayor que cero."));
+
+        if (confirmationEmaPeriod < 2)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("El período de EMA de confirmación debe ser al menos 2."));
+
+        if (signalCooldownPercent < 0 || signalCooldownPercent > 100)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("El porcentaje de cooldown de señal debe estar entre 0 y 100."));
 
         var stopLossResult = Percentage.Create(stopLossPercent);
         if (stopLossResult.IsFailure)
@@ -132,7 +160,9 @@ public sealed record RiskConfig
             useTrailingStop,
             trailingStopPercent,
             maxSpreadPercent,
-            limitOrderTimeoutSeconds));
+            limitOrderTimeoutSeconds,
+            confirmationEmaPeriod,
+            signalCooldownPercent));
     }
 
     /// <summary>Configuración conservadora por defecto: 100 USDT/orden, SL 2%, TP 4%.</summary>

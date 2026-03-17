@@ -363,15 +363,14 @@ internal sealed class OrderService : IOrderService
             return submitResult;
 
         // Determinar el precio de ejecución:
-        // - Limit orders: usar el LimitPrice (sin slippage)
-        // - Market orders: obtener precio actual de Binance REST + slippage
+        // - Market orders: obtener precio actual de Binance REST + slippage → fill inmediato
+        // - Limit orders: solo se llenan si el precio actual ya cruzó el limit price
+        //   (Buy: marketPrice <= limitPrice, Sell: marketPrice >= limitPrice).
+        //   Si no se cumple, la orden queda como Submitted y será monitoreada por LimitOrderTimeoutWorker.
         Price executionPrice;
         var isMarketOrder = order.LimitPrice is null;
-        if (order.LimitPrice is not null)
-        {
-            executionPrice = order.LimitPrice;
-        }
-        else
+
+        if (isMarketOrder)
         {
             var priceResult = await _marketDataService.GetCurrentPriceAsync(
                 order.Symbol, cancellationToken);
@@ -391,6 +390,39 @@ internal sealed class OrderService : IOrderService
                 rawPrice, order.Side, _feeConfig.SlippagePercent);
             executionPrice = Price.Create(slippedPrice).Value;
         }
+        else
+        {
+            // Limit order: verificar si el precio actual permite el fill inmediato
+            var priceResult = await _marketDataService.GetCurrentPriceAsync(
+                order.Symbol, cancellationToken);
+
+            if (priceResult.IsFailure)
+            {
+                _logger.LogDebug(
+                    "Paper Limit order {OrderId}: no se pudo obtener precio. Queda pendiente.",
+                    order.Id);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return Result<Order, DomainError>.Success(order);
+            }
+
+            var marketPrice = priceResult.Value.Value;
+            var canFill = order.Side == Core.Enums.OrderSide.Buy
+                ? marketPrice <= order.LimitPrice!.Value   // Buy Limit: mercado ≤ limit
+                : marketPrice >= order.LimitPrice!.Value;  // Sell Limit: mercado ≥ limit
+
+            if (!canFill)
+            {
+                _logger.LogInformation(
+                    "Paper Limit order {OrderId} no se llena: precio mercado {Market:F4} no cruza limit {Limit:F4} ({Side}). Queda pendiente.",
+                    order.Id, marketPrice, order.LimitPrice.Value, order.Side);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                _metrics.RecordOrderPlaced(order.Symbol.Value, order.Side.ToString(), order.Type.ToString(), isPaper: true);
+                return Result<Order, DomainError>.Success(order);
+            }
+
+            // Limit se ejecuta al LimitPrice (sin slippage)
+            executionPrice = order.LimitPrice!;
+        }
 
         // Calcular fee
         var feePercent = isMarketOrder ? _feeConfig.EffectiveTakerFee : _feeConfig.EffectiveMakerFee;
@@ -401,7 +433,7 @@ internal sealed class OrderService : IOrderService
             "Paper trade fees: {Fee:F4} USDT (rate={Rate:P3}, slippage={Slippage:P3})",
             fee, feePercent, isMarketOrder ? _feeConfig.SlippagePercent : 0m);
 
-        // En paper trading se llena inmediatamente
+        // Fill
         var fillResult = order.Fill(order.Quantity, executionPrice, fee);
         if (fillResult.IsFailure)
         {

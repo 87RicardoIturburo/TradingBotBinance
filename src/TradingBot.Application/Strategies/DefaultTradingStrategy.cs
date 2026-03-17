@@ -31,8 +31,8 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     private EmaIndicator? _confirmationEma;
     private decimal? _lastConfirmationClose;
 
-    /// <summary>Tiempo mínimo entre señales consecutivas. Evita ráfagas de órdenes.</summary>
-    internal static readonly TimeSpan SignalCooldown = TimeSpan.FromMinutes(1);
+    /// <summary>Tiempo mínimo entre señales consecutivas. Se calcula dinámicamente según el timeframe de la estrategia.</summary>
+    private TimeSpan _signalCooldown = TimeSpan.FromMinutes(1);
 
     public Guid        StrategyId    { get; private set; }
     public Symbol      Symbol        { get; private set; } = null!;
@@ -57,11 +57,14 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
 
         RebuildIndicators(config);
 
-        // Multi-Timeframe: crear EMA de confirmación si se configuró un HTF
+        // Multi-Timeframe: crear EMA de confirmación con período configurable
         _confirmationEma = config.ConfirmationTimeframe.HasValue
-            ? new EmaIndicator(20) // EMA(20) en el HTF para tendencia macro
+            ? new EmaIndicator(config.RiskConfig.ConfirmationEmaPeriod)
             : null;
         _lastConfirmationClose = null;
+
+        // Cooldown dinámico: porcentaje del intervalo de vela (ej: 50% de 1H = 30min)
+        _signalCooldown = CalculateSignalCooldown(config.Timeframe, config.RiskConfig.SignalCooldownPercent);
 
         IsInitialized = true;
 
@@ -136,9 +139,12 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
 
         // Reconstruir confirmación si cambió
         _confirmationEma = config.ConfirmationTimeframe.HasValue
-            ? new EmaIndicator(20)
+            ? new EmaIndicator(config.RiskConfig.ConfirmationEmaPeriod)
             : null;
         _lastConfirmationClose = null;
+
+        // Recalcular cooldown
+        _signalCooldown = CalculateSignalCooldown(config.Timeframe, config.RiskConfig.SignalCooldownPercent);
 
         _logger.LogInformation(
             "Hot-reload completado para estrategia '{Name}' ({Id})", config.Name, config.Id);
@@ -273,6 +279,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         _previousEmaRelation   = 0;
         _lastSignalAt          = default;
         _lastRegime            = null;
+        _signalCooldown        = CalculateSignalCooldown(config.Timeframe, config.RiskConfig.SignalCooldownPercent);
 
         foreach (var indicatorConfig in config.Indicators)
         {
@@ -286,6 +293,31 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
                 _logger.LogWarning(ex, "Indicador no soportado: {Type}", indicatorConfig.Type);
             }
         }
+    }
+
+    /// <summary>
+    /// Calcula el cooldown entre señales como porcentaje de la duración de una vela.
+    /// Ej: 50% de 1H = 30 minutos. Si el porcentaje es 0 se usa un mínimo de 5 segundos.
+    /// </summary>
+    private static TimeSpan CalculateSignalCooldown(CandleInterval timeframe, decimal cooldownPercent)
+    {
+        var intervalMinutes = timeframe switch
+        {
+            CandleInterval.OneMinute      => 1,
+            CandleInterval.FiveMinutes    => 5,
+            CandleInterval.FifteenMinutes => 15,
+            CandleInterval.ThirtyMinutes  => 30,
+            CandleInterval.OneHour        => 60,
+            CandleInterval.FourHours      => 240,
+            CandleInterval.OneDay         => 1440,
+            _                             => 1
+        };
+
+        if (cooldownPercent <= 0)
+            return TimeSpan.FromSeconds(5);
+
+        var cooldownMinutes = intervalMinutes * (double)(cooldownPercent / 100m);
+        return TimeSpan.FromMinutes(Math.Max(cooldownMinutes, 5.0 / 60.0)); // Mínimo 5 segundos
     }
 
     private SignalGeneratedEvent? EvaluateSignal(MarketTickReceivedEvent tick)
@@ -338,7 +370,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         }
 
         // Cooldown: evitar ráfagas de señales en períodos volátiles
-        if (_lastSignalAt != default && tick.Timestamp - _lastSignalAt < SignalCooldown)
+        if (_lastSignalAt != default && tick.Timestamp - _lastSignalAt < _signalCooldown)
             return null;
 
         // Confirmación multi-indicador: indicadores que NO son el generador emiten un voto

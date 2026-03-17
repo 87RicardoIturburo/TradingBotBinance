@@ -98,14 +98,16 @@ public sealed class OrderServiceTests
         var order = CreatePaperOrder(OrderType.Limit, limitPrice: limitPrice);
         SetupRiskApproved(order);
 
+        // Paper Limit: se consulta precio de mercado para verificar si puede llenarse.
+        // Buy Limit se llena cuando marketPrice <= limitPrice.
+        _marketData.GetCurrentPriceAsync(Arg.Any<Symbol>(), Arg.Any<CancellationToken>())
+            .Returns(Result<Price, DomainError>.Success(Price.Create(53500m).Value));
+
         var result = await _sut.PlaceOrderAsync(order);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Status.Should().Be(OrderStatus.Filled);
         result.Value.ExecutedPrice!.Value.Should().Be(54000m);
-        // Should NOT call market data service for limit orders
-        await _marketData.DidNotReceive()
-            .GetCurrentPriceAsync(Arg.Any<Symbol>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

@@ -8,7 +8,6 @@ using TradingBot.Core.Entities;
 using TradingBot.Core.Interfaces.Services;
 using CoreOrderSide = TradingBot.Core.Enums.OrderSide;
 using CoreOrderType = TradingBot.Core.Enums.OrderType;
-using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Infrastructure.Binance;
 
@@ -20,7 +19,6 @@ namespace TradingBot.Infrastructure.Binance;
 internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
 {
     private readonly IBinanceRestClient _restClient;
-    private readonly IExchangeInfoService _exchangeInfoService;
     private readonly ILogger<BinanceSpotOrderExecutor> _logger;
     private readonly ResiliencePipeline _retryPipeline;
 
@@ -43,11 +41,9 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
 
     public BinanceSpotOrderExecutor(
         IBinanceRestClient restClient,
-        IExchangeInfoService exchangeInfoService,
         ILogger<BinanceSpotOrderExecutor> logger)
     {
         _restClient          = restClient;
-        _exchangeInfoService = exchangeInfoService;
         _logger              = logger;
 
         _retryPipeline = new ResiliencePipelineBuilder()
@@ -78,42 +74,10 @@ internal sealed class BinanceSpotOrderExecutor : ISpotOrderExecutor
     {
         try
         {
-            // 1. Obtener y aplicar filtros del exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL)
-            var filtersResult = await _exchangeInfoService.GetFiltersAsync(
-                order.Symbol.Value, cancellationToken);
-
-            decimal adjustedQty   = order.Quantity.Value;
-            decimal? adjustedPrice = order.LimitPrice?.Value;
-
-            if (filtersResult.IsSuccess)
-            {
-                var filterResult = BinanceOrderFilter.ValidateAndAdjust(
-                    order.Quantity.Value,
-                    order.LimitPrice?.Value,
-                    filtersResult.Value);
-
-                if (filterResult.IsFailure)
-                {
-                    _logger.LogWarning(
-                        "Orden {OrderId} rechazada por filtros de exchange: {Error}",
-                        order.Id, filterResult.Error.Message);
-                    return Result<SpotOrderResult, DomainError>.Failure(filterResult.Error);
-                }
-
-                (adjustedQty, adjustedPrice) = filterResult.Value;
-
-                if (adjustedQty != order.Quantity.Value || adjustedPrice != order.LimitPrice?.Value)
-                    _logger.LogDebug(
-                        "Orden {OrderId} ajustada: qty {OrigQty}→{AdjQty}, price {OrigPrice}→{AdjPrice}",
-                        order.Id, order.Quantity.Value, adjustedQty,
-                        order.LimitPrice?.Value, adjustedPrice);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "No se pudieron obtener filtros para {Symbol}; enviando con valores originales. {Error}",
-                    order.Symbol.Value, filtersResult.Error.Message);
-            }
+            // Los filtros de exchange (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL) ya fueron
+            // aplicados por OrderService.ValidateExchangeFiltersAsync. El executor solo envía.
+            var adjustedQty   = order.Quantity.Value;
+            var adjustedPrice = order.LimitPrice?.Value;
 
             var binanceSide = order.Side == CoreOrderSide.Buy
                 ? BinanceEnums.OrderSide.Buy
