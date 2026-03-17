@@ -7,6 +7,11 @@
 .env
 !.env.example
 
+# Archivos locales con API Keys — NUNCA commitear
+API_KEY_BINANCE.txt
+*_API_KEY*.txt
+*_KEY*.txt
+
 # User-specific files
 *.rsuser
 *.suo
@@ -369,3 +374,4 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/.github/copilot-instructions.md
