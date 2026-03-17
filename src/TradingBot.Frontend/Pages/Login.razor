@@ -1,0 +1,84 @@
+@page "/login"
+@layout LoginLayout
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+
+<PageTitle>Login — TradingBot</PageTitle>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card shadow">
+                <div class="card-body p-4">
+                    <h3 class="card-title text-center mb-4">🔐 TradingBot</h3>
+                    <p class="text-muted text-center mb-4">
+                        Ingresa la API Key del backend para acceder al dashboard.
+                    </p>
+
+                    <EditForm Model="loginModel" OnValidSubmit="HandleLoginAsync" FormName="LoginForm">
+                        <div class="mb-3">
+                            <label for="apiKey" class="form-label">API Key</label>
+                            <InputText id="apiKey" class="form-control" type="password"
+                                       @bind-Value="loginModel.ApiKey"
+                                       placeholder="Ingresa la API Key del backend" />
+                        </div>
+
+                        @if (!string.IsNullOrEmpty(errorMessage))
+                        {
+                            <div class="alert alert-danger py-2">@errorMessage</div>
+                        }
+
+                        <button type="submit" class="btn btn-primary w-100" disabled="@isLoading">
+                            @if (isLoading)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            }
+                            Iniciar Sesión
+                        </button>
+                    </EditForm>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private LoginModel loginModel = new();
+    private string? errorMessage;
+    private bool isLoading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Si ya está autenticado, redirigir al dashboard
+        if (await Auth.CheckAuthStatusAsync())
+            Nav.NavigateTo("/");
+    }
+
+    private async Task HandleLoginAsync()
+    {
+        errorMessage = null;
+        isLoading = true;
+
+        try
+        {
+            var success = await Auth.LoginAsync(loginModel.ApiKey ?? string.Empty);
+            if (success)
+                Nav.NavigateTo("/");
+            else
+                errorMessage = "API Key inválida. Verifica e intenta de nuevo.";
+        }
+        catch
+        {
+            errorMessage = "No se pudo conectar con el servidor.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private sealed class LoginModel
+    {
+        public string? ApiKey { get; set; }
+    }
+}

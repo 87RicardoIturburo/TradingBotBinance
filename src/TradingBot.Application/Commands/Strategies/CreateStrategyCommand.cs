@@ -20,7 +20,9 @@ public sealed record CreateStrategyCommand(
     string?     Description = null,
     bool        UseAtrSizing = false,
     decimal     RiskPercentPerTrade = 1m,
-    decimal     AtrMultiplier = 2m) : IRequest<Result<TradingStrategy, DomainError>>;
+    decimal     AtrMultiplier = 2m,
+    CandleInterval Timeframe = CandleInterval.OneMinute,
+    CandleInterval? ConfirmationTimeframe = null) : IRequest<Result<TradingStrategy, DomainError>>;
 
 internal sealed class CreateStrategyCommandHandler(
     IStrategyConfigService configService) : IRequestHandler<CreateStrategyCommand, Result<TradingStrategy, DomainError>>
@@ -48,7 +50,8 @@ internal sealed class CreateStrategyCommandHandler(
 
         var strategyResult = TradingStrategy.Create(
             request.Name, symbolResult.Value, request.Mode,
-            riskResult.Value, request.Description);
+            riskResult.Value, request.Description,
+            request.Timeframe, request.ConfirmationTimeframe);
 
         if (strategyResult.IsFailure)
             return strategyResult;

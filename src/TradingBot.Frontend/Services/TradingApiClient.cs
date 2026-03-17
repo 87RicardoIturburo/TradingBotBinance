@@ -157,6 +157,9 @@ public sealed class TradingApiClient(HttpClient http)
     public Task<PortfolioExposureDto?> GetPortfolioExposureAsync() =>
         http.GetFromJsonAsync<PortfolioExposureDto>("api/system/exposure");
 
+    public Task<MetricsSnapshotDto?> GetMetricsAsync() =>
+        http.GetFromJsonAsync<MetricsSnapshotDto>("api/system/metrics");
+
     // ── Positions & P&L ──────────────────────────────────────────────────
 
     public Task<List<PositionDto>?> GetOpenPositionsAsync() =>
@@ -190,6 +193,32 @@ public sealed class TradingApiClient(HttpClient http)
         var response = await http.PostAsJsonAsync("api/backtest/optimize", request);
         await EnsureSuccessAsync(response);
         return (await response.Content.ReadFromJsonAsync<OptimizationResultDto>())!;
+    }
+
+    // ── Auth (BFF) ──────────────────────────────────────────────────────
+
+    public async Task<bool> LoginAsync(string apiKey)
+    {
+        var response = await http.PostAsJsonAsync("api/auth/login", new { apiKey });
+        return response.IsSuccessStatusCode;
+    }
+
+    public async Task LogoutAsync()
+    {
+        await http.PostAsync("api/auth/logout", null);
+    }
+
+    public async Task<bool> GetAuthStatusAsync()
+    {
+        try
+        {
+            var response = await http.GetFromJsonAsync<AuthStatusResponse>("api/auth/status");
+            return response?.Authenticated == true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

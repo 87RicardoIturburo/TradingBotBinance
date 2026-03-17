@@ -28,6 +28,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     private readonly IServiceScopeFactory                             _scopeFactory;
     private readonly IMarketDataService                               _marketDataService;
     private readonly IGlobalCircuitBreaker                            _circuitBreaker;
+    private readonly IIndicatorStateStore                             _indicatorStateStore;
     private readonly TradingMetrics                                   _metrics;
     private readonly ILogger<StrategyEngine>                          _logger;
     private readonly ConcurrentDictionary<Guid, StrategyRunnerState>  _runners = new();
@@ -39,17 +40,19 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     public bool IsRunning => !_isPaused && !_runners.IsEmpty;
 
     public StrategyEngine(
-        IServiceScopeFactory scopeFactory,
-        IMarketDataService   marketDataService,
-        IGlobalCircuitBreaker circuitBreaker,
-        TradingMetrics       metrics,
+        IServiceScopeFactory   scopeFactory,
+        IMarketDataService     marketDataService,
+        IGlobalCircuitBreaker  circuitBreaker,
+        IIndicatorStateStore   indicatorStateStore,
+        TradingMetrics         metrics,
         ILogger<StrategyEngine> logger)
     {
-        _scopeFactory      = scopeFactory;
-        _marketDataService = marketDataService;
-        _circuitBreaker    = circuitBreaker;
-        _metrics           = metrics;
-        _logger            = logger;
+        _scopeFactory        = scopeFactory;
+        _marketDataService   = marketDataService;
+        _circuitBreaker      = circuitBreaker;
+        _indicatorStateStore = indicatorStateStore;
+        _metrics             = metrics;
+        _logger              = logger;
     }
 
     // ── BackgroundService ──────────────────────────────────────────────────
@@ -65,6 +68,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         // Watchdog: verificar periódicamente que todas las estrategias reciben ticks
         _ = RunTickWatchdogAsync(stoppingToken);
+
+        // Drawdown checker: verificar periódicamente el drawdown de la cuenta y activar circuit breaker
+        _ = RunDrawdownCheckerAsync(stoppingToken);
 
         // Mantener vivo hasta que se detenga el host
         try
@@ -211,16 +217,28 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         await _marketDataService.SubscribeAsync(config.Symbol, cancellationToken);
         await _marketDataService.SubscribeKlinesAsync(config.Symbol, config.Timeframe, cancellationToken);
 
+        // Multi-Timeframe: suscribir al timeframe de confirmación si está configurado
+        if (config.ConfirmationTimeframe.HasValue)
+            await _marketDataService.SubscribeKlinesAsync(
+                config.Symbol, config.ConfirmationTimeframe.Value, cancellationToken);
+
         // Crear y arrancar el runner
         var cts    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var runner = new StrategyRunnerState(config.Id, config.Name, config.Symbol, tradingStrategy, cts, runnerScope);
         runner.CachedConfig    = config;
         runner.ProcessingTask = Task.Run(async () =>
         {
-            // Dos loops en paralelo: kline (indicadores + señales) + ticker (SL/TP + dashboard)
-            var klineTask = ProcessKlinesLoopAsync(runner);
-            var tickTask  = ProcessTicksLoopAsync(runner);
-            await Task.WhenAll(klineTask, tickTask);
+            var tasks = new List<Task>
+            {
+                ProcessKlinesLoopAsync(runner, config.Timeframe),
+                ProcessTicksLoopAsync(runner)
+            };
+
+            // Multi-Timeframe: loop de confirmación en paralelo
+            if (config.ConfirmationTimeframe.HasValue)
+                tasks.Add(ProcessConfirmationKlinesLoopAsync(runner, config.ConfirmationTimeframe.Value));
+
+            await Task.WhenAll(tasks);
         }, cts.Token);
 
         _runners[config.Id] = runner;
@@ -235,6 +253,11 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         TradingStrategy  config,
         CancellationToken cancellationToken)
     {
+        // 1. Intentar restaurar estado persistido en Redis (sobrevive reinicios)
+        if (await TryRestoreIndicatorStateAsync(tradingStrategy, config, cancellationToken))
+            return;
+
+        // 2. Fallback: warm-up con datos históricos de Binance
         var maxPeriod = config.Indicators
             .Select(i => (int)i.GetParameter("period", 14))
             .DefaultIfEmpty(0)
@@ -246,7 +269,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         // Intentar warm-up con klines (OHLCV) para ATR/Bollinger precisos.
         // Fallback a closes si klines no están disponibles.
-        var from = DateTimeOffset.UtcNow.AddMinutes(-count);
+        var intervalMinutes = GetIntervalMinutes(config.Timeframe);
+        var from = DateTimeOffset.UtcNow.AddMinutes(-(count * intervalMinutes));
         var to   = DateTimeOffset.UtcNow;
         var klinesResult = await _marketDataService.GetKlinesAsync(config.Symbol, from, to, cancellationToken);
 
@@ -306,6 +330,45 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             _logger.LogDebug(
                 "Warm-up completado para '{Name}': {Count} cierres históricos procesados (fallback, ATR puede ser impreciso)",
                 config.Name, closesResult.Value.Count);
+        }
+    }
+
+    /// <summary>
+    /// Intenta restaurar el estado de los indicadores desde Redis.
+    /// Si los parámetros cambiaron, descarta el estado guardado.
+    /// </summary>
+    private async Task<bool> TryRestoreIndicatorStateAsync(
+        ITradingStrategy tradingStrategy,
+        TradingStrategy config,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var savedStates = await _indicatorStateStore.RestoreAsync(config.Id, cancellationToken);
+            if (savedStates is null || savedStates.Count == 0)
+                return false;
+
+            // Acceder a los indicadores internos de la estrategia
+            if (tradingStrategy is not DefaultTradingStrategy defaultStrategy)
+                return false;
+
+            var restored = defaultStrategy.RestoreIndicatorStates(savedStates);
+
+            if (restored)
+            {
+                _logger.LogInformation(
+                    "Indicadores de '{Name}' ({Id}) restaurados desde Redis — warm-up omitido",
+                    config.Name, config.Id);
+            }
+
+            return restored;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Error restaurando estado de indicadores para '{Name}'. Ejecutando warm-up normal.",
+                config.Name);
+            return false;
         }
     }
 
@@ -450,13 +513,88 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         }
     }
 
+    // ── Persistencia de estado de indicadores en Redis ─────────────────────
+
+    /// <summary>
+    /// Verifica periódicamente el drawdown diario de la cuenta.
+    /// Si supera el límite configurado, activa el circuit breaker global para detener todo el trading.
+    /// </summary>
+    private async Task RunDrawdownCheckerAsync(CancellationToken cancellationToken)
+    {
+        const int checkIntervalSeconds = 30;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(checkIntervalSeconds), cancellationToken);
+
+                if (_circuitBreaker.IsOpen || _runners.IsEmpty) continue;
+
+                try
+                {
+                    using var scope      = _scopeFactory.CreateScope();
+                    var riskManager      = scope.ServiceProvider.GetRequiredService<IRiskManager>();
+                    var (isTriggered, drawdownPercent) = await riskManager.CheckAccountDrawdownAsync(cancellationToken);
+
+                    if (isTriggered)
+                    {
+                        _circuitBreaker.Trip(
+                            $"Drawdown de cuenta {drawdownPercent:F1}% superó el límite configurado. Trading detenido automáticamente.");
+
+                        var notifier = scope.ServiceProvider.GetService<ITradingNotifier>();
+                        if (notifier is not null)
+                            await notifier.NotifyAlertAsync(
+                                $"🛑 CIRCUIT BREAKER — Drawdown de cuenta {drawdownPercent:F1}%. Todo el trading ha sido detenido.",
+                                cancellationToken);
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error en drawdown checker");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown normal
+        }
+    }
+
+    // ── Persistencia de estado de indicadores en Redis ─────────────────────
+
+    /// <summary>
+    /// Guarda el estado de los indicadores de una estrategia en Redis.
+    /// Si falla, solo loguea warning — no interrumpe el trading.
+    /// </summary>
+    private async Task SaveIndicatorStateAsync(StrategyRunnerState runner)
+    {
+        try
+        {
+            if (runner.Strategy is not DefaultTradingStrategy defaultStrategy)
+                return;
+
+            var states = defaultStrategy.SaveIndicatorStates();
+            if (states.Count == 0) return;
+
+            await _indicatorStateStore.SaveAsync(runner.StrategyId, states);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Error guardando estado de indicadores para '{Name}' ({Id}). Se reintentará en la siguiente vela.",
+                runner.StrategyName, runner.StrategyId);
+        }
+    }
+
     // ── Loop de klines (indicadores + señales) ──────────────────────────────
 
     /// <summary>
     /// Consume velas cerradas del WebSocket y las procesa con <see cref="ITradingStrategy.ProcessKlineAsync"/>.
     /// Las señales generadas aquí son las que producen órdenes de entrada.
     /// </summary>
-    private async Task ProcessKlinesLoopAsync(StrategyRunnerState runner)
+    private async Task ProcessKlinesLoopAsync(StrategyRunnerState runner, CandleInterval interval)
     {
         var token = runner.CancellationTokenSource.Token;
 
@@ -464,7 +602,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         try
         {
-            await foreach (var kline in _marketDataService.GetKlineStreamAsync(runner.Symbol, token))
+            await foreach (var kline in _marketDataService.GetKlineStreamAsync(runner.Symbol, interval, token))
             {
                 if (token.IsCancellationRequested) break;
                 if (_isPaused || _circuitBreaker.IsOpen) continue;
@@ -476,6 +614,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                     try
                     {
                         await ProcessSingleKlineAsync(runner, kline, token);
+
+                        // Persistir estado de indicadores en Redis tras cada vela cerrada.
+                        // Si falla, no interrumpe el trading — se reintenta en la siguiente vela.
+                        await SaveIndicatorStateAsync(runner);
                     }
                     finally
                     {
@@ -515,6 +657,15 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         if (signalResult.IsFailure || signalResult.Value is null) return;
 
         var signal = signalResult.Value;
+        var correlationId = Guid.NewGuid().ToString("N")[..12];
+
+        using var _ = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["CorrelationId"] = correlationId,
+            ["StrategyId"]    = runner.StrategyId,
+            ["Symbol"]        = runner.Symbol.Value
+        });
+
         runner.SignalsGenerated++;
         _metrics.RecordSignalGenerated(runner.StrategyName, runner.Symbol.Value, signal.Direction.ToString());
 
@@ -530,10 +681,34 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var strategy = runner.CachedConfig;
         if (strategy is null || !strategy.IsActive) return;
 
-        // No abrir posición duplicada
+        // Verificación anti-duplicado adaptada a Spot (solo Long):
+        // - Buy: no abrir si ya hay posición Long abierta para este símbolo
+        // - Sell: no operar si NO hay posición Long abierta que cerrar (Spot no soporta shorts)
         var existingPositions = await positionRepo.GetOpenByStrategyIdAsync(runner.StrategyId, cancellationToken);
-        if (existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == signal.Direction))
+        if (signal.Direction == OrderSide.Buy)
+        {
+            if (existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy))
+                return;
+        }
+        else // Sell → solo si hay Long que cerrar
+        {
+            if (!existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy))
+            {
+                _logger.LogDebug(
+                    "Señal Sell descartada para '{Name}': no hay posición Long abierta en {Symbol}",
+                    runner.StrategyName, signal.Symbol.Value);
+                return;
+            }
+        }
+
+        // Multi-Timeframe: verificar que la tendencia del HTF confirma la dirección
+        if (!runner.Strategy.IsConfirmationAligned(signal.Direction))
+        {
+            _logger.LogDebug(
+                "Señal {Direction} en '{Name}' rechazada: HTF no confirma la dirección",
+                signal.Direction, runner.StrategyName);
             return;
+        }
 
         var orderResult = await ruleEngine.EvaluateAsync(strategy, signal, cancellationToken);
         if (orderResult.IsFailure || orderResult.Value is null) return;
@@ -585,6 +760,51 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                         order.Side, order.Type, order.Quantity,
                         order.LimitPrice, order.IsPaperTrade),
                     cancellationToken);
+        }
+    }
+
+    // ── Loop de confirmación Multi-Timeframe ─────────────────────────────
+
+    /// <summary>
+    /// Consume velas cerradas del timeframe de confirmación y las procesa
+    /// para actualizar la tendencia macro (EMA del HTF).
+    /// No genera señales — solo alimenta <see cref="ITradingStrategy.ProcessConfirmationKline"/>.
+    /// </summary>
+    private async Task ProcessConfirmationKlinesLoopAsync(
+        StrategyRunnerState runner,
+        CandleInterval confirmationInterval)
+    {
+        var token = runner.CancellationTokenSource.Token;
+
+        _logger.LogDebug(
+            "Confirmation kline loop iniciado para '{Name}' ({Id}) [{Interval}]",
+            runner.StrategyName, runner.StrategyId, confirmationInterval);
+
+        try
+        {
+            await foreach (var kline in _marketDataService.GetKlineStreamAsync(
+                               runner.Symbol, confirmationInterval, token))
+            {
+                if (token.IsCancellationRequested) break;
+
+                try
+                {
+                    runner.Strategy.ProcessConfirmationKline(kline);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Error procesando confirmation kline para '{Name}' ({Id})",
+                        runner.StrategyName, runner.StrategyId);
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* shutdown normal */ }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Confirmation kline loop terminado inesperadamente para '{Name}' ({Id})",
+                runner.StrategyName, runner.StrategyId);
         }
     }
 
@@ -736,10 +956,21 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             runner.StrategyId, cancellationToken);
 
         var currentAtr = runner.Strategy.CurrentAtrValue;
+        var positionPriceChanged = false;
 
         foreach (var position in openPositions)
         {
+            var prevHigh = position.HighestPriceSinceEntry.Value;
+            var prevLow  = position.LowestPriceSinceEntry.Value;
+
             position.UpdatePrice(tick.LastPrice);
+
+            // Rastrear si algún peak price cambió para persistir al final
+            if (position.HighestPriceSinceEntry.Value != prevHigh
+                || position.LowestPriceSinceEntry.Value != prevLow)
+            {
+                positionPriceChanged = true;
+            }
 
             var exitResult = await ruleEngine.EvaluateExitRulesAsync(
                 strategy, position, tick.LastPrice, cancellationToken,
@@ -779,6 +1010,22 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                 }
             }
         }
+
+        // Persistir peak prices actualizados para trailing stop (BUG-1 fix)
+        if (positionPriceChanged)
+        {
+            try
+            {
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<Core.Interfaces.IUnitOfWork>();
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Error al persistir peak prices de posiciones para '{Name}'. Se reintentará en el siguiente tick.",
+                    runner.StrategyName);
+            }
+        }
     }
 
     private async Task MarkStrategyAsErrorAsync(Guid strategyId, CancellationToken cancellationToken)
@@ -801,6 +1048,21 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             _logger.LogError(ex, "No se pudo marcar la estrategia {Id} como Error", strategyId);
         }
     }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>Duración en minutos de un intervalo de vela. Usado para calcular el rango histórico de warm-up.</summary>
+    private static int GetIntervalMinutes(CandleInterval interval) => interval switch
+    {
+        CandleInterval.OneMinute      => 1,
+        CandleInterval.FiveMinutes    => 5,
+        CandleInterval.FifteenMinutes => 15,
+        CandleInterval.ThirtyMinutes  => 30,
+        CandleInterval.OneHour        => 60,
+        CandleInterval.FourHours      => 240,
+        CandleInterval.OneDay         => 1440,
+        _                             => 1
+    };
 
     // ── Estado interno por estrategia ──────────────────────────────────────
 

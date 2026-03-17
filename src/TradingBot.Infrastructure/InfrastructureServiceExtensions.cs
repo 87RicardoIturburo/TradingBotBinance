@@ -83,6 +83,7 @@ public static class InfrastructureServiceExtensions
             ConnectionMultiplexer.Connect(connectionString));
 
         services.AddSingleton<ICacheService, RedisCacheService>();
+        services.AddSingleton<IIndicatorStateStore, Cache.RedisIndicatorStateStore>();
 
         return services;
     }

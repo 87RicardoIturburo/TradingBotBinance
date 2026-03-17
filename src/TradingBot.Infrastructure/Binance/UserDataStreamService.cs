@@ -187,11 +187,20 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
 
     private async Task ProcessOrderUpdateAsync(BinanceStreamOrderUpdate update)
     {
+        var correlationId = $"ws-{Guid.NewGuid().ToString("N")[..8]}";
+        using var logScope = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["CorrelationId"] = correlationId,
+            ["BinanceOrderId"] = update.Id,
+            ["Symbol"]         = update.Symbol
+        });
+
         try
         {
             using var scope = _scopeFactory.CreateScope();
-            var orderRepo  = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var orderRepo      = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
+            var orderSyncHandler = scope.ServiceProvider.GetRequiredService<IOrderSyncHandler>();
+            var unitOfWork     = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
             var orders = await orderRepo.GetPendingSyncAsync();
             var order  = orders.FirstOrDefault(o =>
@@ -223,7 +232,9 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             switch (update.Status)
             {
                 case BinanceEnums.OrderStatus.Filled:
-                    tracked.Fill(filledQty.Value, executedPrice.Value);
+                    tracked.Fill(filledQty.Value, executedPrice.Value, update.Fee);
+                    // Sincronizar con posiciones: crear nueva o cerrar existente
+                    await orderSyncHandler.HandleOrderFilledAsync(tracked);
                     break;
 
                 case BinanceEnums.OrderStatus.PartiallyFilled:
@@ -240,9 +251,12 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             await orderRepo.UpdateAsync(tracked);
             await unitOfWork.SaveChangesAsync();
 
+            // Invalidar caché de balance tras cambio de estado
+            await _accountService.InvalidateCacheAsync();
+
             _logger.LogInformation(
-                "Orden {OrderId} actualizada vía User Data Stream → {Status}",
-                tracked.Id, tracked.Status);
+                "Orden {OrderId} actualizada vía User Data Stream → {Status} (fee: {Fee:F4} {FeeAsset})",
+                tracked.Id, tracked.Status, update.Fee, update.FeeAsset);
         }
         catch (Exception ex)
         {

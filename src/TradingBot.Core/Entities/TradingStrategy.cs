@@ -22,6 +22,12 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
     public StrategyStatus  Status           { get; private set; }
     public TradingMode     Mode             { get; private set; }
     public CandleInterval  Timeframe        { get; private set; }
+    /// <summary>
+    /// Timeframe superior para confirmación de tendencia (Multi-Timeframe Analysis).
+    /// Si es <c>null</c>, no se aplica filtro de confirmación.
+    /// Debe ser mayor que <see cref="Timeframe"/>.
+    /// </summary>
+    public CandleInterval? ConfirmationTimeframe { get; private set; }
     public RiskConfig      RiskConfig       { get; private set; } = null!;
     public DateTimeOffset  CreatedAt        { get; private set; }
     public DateTimeOffset  UpdatedAt        { get; private set; }
@@ -44,7 +50,8 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         TradingMode mode,
         RiskConfig  riskConfig,
         string?     description = null,
-        CandleInterval timeframe = CandleInterval.OneMinute)
+        CandleInterval timeframe = CandleInterval.OneMinute,
+        CandleInterval? confirmationTimeframe = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             return Result<TradingStrategy, DomainError>.Failure(
@@ -54,18 +61,23 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
             return Result<TradingStrategy, DomainError>.Failure(
                 DomainError.Validation("El nombre no puede superar 100 caracteres."));
 
+        if (confirmationTimeframe.HasValue && confirmationTimeframe.Value <= timeframe)
+            return Result<TradingStrategy, DomainError>.Failure(
+                DomainError.Validation("El timeframe de confirmación debe ser mayor que el timeframe primario."));
+
         var now = DateTimeOffset.UtcNow;
         return Result<TradingStrategy, DomainError>.Success(new TradingStrategy(Guid.NewGuid())
         {
-            Name        = name.Trim(),
-            Description = description?.Trim(),
-            Symbol      = symbol,
-            Status      = StrategyStatus.Inactive,
-            Mode        = mode,
-            Timeframe   = timeframe,
-            RiskConfig  = riskConfig,
-            CreatedAt   = now,
-            UpdatedAt   = now
+            Name                  = name.Trim(),
+            Description           = description?.Trim(),
+            Symbol                = symbol,
+            Status                = StrategyStatus.Inactive,
+            Mode                  = mode,
+            Timeframe             = timeframe,
+            ConfirmationTimeframe = confirmationTimeframe,
+            RiskConfig            = riskConfig,
+            CreatedAt             = now,
+            UpdatedAt             = now
         });
     }
 

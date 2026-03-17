@@ -127,7 +127,15 @@ internal sealed class BinanceAccountService : IAccountService
 
     public async Task InvalidateCacheAsync(CancellationToken cancellationToken = default)
     {
+        // Invalidar snapshot y balances por asset para evitar lecturas stale tras una orden
         await _cache.RemoveAsync(SnapshotCacheKey, cancellationToken);
-        _logger.LogDebug("Caché de balance de cuenta invalidada");
+
+        // Eliminar las claves de balance individual de los assets más comunes.
+        // No podemos hacer wildcard DEL con ICacheService, así que limpiamos los assets conocidos.
+        string[] commonAssets = ["USDT", "BTC", "ETH", "BNB", "BUSD", "USDC"];
+        foreach (var asset in commonAssets)
+            await _cache.RemoveAsync(BalanceCachePrefix + asset, cancellationToken);
+
+        _logger.LogDebug("Caché de balance de cuenta invalidada (snapshot + assets)");
     }
 }

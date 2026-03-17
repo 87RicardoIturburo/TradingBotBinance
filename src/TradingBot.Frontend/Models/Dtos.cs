@@ -1,5 +1,9 @@
 namespace TradingBot.Frontend.Models;
 
+// ── Auth ──────────────────────────────────────────────────────────────────
+
+public sealed record AuthStatusResponse(bool Authenticated);
+
 // ── Symbols ───────────────────────────────────────────────────────────────
 
 public sealed record SymbolInfoDto(
@@ -40,6 +44,8 @@ public sealed record StrategyDto(
     string                              Symbol,
     string                              Status,
     string                              Mode,
+    string                              Timeframe,
+    string?                             ConfirmationTimeframe,
     RiskConfigDto                       RiskConfig,
     List<IndicatorDto>                  Indicators,
     List<RuleDto>                       Rules,
@@ -137,7 +143,9 @@ public sealed record CreateStrategyRequest(
     string? Description = null,
     bool    UseAtrSizing = false,
     decimal RiskPercentPerTrade = 1m,
-    decimal AtrMultiplier = 2m);
+    decimal AtrMultiplier = 2m,
+    string  Timeframe = "OneMinute",
+    string? ConfirmationTimeframe = null);
 
 public sealed record UpdateStrategyRequest(
     string  Name,
@@ -151,7 +159,9 @@ public sealed record UpdateStrategyRequest(
     string? Description = null,
     bool    UseAtrSizing = false,
     decimal RiskPercentPerTrade = 1m,
-    decimal AtrMultiplier = 2m);
+    decimal AtrMultiplier = 2m,
+    string? Timeframe = null,
+    string? ConfirmationTimeframe = null);
 
 public sealed record AddIndicatorRequest(
     string                      Type,
@@ -211,6 +221,23 @@ public sealed record TemplateRiskConfigDto(
     decimal StopLossPercent,
     decimal TakeProfitPercent,
     int     MaxOpenPositions);
+
+// ── Metrics ───────────────────────────────────────────────────────────────
+
+public sealed record MetricsSnapshotDto(
+    long           TotalTicksProcessed,
+    long           TotalSignalsGenerated,
+    long           TotalOrdersPlaced,
+    long           TotalOrdersFailed,
+    long           TotalTicksDropped,
+    long           TotalOrdersPaper,
+    long           TotalOrdersLive,
+    double         LastLatencyMs,
+    double         AverageLatencyMs,
+    double         DailyPnLUsdt,
+    bool           CircuitBreakerOpen = false,
+    string?        CircuitBreakerReason = null,
+    DateTimeOffset Timestamp = default);
 
 // ── Positions & P&L ───────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ public sealed class TradingHub : Hub
         public const string OnSignalGenerated  = nameof(OnSignalGenerated);
         public const string OnAlert            = nameof(OnAlert);
         public const string OnStrategyUpdated  = nameof(OnStrategyUpdated);
+        public const string OnMetricsUpdate    = nameof(OnMetricsUpdate);
     }
 
     public override Task OnConnectedAsync()

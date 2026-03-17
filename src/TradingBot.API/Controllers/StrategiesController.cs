@@ -38,7 +38,8 @@ public sealed class StrategiesController(ISender mediator) : ControllerBase
             request.MaxOrderAmountUsdt, request.MaxDailyLossUsdt,
             request.StopLossPercent, request.TakeProfitPercent,
             request.MaxOpenPositions, request.Description,
-            request.UseAtrSizing, request.RiskPercentPerTrade, request.AtrMultiplier), ct);
+            request.UseAtrSizing, request.RiskPercentPerTrade, request.AtrMultiplier,
+            request.Timeframe, request.ConfirmationTimeframe), ct);
 
         return result.ToHttpResult(StrategyDto.FromDomain, StatusCodes.Status201Created);
     }
@@ -188,7 +189,9 @@ public sealed record CreateStrategyRequest(
     string?                  Description = null,
     bool                     UseAtrSizing = false,
     decimal                  RiskPercentPerTrade = 1m,
-    decimal                  AtrMultiplier = 2m);
+    decimal                  AtrMultiplier = 2m,
+    Core.Enums.CandleInterval Timeframe = Core.Enums.CandleInterval.OneMinute,
+    Core.Enums.CandleInterval? ConfirmationTimeframe = null);
 
 public sealed record UpdateStrategyRequest(
     string                    Name,
@@ -202,7 +205,9 @@ public sealed record UpdateStrategyRequest(
     string?                   Description = null,
     bool                      UseAtrSizing = false,
     decimal                   RiskPercentPerTrade = 1m,
-    decimal                   AtrMultiplier = 2m);
+    decimal                   AtrMultiplier = 2m,
+    Core.Enums.CandleInterval? Timeframe = null,
+    Core.Enums.CandleInterval? ConfirmationTimeframe = null);
 
 public sealed record AddIndicatorRequest(
     Core.Enums.IndicatorType        Type,

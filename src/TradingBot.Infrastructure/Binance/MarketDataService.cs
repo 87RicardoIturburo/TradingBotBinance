@@ -182,7 +182,7 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
                 FullMode = BoundedChannelFullMode.DropOldest
             });
 
-        _klineChannels[sv] = channel;
+        _klineChannels[key] = channel;
 
         var binanceInterval = MapInterval(interval);
 
@@ -230,12 +230,14 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
 
     public async IAsyncEnumerable<KlineClosedEvent> GetKlineStreamAsync(
         Symbol symbol,
+        CandleInterval interval,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (!_klineChannels.TryGetValue(symbol.Value, out var channel))
+        var key = $"{symbol.Value}_{interval}";
+        if (!_klineChannels.TryGetValue(key, out var channel))
         {
             _logger.LogWarning(
-                "Sin canal de klines para {Symbol}. Llama SubscribeKlinesAsync primero.", symbol.Value);
+                "Sin canal de klines para {Key}. Llama SubscribeKlinesAsync primero.", key);
             yield break;
         }
 

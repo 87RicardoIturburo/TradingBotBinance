@@ -32,4 +32,16 @@ public interface ITechnicalIndicator
 
     /// <summary>Limpia el buffer interno y reinicia el estado del indicador.</summary>
     void Reset();
+
+    /// <summary>
+    /// Serializa el estado interno del indicador a JSON para persistencia en Redis.
+    /// Permite restaurar el indicador sin warm-up tras un reinicio.
+    /// </summary>
+    string SerializeState();
+
+    /// <summary>
+    /// Restaura el estado interno desde JSON previamente serializado con <see cref="SerializeState"/>.
+    /// </summary>
+    /// <returns><c>true</c> si la restauración fue exitosa; <c>false</c> si el JSON es inválido.</returns>
+    bool DeserializeState(string json);
 }

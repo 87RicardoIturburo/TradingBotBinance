@@ -28,22 +28,62 @@ try
         .Enrich.WithMachineName()
         .Enrich.WithProperty("Application", "TradingBot")
         .WriteTo.Console(
-            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} | {Message:lj}{NewLine}{Exception}")
+            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{CorrelationId} | {Message:lj}{NewLine}{Exception}")
         .WriteTo.File(
             path: "logs/tradingbot-.log",
             rollingInterval: RollingInterval.Day,
             retainedFileCountLimit: 30,
-            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} | {Message:lj}{NewLine}{Exception}"));
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} CID={CorrelationId} | {Message:lj}{NewLine}{Exception}"));
 
     // ── Servicios ─────────────────────────────────────────────────────────
     builder.Services.AddApplication(builder.Configuration);
     builder.Services.AddInfrastructure(builder.Configuration);
 
-    // ── Autenticación API Key ─────────────────────────────────────────────
+    // ── Autenticación: API Key (REST programático) + Cookie (frontend BFF) ──
     builder.Services
-        .AddAuthentication(ApiKeyAuthenticationOptions.SchemeName)
+        .AddAuthentication(options =>
+        {
+            // Policy scheme: si llega header X-Api-Key o query access_token → esquema ApiKey;
+            // de lo contrario → esquema Cookie (frontend autenticado vía BFF).
+            options.DefaultScheme = "Smart";
+            options.DefaultChallengeScheme = "Smart";
+        })
+        .AddPolicyScheme("Smart", "API Key o Cookie", options =>
+        {
+            options.ForwardDefaultSelector = context =>
+            {
+                if (context.Request.Headers.ContainsKey(ApiKeyAuthenticationOptions.HeaderName)
+                    || context.Request.Query.ContainsKey("access_token"))
+                {
+                    return ApiKeyAuthenticationOptions.SchemeName;
+                }
+
+                return Microsoft.AspNetCore.Authentication.Cookies
+                    .CookieAuthenticationDefaults.AuthenticationScheme;
+            };
+        })
         .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(
-            ApiKeyAuthenticationOptions.SchemeName, _ => { });
+            ApiKeyAuthenticationOptions.SchemeName, _ => { })
+        .AddCookie(options =>
+        {
+            options.Cookie.Name = "TradingBot.Auth";
+            options.Cookie.HttpOnly = true;
+            options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            options.Cookie.SameSite = SameSiteMode.None; // Cross-origin frontend ↔ API
+            options.ExpireTimeSpan = TimeSpan.FromHours(24);
+            options.SlidingExpiration = true;
+            // API: no redirigir a /login; devolver 401 directamente
+            options.Events.OnRedirectToLogin = ctx =>
+            {
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return Task.CompletedTask;
+            };
+            options.Events.OnRedirectToAccessDenied = ctx =>
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Task.CompletedTask;
+            };
+        });
 
     // Configurar la API Key post-build via IPostConfigureOptions para que
     // las overrides de tests (ConfigureAppConfiguration) se apliquen correctamente.
@@ -84,6 +124,7 @@ try
 
     builder.Services.AddSignalR();
     builder.Services.AddSingleton<ITradingNotifier, SignalRTradingNotifier>();
+    builder.Services.AddHostedService<MetricsBroadcastService>();
     builder.Services.AddOpenApi();
 
     // ── Health Checks ─────────────────────────────────────────────────────
@@ -117,6 +158,7 @@ try
     var app = builder.Build();
 
     // ── Pipeline HTTP ─────────────────────────────────────────────────────
+    app.UseMiddleware<CorrelationIdMiddleware>();
     app.UseMiddleware<ErrorHandlingMiddleware>();
     app.UseSerilogRequestLogging();
 

@@ -19,7 +19,6 @@ namespace TradingBot.Application.Services;
 internal sealed class OrderService : IOrderService
 {
     private readonly IOrderRepository _orderRepository;
-    private readonly IPositionRepository _positionRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRiskManager _riskManager;
     private readonly IMarketDataService _marketDataService;
@@ -28,13 +27,13 @@ internal sealed class OrderService : IOrderService
     private readonly IExchangeInfoService _exchangeInfoService;
     private readonly IOrderExecutionLock _executionLock;
     private readonly IGlobalCircuitBreaker _circuitBreaker;
+    private readonly IOrderSyncHandler _orderSyncHandler;
     private readonly TradingMetrics _metrics;
     private readonly TradingFeeConfig _feeConfig;
     private readonly ILogger<OrderService> _logger;
 
     public OrderService(
         IOrderRepository orderRepository,
-        IPositionRepository positionRepository,
         IUnitOfWork unitOfWork,
         IRiskManager riskManager,
         IMarketDataService marketDataService,
@@ -43,12 +42,12 @@ internal sealed class OrderService : IOrderService
         IExchangeInfoService exchangeInfoService,
         IOrderExecutionLock executionLock,
         IGlobalCircuitBreaker circuitBreaker,
+        IOrderSyncHandler orderSyncHandler,
         TradingMetrics metrics,
         IOptions<TradingFeeConfig> feeConfig,
         ILogger<OrderService> logger)
     {
         _orderRepository     = orderRepository;
-        _positionRepository  = positionRepository;
         _unitOfWork          = unitOfWork;
         _riskManager         = riskManager;
         _marketDataService   = marketDataService;
@@ -57,6 +56,7 @@ internal sealed class OrderService : IOrderService
         _exchangeInfoService = exchangeInfoService;
         _executionLock       = executionLock;
         _circuitBreaker      = circuitBreaker;
+        _orderSyncHandler    = orderSyncHandler;
         _metrics             = metrics;
         _feeConfig           = feeConfig.Value;
         _logger              = logger;
@@ -66,6 +66,14 @@ internal sealed class OrderService : IOrderService
         Order order,
         CancellationToken cancellationToken = default)
     {
+        using var _ = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["OrderId"]    = order.Id,
+            ["StrategyId"] = order.StrategyId,
+            ["Symbol"]     = order.Symbol.Value,
+            ["Side"]       = order.Side.ToString()
+        });
+
         // Circuit breaker global — si está abierto, rechazar todas las órdenes
         if (_circuitBreaker.IsOpen)
             return Result<Order, DomainError>.Failure(
@@ -107,6 +115,11 @@ internal sealed class OrderService : IOrderService
         await _orderRepository.AddAsync(order, cancellationToken);
 
         // 5. Ejecutar según modo
+        if (order.IsDryRun)
+        {
+            return LogDryRunOrder(order);
+        }
+
         if (order.IsPaperTrade)
         {
             return await SimulatePaperTradeAsync(order, cancellationToken);
@@ -185,7 +198,7 @@ internal sealed class OrderService : IOrderService
             if (qty.IsSuccess && price.IsSuccess)
             {
                 order.Fill(qty.Value, price.Value);
-                await HandlePositionAsync(order, cancellationToken);
+                await _orderSyncHandler.HandleOrderFilledAsync(order, cancellationToken);
                 changed = true;
 
                 _logger.LogInformation(
@@ -314,7 +327,7 @@ internal sealed class OrderService : IOrderService
             if (qty.IsSuccess && price.IsSuccess)
             {
                 order.Fill(qty.Value, price.Value);
-                await HandlePositionAsync(order, cancellationToken);
+                await _orderSyncHandler.HandleOrderFilledAsync(order, cancellationToken);
             }
         }
         else if (spotResult.ExecutedQuantity > 0)
@@ -397,7 +410,7 @@ internal sealed class OrderService : IOrderService
         }
 
         // Crear o cerrar posición según el lado
-        await HandlePositionAsync(order, cancellationToken);
+        await _orderSyncHandler.HandleOrderFilledAsync(order, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         _metrics.RecordOrderPlaced(order.Symbol.Value, order.Side.ToString(), order.Type.ToString(), isPaper: true);
@@ -407,47 +420,6 @@ internal sealed class OrderService : IOrderService
             order.ExecutedPrice?.Value, order.Fee);
 
         return Result<Order, DomainError>.Success(order);
-    }
-
-    private async Task HandlePositionAsync(Order order, CancellationToken cancellationToken)
-    {
-        // Buscar si hay posición abierta del lado opuesto para cerrarla
-        var oppositeSide = order.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-        var openPositions = await _positionRepository
-            .GetOpenByStrategyIdAsync(order.StrategyId, cancellationToken);
-
-        var positionToClose = openPositions
-            .FirstOrDefault(p => p.Symbol == order.Symbol && p.Side == oppositeSide);
-
-        if (positionToClose is not null && order.ExecutedPrice is not null)
-        {
-            // Cerrar posición existente del lado opuesto, descontando fee de salida
-            positionToClose.Close(order.ExecutedPrice, order.Fee);
-            await _positionRepository.UpdateAsync(positionToClose, cancellationToken);
-
-            _logger.LogInformation(
-                "Posición {PosId} cerrada: {Side} {Symbol} PnL={PnL:F2} (fees: entry={EntryFee:F4}, exit={ExitFee:F4})",
-                positionToClose.Id, positionToClose.Side, order.Symbol.Value,
-                positionToClose.RealizedPnL, positionToClose.EntryFee, positionToClose.ExitFee);
-        }
-        else if (order.Side == OrderSide.Buy)
-        {
-            // Abrir nueva posición Long (Spot solo permite Long), con fee de entrada
-            var position = Position.Open(
-                order.StrategyId, order.Symbol, order.Side,
-                order.ExecutedPrice!, order.FilledQuantity!,
-                order.Fee);
-
-            await _positionRepository.AddAsync(position, cancellationToken);
-        }
-        else
-        {
-            // Sell sin posición Long que cerrar — no se puede abrir Short en Spot
-            _logger.LogWarning(
-                "Orden Sell {OrderId} completada pero no hay posición Long abierta para cerrar en {Symbol}. " +
-                "No se crea posición Short (Spot trading no soporta shorts).",
-                order.Id, order.Symbol.Value);
-        }
     }
 
     /// <summary>Extrae el quote asset del símbolo (BTCUSDT → USDT).</summary>
@@ -505,5 +477,26 @@ internal sealed class OrderService : IOrderService
         }
 
         return Result<bool, DomainError>.Success(true);
+    }
+
+    /// <summary>
+    /// Modo Dry-Run: loguea la orden que se habría ejecutado sin persistir estado ni crear posiciones.
+    /// Conecta a datos de mercado reales pero no tiene efecto lateral.
+    /// </summary>
+    private Result<Order, DomainError> LogDryRunOrder(Order order)
+    {
+        // Marcar como submitted con id ficticio para que no quede en Pending
+        order.Submit($"DRYRUN-{Guid.NewGuid():N}"[..22]);
+
+        _metrics.RecordOrderPlaced(order.Symbol.Value, order.Side.ToString(), order.Type.ToString(), isPaper: true);
+
+        _logger.LogInformation(
+            "🔍 [DRY-RUN] Orden NO ejecutada: {Side} {Qty} {Symbol} @ {Type} (estrategia {StrategyId}). " +
+            "LimitPrice={LimitPrice}, StopPrice={StopPrice}, NotionalValue={Notional:F2} USDT",
+            order.Side, order.Quantity.Value, order.Symbol.Value, order.Type,
+            order.StrategyId,
+            order.LimitPrice?.Value, order.StopPrice?.Value, order.NotionalValue);
+
+        return Result<Order, DomainError>.Success(order);
     }
 }

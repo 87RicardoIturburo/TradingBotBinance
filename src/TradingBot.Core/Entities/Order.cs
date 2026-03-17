@@ -31,6 +31,8 @@ public sealed class Order : AggregateRoot<Guid>
     public DateTimeOffset? FilledAt      { get; private set; }
 
     public bool IsPaperTrade => Mode == TradingMode.PaperTrading;
+    /// <summary>Indica si la orden es de modo Dry-Run (solo logueo, sin ejecución ni simulación).</summary>
+    public bool IsDryRun     => Mode == TradingMode.DryRun;
     public bool IsTerminal   => Status is OrderStatus.Filled
                                        or OrderStatus.Cancelled
                                        or OrderStatus.Rejected

@@ -9,22 +9,24 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 
 // URL de la API — configurable vía appsettings.json del frontend
 var apiBaseUrl = builder.Configuration["ApiBaseUrl"] ?? "https://localhost:7114";
-var apiKey     = builder.Configuration["ApiKey"] ?? string.Empty;
 
-// Handler que inyecta X-Api-Key en todas las solicitudes
-builder.Services.AddTransient(_ => new ApiKeyDelegatingHandler(apiKey));
+// Handler que envía la cookie de sesión HttpOnly en cada request (BFF pattern)
+builder.Services.AddTransient<CookieDelegatingHandler>();
 
 builder.Services.AddHttpClient<TradingApiClient>(client =>
 {
     client.BaseAddress = new Uri(apiBaseUrl);
-}).AddHttpMessageHandler<ApiKeyDelegatingHandler>();
+}).AddHttpMessageHandler<CookieDelegatingHandler>();
 
 // HttpClient genérico para uso en componentes que lo inyecten directamente
 builder.Services.AddScoped(sp =>
 {
-    var handler = sp.GetRequiredService<ApiKeyDelegatingHandler>();
+    var handler = sp.GetRequiredService<CookieDelegatingHandler>();
     handler.InnerHandler = new HttpClientHandler();
     return new HttpClient(handler) { BaseAddress = new Uri(apiBaseUrl) };
 });
+
+// Servicio de estado de autenticación
+builder.Services.AddScoped<AuthStateService>();
 
 await builder.Build().RunAsync();

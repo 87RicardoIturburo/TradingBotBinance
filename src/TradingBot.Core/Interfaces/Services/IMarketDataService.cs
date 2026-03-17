@@ -36,11 +36,12 @@ public interface IMarketDataService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Devuelve un stream asíncrono de velas cerradas para el símbolo indicado.
+    /// Devuelve un stream asíncrono de velas cerradas para el símbolo e intervalo indicados.
     /// El stream se completa cuando se cancela <paramref name="cancellationToken"/>.
     /// </summary>
     IAsyncEnumerable<KlineClosedEvent> GetKlineStreamAsync(
         Symbol symbol,
+        CandleInterval interval,
         CancellationToken cancellationToken = default);
 
     /// <summary>Obtiene el precio actual vía REST (snapshot puntual).</summary>

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -80,5 +81,29 @@ internal sealed class MacdIndicator : ITechnicalIndicator
         _slowEma.Reset();
         _signalLine = null;
         _macdCount  = 0;
+    }
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        FastEma = _fastEma.SerializeState(),
+        SlowEma = _slowEma.SerializeState(),
+        _signalLine, _macdCount, _signalPeriod
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_signalPeriod").GetInt32() != _signalPeriod) return false;
+            if (!_fastEma.DeserializeState(root.GetProperty("FastEma").GetString()!)) return false;
+            if (!_slowEma.DeserializeState(root.GetProperty("SlowEma").GetString()!)) return false;
+            _signalLine = root.TryGetProperty("_signalLine", out var sl) && sl.ValueKind != JsonValueKind.Null
+                ? sl.GetDecimal() : null;
+            _macdCount = root.GetProperty("_macdCount").GetInt32();
+            return true;
+        }
+        catch { return false; }
     }
 }

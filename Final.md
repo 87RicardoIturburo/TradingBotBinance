@@ -326,16 +326,16 @@ a `ITechnicalIndicator`. Redis key: `indicator:{strategyId}:{type}`, TTL 24h.
 - [X] 2.5 — BacktestEngine usa RuleEngine
 
 ### 🔵 Prioridad 3
-- [ ] 3.1 — API Key del frontend
-- [ ] 3.2 — UserDataStream + posiciones
-- [ ] 3.3 — Estado indicadores en Redis
+- [X] 3.1 — API Key del frontend
+- [X] 3.2 — UserDataStream + posiciones
+- [X] 3.3 — Estado indicadores en Redis
 
 ### 🟢 Prioridad 4
-- [ ] 4.1 — Multi-Timeframe
-- [ ] 4.2 — Limit con timeout
-- [ ] 4.3 — Correlation IDs
-- [ ] 4.4 — Dashboard métricas
-- [ ] 4.5 — Modo Dry-Run
+- [X] 4.1 — Multi-Timeframe
+- [X] 4.2 — Limit con timeout
+- [X] 4.3 — Correlation IDs
+- [X] 4.4 — Dashboard métricas
+- [X] 4.5 — Modo Dry-Run
 
 ---
 

@@ -55,6 +55,18 @@ public interface ITradingStrategy
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Procesa una vela cerrada del timeframe de confirmación (Multi-Timeframe Analysis).
+    /// Actualiza el indicador de tendencia del HTF sin generar señales.
+    /// </summary>
+    void ProcessConfirmationKline(KlineClosedEvent kline);
+
+    /// <summary>
+    /// Indica si la tendencia del timeframe de confirmación está alineada
+    /// con la dirección indicada. <c>true</c> si no hay confirmation timeframe configurado.
+    /// </summary>
+    bool IsConfirmationAligned(OrderSide side);
+
+    /// <summary>
     /// Recarga la configuración en caliente sin detener el procesamiento.
     /// Publicado por <see cref="StrategyUpdatedEvent"/>.
     /// </summary>

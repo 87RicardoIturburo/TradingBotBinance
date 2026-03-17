@@ -1,16 +1,74 @@
 ﻿@inherits LayoutComponentBase
-<div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+@implements IDisposable
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
+@if (!_authChecked)
+{
+    <div class="d-flex justify-content-center align-items-center" style="height: 100vh;">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Verificando sesión…</span>
+        </div>
+    </div>
+}
+else if (!Auth.IsAuthenticated)
+{
+    @* Redirigir a login — se maneja en OnInitializedAsync *@
+}
+else
+{
+    <div class="page">
+        <div class="sidebar">
+            <NavMenu />
         </div>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
-</div>
+        <main>
+            <div class="top-row px-4">
+                <button class="btn btn-outline-secondary btn-sm" @onclick="LogoutAsync">
+                    🔒 Cerrar sesión
+                </button>
+                <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
+            </div>
+
+            <article class="content px-4">
+                @Body
+            </article>
+        </main>
+    </div>
+}
+
+@code {
+    private bool _authChecked;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Auth.OnAuthStateChanged += HandleAuthStateChanged;
+
+        var isAuth = await Auth.CheckAuthStatusAsync();
+        _authChecked = true;
+
+        if (!isAuth)
+            Nav.NavigateTo("/login");
+    }
+
+    private void HandleAuthStateChanged()
+    {
+        InvokeAsync(() =>
+        {
+            if (!Auth.IsAuthenticated)
+                Nav.NavigateTo("/login");
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task LogoutAsync()
+    {
+        await Auth.LogoutAsync();
+    }
+
+    public void Dispose()
+    {
+        Auth.OnAuthStateChanged -= HandleAuthStateChanged;
+    }
+}

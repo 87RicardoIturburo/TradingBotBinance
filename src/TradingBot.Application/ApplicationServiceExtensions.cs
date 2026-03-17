@@ -38,17 +38,23 @@ public static class ApplicationServiceExtensions
             var section = configuration.GetSection(GlobalRiskSettings.SectionName);
             services.Configure<GlobalRiskSettings>(opts =>
             {
-                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxDailyLossUsdt)], out var mdl))
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxDailyLossUsdt)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mdl))
                     opts.MaxDailyLossUsdt = mdl;
-                if (int.TryParse(section[nameof(GlobalRiskSettings.MaxGlobalOpenPositions)], out var mop))
+                if (int.TryParse(section[nameof(GlobalRiskSettings.MaxGlobalOpenPositions)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var mop))
                     opts.MaxGlobalOpenPositions = mop;
-                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioLongExposureUsdt)], out var mple))
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioLongExposureUsdt)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mple))
                     opts.MaxPortfolioLongExposureUsdt = mple;
-                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioShortExposureUsdt)], out var mpse))
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxPortfolioShortExposureUsdt)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mpse))
                     opts.MaxPortfolioShortExposureUsdt = mpse;
-                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxExposurePerSymbolPercent)], out var mesp))
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxExposurePerSymbolPercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mesp))
                     opts.MaxExposurePerSymbolPercent = mesp;
-                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxAccountDrawdownPercent)], out var madd))
+                if (decimal.TryParse(section[nameof(GlobalRiskSettings.MaxAccountDrawdownPercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var madd))
                     opts.MaxAccountDrawdownPercent = madd;
             });
 
@@ -78,6 +84,7 @@ public static class ApplicationServiceExtensions
 
         // Servicios de dominio
         services.AddScoped<IStrategyConfigService, StrategyConfigService>();
+        services.AddScoped<IOrderSyncHandler, OrderSyncHandler>();
         services.AddScoped<IOrderService, OrderService>();
         services.AddScoped<PortfolioRiskManager>();
         services.AddScoped<IRiskManager, RiskManager>();
@@ -102,6 +109,9 @@ public static class ApplicationServiceExtensions
         services.AddSingleton<StrategyEngine>();
         services.AddSingleton<IStrategyEngine>(sp => sp.GetRequiredService<StrategyEngine>());
         services.AddHostedService(sp => sp.GetRequiredService<StrategyEngine>());
+
+        // Limit order timeout — cancela órdenes Limit que no se llenaron a tiempo
+        services.AddHostedService<LimitOrderTimeoutWorker>();
 
         return services;
     }

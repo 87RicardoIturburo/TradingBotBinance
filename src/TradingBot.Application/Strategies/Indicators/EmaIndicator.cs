@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -45,5 +46,25 @@ internal sealed class EmaIndicator : ITechnicalIndicator
     {
         _currentEma = null;
         _count      = 0;
+    }
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        _period, _currentEma, _count
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_period").GetInt32() != _period) return false;
+            _currentEma = root.TryGetProperty("_currentEma", out var ce) && ce.ValueKind != JsonValueKind.Null
+                ? ce.GetDecimal() : null;
+            _count = root.GetProperty("_count").GetInt32();
+            return true;
+        }
+        catch { return false; }
     }
 }

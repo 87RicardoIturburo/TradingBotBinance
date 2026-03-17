@@ -95,6 +95,27 @@ TradingBot/
 - Modo **Paper Trading** debe estar disponible sin modificar la lógica de estrategias
 
 ---
+##  📊 Manejo de Datos y Formatos
+- Usar InvariantCulture para evitar errores de locale en sistemas es-ES:
+``` En español "." es separador de miles, por lo que "0.001" se parsearía como 1.0 ```
+- Ejemplo de parseo correcto:
+```csharp 
+    services.Configure<TradingFeeConfig>(opts =>
+            {
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.MakerFeePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mf))
+                    opts.MakerFeePercent = mf;
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.TakerFeePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var tf))
+                    opts.TakerFeePercent = tf;
+                if (bool.TryParse(feeSection[nameof(TradingFeeConfig.UseBnbDiscount)], out var bnb))
+                    opts.UseBnbDiscount = bnb;
+                if (decimal.TryParse(feeSection[nameof(TradingFeeConfig.SlippagePercent)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var sp))
+                    opts.SlippagePercent = sp;
+            });
+  ```          
+---
 
 ## 🧪 Testing
 

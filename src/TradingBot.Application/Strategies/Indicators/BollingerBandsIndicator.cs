@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -66,6 +67,26 @@ internal sealed class BollingerBandsIndicator : ITechnicalIndicator
     public decimal? Calculate() => MiddleBand;
 
     public void Reset() => _buffer.Clear();
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        _period, _stdDevMultiplier, Buffer = _buffer.ToArray()
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_period").GetInt32() != _period) return false;
+            _buffer.Clear();
+            foreach (var item in root.GetProperty("Buffer").EnumerateArray())
+                _buffer.Enqueue(item.GetDecimal());
+            return true;
+        }
+        catch { return false; }
+    }
 
     private decimal StandardDeviation
     {

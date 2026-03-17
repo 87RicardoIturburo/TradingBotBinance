@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -139,5 +140,34 @@ internal sealed class AdxIndicator : ITechnicalIndicator
         _smoothedAdx = 0;
         _adxInitialized = false;
         _count = 0;
+    }
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        _period, _previousPrice, _prevPrevPrice,
+        _smoothedPlusDm, _smoothedMinusDm, _smoothedTr, _smoothedAdx,
+        _count, _adxInitialized
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_period").GetInt32() != _period) return false;
+            _previousPrice = root.TryGetProperty("_previousPrice", out var pp) && pp.ValueKind != JsonValueKind.Null
+                ? pp.GetDecimal() : null;
+            _prevPrevPrice = root.TryGetProperty("_prevPrevPrice", out var ppp) && ppp.ValueKind != JsonValueKind.Null
+                ? ppp.GetDecimal() : null;
+            _smoothedPlusDm  = root.GetProperty("_smoothedPlusDm").GetDecimal();
+            _smoothedMinusDm = root.GetProperty("_smoothedMinusDm").GetDecimal();
+            _smoothedTr      = root.GetProperty("_smoothedTr").GetDecimal();
+            _smoothedAdx     = root.GetProperty("_smoothedAdx").GetDecimal();
+            _count           = root.GetProperty("_count").GetInt32();
+            _adxInitialized  = root.GetProperty("_adxInitialized").GetBoolean();
+            return true;
+        }
+        catch { return false; }
     }
 }

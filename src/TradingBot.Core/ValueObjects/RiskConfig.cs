@@ -41,6 +41,13 @@ public sealed record RiskConfig
     /// <summary>Spread máximo bid-ask permitido para órdenes Market (ej: 1.0 = 1%). Si el spread supera este valor, la orden se rechaza.</summary>
     public decimal MaxSpreadPercent { get; }
 
+    /// <summary>
+    /// Segundos máximos que una orden Limit puede permanecer abierta sin llenarse.
+    /// Si se excede, la orden se cancela automáticamente.
+    /// <c>0</c> = sin timeout (las Limit orders permanecen hasta cancelación manual o llenado).
+    /// </summary>
+    public int LimitOrderTimeoutSeconds { get; }
+
     private RiskConfig(
         decimal maxOrderAmountUsdt,
         decimal maxDailyLossUsdt,
@@ -52,19 +59,21 @@ public sealed record RiskConfig
         decimal atrMultiplier,
         bool useTrailingStop,
         decimal trailingStopPercent,
-        decimal maxSpreadPercent)
+        decimal maxSpreadPercent,
+        int limitOrderTimeoutSeconds)
     {
-        MaxOrderAmountUsdt   = maxOrderAmountUsdt;
-        MaxDailyLossUsdt     = maxDailyLossUsdt;
-        StopLossPercent      = stopLossPercent;
-        TakeProfitPercent    = takeProfitPercent;
-        MaxOpenPositions     = maxOpenPositions;
-        UseAtrSizing         = useAtrSizing;
-        RiskPercentPerTrade  = riskPercentPerTrade;
-        AtrMultiplier        = atrMultiplier;
-        UseTrailingStop      = useTrailingStop;
-        TrailingStopPercent  = trailingStopPercent;
-        MaxSpreadPercent     = maxSpreadPercent;
+        MaxOrderAmountUsdt       = maxOrderAmountUsdt;
+        MaxDailyLossUsdt         = maxDailyLossUsdt;
+        StopLossPercent          = stopLossPercent;
+        TakeProfitPercent        = takeProfitPercent;
+        MaxOpenPositions         = maxOpenPositions;
+        UseAtrSizing             = useAtrSizing;
+        RiskPercentPerTrade      = riskPercentPerTrade;
+        AtrMultiplier            = atrMultiplier;
+        UseTrailingStop          = useTrailingStop;
+        TrailingStopPercent      = trailingStopPercent;
+        MaxSpreadPercent         = maxSpreadPercent;
+        LimitOrderTimeoutSeconds = limitOrderTimeoutSeconds;
     }
 
     public static Result<RiskConfig, DomainError> Create(
@@ -78,7 +87,8 @@ public sealed record RiskConfig
         decimal atrMultiplier = 2m,
         bool useTrailingStop = false,
         decimal trailingStopPercent = 1.5m,
-        decimal maxSpreadPercent = 1.0m)
+        decimal maxSpreadPercent = 1.0m,
+        int limitOrderTimeoutSeconds = 0)
     {
         if (maxOrderAmountUsdt <= 0)
             return Result<RiskConfig, DomainError>.Failure(
@@ -121,7 +131,8 @@ public sealed record RiskConfig
             atrMultiplier,
             useTrailingStop,
             trailingStopPercent,
-            maxSpreadPercent));
+            maxSpreadPercent,
+            limitOrderTimeoutSeconds));
     }
 
     /// <summary>Configuración conservadora por defecto: 100 USDT/orden, SL 2%, TP 4%.</summary>

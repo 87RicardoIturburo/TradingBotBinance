@@ -26,6 +26,11 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     private DateTimeOffset _lastSignalAt;
     private MarketRegimeResult? _lastRegime;
 
+    // ── Multi-Timeframe Analysis ────────────────────────────────────────
+    /// <summary>EMA del timeframe de confirmación (HTF). Determina tendencia macro.</summary>
+    private EmaIndicator? _confirmationEma;
+    private decimal? _lastConfirmationClose;
+
     /// <summary>Tiempo mínimo entre señales consecutivas. Evita ráfagas de órdenes.</summary>
     internal static readonly TimeSpan SignalCooldown = TimeSpan.FromMinutes(1);
 
@@ -51,6 +56,13 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         Mode       = config.Mode;
 
         RebuildIndicators(config);
+
+        // Multi-Timeframe: crear EMA de confirmación si se configuró un HTF
+        _confirmationEma = config.ConfirmationTimeframe.HasValue
+            ? new EmaIndicator(20) // EMA(20) en el HTF para tendencia macro
+            : null;
+        _lastConfirmationClose = null;
+
         IsInitialized = true;
 
         _logger.LogInformation(
@@ -122,10 +134,51 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         Mode    = config.Mode;
         RebuildIndicators(config);
 
+        // Reconstruir confirmación si cambió
+        _confirmationEma = config.ConfirmationTimeframe.HasValue
+            ? new EmaIndicator(20)
+            : null;
+        _lastConfirmationClose = null;
+
         _logger.LogInformation(
             "Hot-reload completado para estrategia '{Name}' ({Id})", config.Name, config.Id);
 
         return Task.CompletedTask;
+    }
+
+    // ── Multi-Timeframe Analysis ────────────────────────────────────────
+
+    public void ProcessConfirmationKline(KlineClosedEvent kline)
+    {
+        if (_confirmationEma is null) return;
+
+        _confirmationEma.Update(kline.Close);
+        _lastConfirmationClose = kline.Close;
+
+        if (_confirmationEma.IsReady)
+        {
+            var emaVal = _confirmationEma.Calculate()!.Value;
+            var trend = kline.Close > emaVal ? "ALCISTA" : "BAJISTA";
+            _logger.LogDebug(
+                "HTF EMA({Period})={Ema:F2} Close={Close:F2} → Tendencia {Trend}",
+                20, emaVal, kline.Close, trend);
+        }
+    }
+
+    public bool IsConfirmationAligned(OrderSide side)
+    {
+        // Sin confirmación configurada → siempre alineado
+        if (_confirmationEma is null || !_confirmationEma.IsReady || _lastConfirmationClose is null)
+            return true;
+
+        var emaValue = _confirmationEma.Calculate()!.Value;
+
+        return side switch
+        {
+            OrderSide.Buy  => _lastConfirmationClose.Value >= emaValue, // Tendencia alcista
+            OrderSide.Sell => _lastConfirmationClose.Value <= emaValue, // Tendencia bajista
+            _ => true
+        };
     }
 
     public void Reset()
@@ -138,6 +191,8 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         _previousEmaRelation   = 0;
         _lastSignalAt          = default;
         _lastRegime            = null;
+        _confirmationEma?.Reset();
+        _lastConfirmationClose = null;
         IsInitialized          = false;
     }
 
@@ -148,6 +203,52 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     }
 
     public string GetCurrentSnapshot() => BuildSnapshot();
+
+    /// <summary>
+    /// Serializa el estado de todos los indicadores para persistir en Redis.
+    /// </summary>
+    internal IReadOnlyDictionary<IndicatorType, string> SaveIndicatorStates()
+    {
+        var states = new Dictionary<IndicatorType, string>();
+        foreach (var (type, indicator) in _indicators)
+        {
+            if (indicator.IsReady)
+                states[type] = indicator.SerializeState();
+        }
+        return states;
+    }
+
+    /// <summary>
+    /// Restaura el estado de los indicadores desde datos persistidos en Redis.
+    /// Devuelve <c>true</c> si todos los indicadores se restauraron correctamente.
+    /// </summary>
+    internal bool RestoreIndicatorStates(IReadOnlyDictionary<IndicatorType, string> savedStates)
+    {
+        var allRestored = true;
+        foreach (var (type, indicator) in _indicators)
+        {
+            if (!savedStates.TryGetValue(type, out var json))
+            {
+                allRestored = false;
+                continue;
+            }
+
+            if (!indicator.DeserializeState(json))
+            {
+                allRestored = false;
+                _logger.LogWarning(
+                    "No se pudo restaurar el estado del indicador {Type} — se necesita warm-up",
+                    type);
+            }
+        }
+
+        if (!allRestored)
+            return false;
+
+        // Sincronizar estado previo para evitar señales falsas
+        SyncPreviousIndicatorState();
+        return true;
+    }
 
     /// <summary>
     /// Establece el estado previo de los indicadores principales para evitar

@@ -19,7 +19,6 @@ namespace TradingBot.Application.Tests.Services;
 public sealed class OrderServiceTests
 {
     private readonly IOrderRepository    _orderRepo    = Substitute.For<IOrderRepository>();
-    private readonly IPositionRepository _positionRepo = Substitute.For<IPositionRepository>();
     private readonly IUnitOfWork         _unitOfWork   = Substitute.For<IUnitOfWork>();
     private readonly IRiskManager        _riskManager  = Substitute.For<IRiskManager>();
     private readonly IMarketDataService  _marketData   = Substitute.For<IMarketDataService>();
@@ -28,6 +27,7 @@ public sealed class OrderServiceTests
     private readonly IExchangeInfoService _exchangeInfo = Substitute.For<IExchangeInfoService>();
     private readonly IOrderExecutionLock _executionLock = Substitute.For<IOrderExecutionLock>();
     private readonly IGlobalCircuitBreaker _circuitBreaker = Substitute.For<IGlobalCircuitBreaker>();
+    private readonly IOrderSyncHandler   _orderSyncHandler = Substitute.For<IOrderSyncHandler>();
     private readonly TradingMetrics        _metrics;
     private readonly OrderService        _sut;
 
@@ -50,10 +50,10 @@ public sealed class OrderServiceTests
         _circuitBreaker.IsOpen.Returns(false);
 
         _sut = new OrderService(
-            _orderRepo, _positionRepo, _unitOfWork,
+            _orderRepo, _unitOfWork,
             _riskManager, _marketData, _spotExecutor,
             _accountService, _exchangeInfo, _executionLock,
-            _circuitBreaker, _metrics,
+            _circuitBreaker, _orderSyncHandler, _metrics,
             Options.Create(new TradingFeeConfig()),
             NullLogger<OrderService>.Instance);
     }
@@ -125,7 +125,7 @@ public sealed class OrderServiceTests
     }
 
     [Fact]
-    public async Task PlaceOrderAsync_WhenPaperBuyOrder_CreatesPosition()
+    public async Task PlaceOrderAsync_WhenPaperBuyOrder_CallsOrderSyncHandler()
     {
         var order = CreatePaperOrder(side: OrderSide.Buy);
         SetupRiskApproved(order);
@@ -133,33 +133,23 @@ public sealed class OrderServiceTests
 
         await _sut.PlaceOrderAsync(order);
 
-        await _positionRepo.Received(1).AddAsync(
-            Arg.Is<Position>(p => p.Side == OrderSide.Buy),
+        await _orderSyncHandler.Received(1).HandleOrderFilledAsync(
+            Arg.Is<Order>(o => o.Side == OrderSide.Buy && o.Status == OrderStatus.Filled),
             Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task PlaceOrderAsync_WhenPaperSellOrder_ClosesExistingPosition()
+    public async Task PlaceOrderAsync_WhenPaperSellOrder_CallsOrderSyncHandler()
     {
         var strategyId = Guid.NewGuid();
         var order = CreatePaperOrder(side: OrderSide.Sell, strategyId: strategyId);
         SetupRiskApproved(order);
         SetupMarketPrice(55000m);
 
-        var openPosition = Position.Open(
-            strategyId,
-            Symbol.Create("BTCUSDT").Value,
-            OrderSide.Buy,
-            Price.Create(50000m).Value,
-            Quantity.Create(0.01m).Value);
-
-        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
-            .Returns([openPosition]);
-
         await _sut.PlaceOrderAsync(order);
 
-        await _positionRepo.Received(1).UpdateAsync(
-            Arg.Is<Position>(p => !p.IsOpen),
+        await _orderSyncHandler.Received(1).HandleOrderFilledAsync(
+            Arg.Is<Order>(o => o.Side == OrderSide.Sell && o.Status == OrderStatus.Filled),
             Arg.Any<CancellationToken>());
     }
 
@@ -502,22 +492,83 @@ public sealed class OrderServiceTests
     // ── P0-4: No phantom Short positions in Spot ──────────────────────────
 
     [Fact]
-    public async Task PlaceOrderAsync_WhenSellWithoutLongPosition_DoesNotOpenShortPosition()
+    public async Task PlaceOrderAsync_WhenSellOrderFilled_DelegatesToOrderSyncHandler()
     {
         var strategyId = Guid.NewGuid();
         var order = CreatePaperOrder(side: OrderSide.Sell, strategyId: strategyId);
         SetupRiskApproved(order);
         SetupMarketPrice(55000m);
 
-        // No open positions for this strategy
-        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
-            .Returns(new List<Position>());
-
         await _sut.PlaceOrderAsync(order);
 
-        // Should NOT create a new position (no Short in Spot)
-        await _positionRepo.DidNotReceive().AddAsync(
-            Arg.Any<Position>(),
+        // La gestión de posiciones se delega a OrderSyncHandler
+        await _orderSyncHandler.Received(1).HandleOrderFilledAsync(
+            Arg.Is<Order>(o => o.Side == OrderSide.Sell && o.StrategyId == strategyId),
             Arg.Any<CancellationToken>());
+    }
+
+    // ── Dry-Run Mode ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenDryRun_DoesNotExecuteOrSimulate()
+    {
+        var order = CreateDryRunOrder();
+        SetupRiskApproved(order);
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be(OrderStatus.Submitted);
+        result.Value.BinanceOrderId.Should().StartWith("DRYRUN-");
+
+        // No debe llamar al executor ni al sync handler
+        await _spotExecutor.DidNotReceive()
+            .PlaceOrderAsync(Arg.Any<Order>(), Arg.Any<CancellationToken>());
+        await _orderSyncHandler.DidNotReceive()
+            .HandleOrderFilledAsync(Arg.Any<Order>(), Arg.Any<CancellationToken>());
+        // No debe llamar al market data service para obtener precio
+        await _marketData.DidNotReceive()
+            .GetCurrentPriceAsync(Arg.Any<Symbol>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenDryRunSell_DoesNotCreatePosition()
+    {
+        var order = CreateDryRunOrder(side: OrderSide.Sell);
+        SetupRiskApproved(order);
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsSuccess.Should().BeTrue();
+        await _orderSyncHandler.DidNotReceive()
+            .HandleOrderFilledAsync(Arg.Any<Order>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PlaceOrderAsync_WhenDryRun_StillValidatesRisk()
+    {
+        var order = CreateDryRunOrder();
+        _riskManager.ValidateOrderAsync(order, Arg.Any<CancellationToken>())
+            .Returns(Result<bool, DomainError>.Failure(
+                DomainError.RiskLimitExceeded("Monto excedido")));
+
+        var result = await _sut.PlaceOrderAsync(order);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("RISK_LIMIT_EXCEEDED");
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static Order CreateDryRunOrder(
+        OrderType type = OrderType.Market,
+        OrderSide side = OrderSide.Buy,
+        Guid? strategyId = null)
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var qty    = Quantity.Create(0.01m).Value;
+        return Order.Create(
+            strategyId ?? Guid.NewGuid(), symbol, side, type,
+            qty, TradingMode.DryRun).Value;
     }
 }

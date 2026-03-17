@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -73,5 +74,27 @@ internal sealed class RsiIndicator : ITechnicalIndicator
         _averageLoss   = 0m;
         _previousValue = null;
         _count         = 0;
+    }
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        _period, _averageGain, _averageLoss, _previousValue, _count
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_period").GetInt32() != _period) return false;
+            _averageGain   = root.GetProperty("_averageGain").GetDecimal();
+            _averageLoss   = root.GetProperty("_averageLoss").GetDecimal();
+            _previousValue = root.TryGetProperty("_previousValue", out var pv) && pv.ValueKind != JsonValueKind.Null
+                ? pv.GetDecimal() : null;
+            _count = root.GetProperty("_count").GetInt32();
+            return true;
+        }
+        catch { return false; }
     }
 }

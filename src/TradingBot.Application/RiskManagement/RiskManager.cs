@@ -86,9 +86,16 @@ internal sealed class RiskManager : IRiskManager
             }
             else
             {
+                // Fail-closed: en modo Live/Testnet, bloquear si no se puede verificar balance.
+                // Sin verificación de saldo no es seguro ejecutar órdenes reales.
                 _logger.LogWarning(
-                    "No se pudo verificar balance para orden {OrderId}: {Error}. Continuando sin validación de balance.",
+                    "Orden {OrderId} bloqueada: no se pudo verificar balance ({Error}). En modo Live el balance es obligatorio.",
                     order.Id, balanceResult.Error.Message);
+
+                return Result<bool, DomainError>.Failure(
+                    DomainError.RiskLimitExceeded(
+                        $"No se pudo verificar el saldo de la cuenta: {balanceResult.Error.Message}. " +
+                        "La orden no puede ejecutarse sin confirmación de balance."));
             }
         }
 

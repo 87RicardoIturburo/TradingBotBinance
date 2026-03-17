@@ -189,4 +189,34 @@ public sealed class OrderTests
 
         order.LimitPrice!.Value.Should().Be(49999.50m);
     }
+
+    // ── DryRun Mode ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void Create_DryRunOrder_IsDryRunIsTrue()
+    {
+        var order = CreatePendingOrder(mode: TradingMode.DryRun);
+
+        order.IsDryRun.Should().BeTrue();
+        order.IsPaperTrade.Should().BeFalse();
+        order.Mode.Should().Be(TradingMode.DryRun);
+    }
+
+    [Fact]
+    public void Create_PaperOrder_IsDryRunIsFalse()
+    {
+        var order = CreatePendingOrder(mode: TradingMode.PaperTrading);
+
+        order.IsDryRun.Should().BeFalse();
+        order.IsPaperTrade.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Create_LiveOrder_IsDryRunIsFalse()
+    {
+        var order = CreatePendingOrder(mode: TradingMode.Live);
+
+        order.IsDryRun.Should().BeFalse();
+        order.IsPaperTrade.Should().BeFalse();
+    }
 }

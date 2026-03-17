@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
+using TradingBot.Application.Diagnostics;
 using TradingBot.Core.Interfaces.Services;
 
 namespace TradingBot.API.Controllers;
@@ -14,7 +15,8 @@ public sealed class SystemController(
     ICacheService         cacheService,
     IAccountService       accountService,
     IRiskManager          riskManager,
-    IGlobalCircuitBreaker circuitBreaker) : ControllerBase
+    IGlobalCircuitBreaker circuitBreaker,
+    TradingMetrics        tradingMetrics) : ControllerBase
 {
     /// <summary>Devuelve el estado del bot y de todas las estrategias activas.</summary>
     [HttpGet("status")]
@@ -124,5 +126,26 @@ public sealed class SystemController(
     {
         circuitBreaker.Reset();
         return Results.Ok(new { message = "Circuit breaker reseteado" });
+    }
+
+    /// <summary>Devuelve un snapshot de las métricas de trading para el dashboard.</summary>
+    [HttpGet("metrics")]
+    public IResult GetMetrics()
+    {
+        var snapshot = tradingMetrics.GetSnapshot();
+        return Results.Ok(new MetricsSnapshotDto(
+            snapshot.TotalTicksProcessed,
+            snapshot.TotalSignalsGenerated,
+            snapshot.TotalOrdersPlaced,
+            snapshot.TotalOrdersFailed,
+            snapshot.TotalTicksDropped,
+            snapshot.TotalOrdersPaper,
+            snapshot.TotalOrdersLive,
+            snapshot.LastLatencyMs,
+            snapshot.AverageLatencyMs,
+            snapshot.DailyPnLUsdt,
+            circuitBreaker.IsOpen,
+            circuitBreaker.TripReason,
+            snapshot.Timestamp));
     }
 }

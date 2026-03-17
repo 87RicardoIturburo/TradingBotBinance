@@ -44,6 +44,8 @@ public sealed record StrategyDto(
     string                        Symbol,
     StrategyStatus                Status,
     TradingMode                   Mode,
+    CandleInterval                Timeframe,
+    CandleInterval?               ConfirmationTimeframe,
     RiskConfigDto                 RiskConfig,
     IReadOnlyList<IndicatorDto>   Indicators,
     IReadOnlyList<RuleDto>        Rules,
@@ -54,7 +56,7 @@ public sealed record StrategyDto(
 {
     public static StrategyDto FromDomain(TradingStrategy s) => new(
         s.Id, s.Name, s.Description, s.Symbol.Value,
-        s.Status, s.Mode,
+        s.Status, s.Mode, s.Timeframe, s.ConfirmationTimeframe,
         RiskConfigDto.FromDomain(s.RiskConfig),
         s.Indicators.Select(IndicatorDto.FromDomain).ToList(),
         s.Rules.Select(RuleDto.FromDomain).ToList(),
@@ -206,6 +208,22 @@ public sealed record PnLSummaryDto(
         item.OpenPositions, item.UnrealizedPnL,
         item.DailyRealizedPnL, item.TotalRealizedPnL);
 }
+
+/// <summary>Snapshot de métricas de trading para el dashboard en tiempo real.</summary>
+public sealed record MetricsSnapshotDto(
+    long           TotalTicksProcessed,
+    long           TotalSignalsGenerated,
+    long           TotalOrdersPlaced,
+    long           TotalOrdersFailed,
+    long           TotalTicksDropped,
+    long           TotalOrdersPaper,
+    long           TotalOrdersLive,
+    double         LastLatencyMs,
+    double         AverageLatencyMs,
+    double         DailyPnLUsdt,
+    bool           CircuitBreakerOpen,
+    string?        CircuitBreakerReason,
+    DateTimeOffset Timestamp);
 
 // ── Backtest ──────────────────────────────────────────────────────────────
 

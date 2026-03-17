@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Interfaces.Trading;
 
@@ -65,5 +66,27 @@ internal sealed class AtrIndicator : ITechnicalIndicator
         _previousClose = null;
         _currentAtr = null;
         _count = 0;
+    }
+
+    public string SerializeState() => JsonSerializer.Serialize(new
+    {
+        _period, _previousClose, _currentAtr, _count
+    });
+
+    public bool DeserializeState(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.GetProperty("_period").GetInt32() != _period) return false;
+            _previousClose = root.TryGetProperty("_previousClose", out var pc) && pc.ValueKind != JsonValueKind.Null
+                ? pc.GetDecimal() : null;
+            _currentAtr = root.TryGetProperty("_currentAtr", out var ca) && ca.ValueKind != JsonValueKind.Null
+                ? ca.GetDecimal() : null;
+            _count = root.GetProperty("_count").GetInt32();
+            return true;
+        }
+        catch { return false; }
     }
 }
