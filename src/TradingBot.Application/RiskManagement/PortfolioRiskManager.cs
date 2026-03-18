@@ -62,13 +62,22 @@ internal sealed class PortfolioRiskManager
         }
 
         // 2. Límite de exposición Short
+        // DES-B fix: En Spot, un Sell cierra un Long existente — no crea Short exposure.
+        // Solo aplicar validación Short si NO hay posición Long que cerrar para este símbolo.
+        // Reservado para futura implementación de Margin Trading / Futures.
         if (settings.MaxPortfolioShortExposureUsdt > 0 && order.Side == OrderSide.Sell)
         {
-            var newShort = exposure.TotalShortUsdt + orderExposureUsdt;
-            if (newShort > settings.MaxPortfolioShortExposureUsdt)
-                return PortfolioValidationResult.Blocked(
-                    $"Exposición Short del portafolio ({newShort:F2} USDT) superaría el límite " +
-                    $"({settings.MaxPortfolioShortExposureUsdt:F2} USDT).");
+            var hasLongToClose = openPositions.Any(p =>
+                p.Symbol == order.Symbol && p.Side == OrderSide.Buy);
+
+            if (!hasLongToClose)
+            {
+                var newShort = exposure.TotalShortUsdt + orderExposureUsdt;
+                if (newShort > settings.MaxPortfolioShortExposureUsdt)
+                    return PortfolioValidationResult.Blocked(
+                        $"Exposición Short del portafolio ({newShort:F2} USDT) superaría el límite " +
+                        $"({settings.MaxPortfolioShortExposureUsdt:F2} USDT).");
+            }
         }
 
         // 3. Concentración por símbolo

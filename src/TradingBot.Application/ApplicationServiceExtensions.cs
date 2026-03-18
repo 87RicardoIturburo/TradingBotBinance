@@ -113,6 +113,9 @@ public static class ApplicationServiceExtensions
         // Limit order timeout — cancela órdenes Limit que no se llenaron a tiempo
         services.AddHostedService<LimitOrderTimeoutWorker>();
 
+        // IMP-1: Reconciliación periódica Binance ↔ DB
+        services.AddHostedService<BinanceReconciliationWorker>();
+
         return services;
     }
 }

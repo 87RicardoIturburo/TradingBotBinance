@@ -95,7 +95,7 @@ internal sealed class RunBacktestCommandHandler(
 
         var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
         for (var i = 0; i < warmUpCount; i++)
-            tradingStrategy.WarmUpPrice(klines[i].Close);
+            tradingStrategy.WarmUpOhlc(klines[i].High, klines[i].Low, klines[i].Close);
 
         // Sincronizar estado previo de indicadores para evitar señales falsas
         if (tradingStrategy is Strategies.DefaultTradingStrategy dts)

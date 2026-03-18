@@ -17,7 +17,11 @@ public sealed class Position : AggregateRoot<Guid>
     public Price          CurrentPrice { get; private set; } = null!;
     /// <summary>Precio más alto alcanzado desde la apertura (Long trailing stop).</summary>
     public Price          HighestPriceSinceEntry { get; private set; } = null!;
-    /// <summary>Precio más bajo alcanzado desde la apertura (Short trailing stop).</summary>
+    /// <summary>
+    /// Precio más bajo alcanzado desde la apertura (Short trailing stop).
+    /// NOTA: En modo Spot solo se opera Long. Esta propiedad está reservada
+    /// para futura implementación de Margin Trading / Futures. No eliminar.
+    /// </summary>
     public Price          LowestPriceSinceEntry  { get; private set; } = null!;
     public Quantity       Quantity     { get; private set; } = null!;
     public bool           IsOpen       { get; private set; }
@@ -26,6 +30,8 @@ public sealed class Position : AggregateRoot<Guid>
     public decimal        EntryFee     { get; private set; }
     /// <summary>Comisión pagada al cerrar la posición (en quote asset).</summary>
     public decimal        ExitFee      { get; private set; }
+    /// <summary>Motivo por el que se cerró la posición. <c>null</c> mientras está abierta.</summary>
+    public CloseReason?   CloseReason  { get; private set; }
     public DateTimeOffset OpenedAt     { get; private set; }
     public DateTimeOffset? ClosedAt    { get; private set; }
 
@@ -85,8 +91,22 @@ public sealed class Position : AggregateRoot<Guid>
             LowestPriceSinceEntry = currentPrice;
     }
 
+    /// <summary>
+    /// Actualiza la cantidad llenada y el precio promedio ponderado tras un partial fill.
+    /// El nuevo precio de entrada es el promedio ponderado: <c>(oldQty × oldPrice + addedQty × fillPrice) / newQty</c>.
+    /// </summary>
+    public void AccumulatePartialFill(Quantity totalFilledQuantity, Price averageFillPrice, decimal additionalFee)
+    {
+        if (!IsOpen) return;
+
+        Quantity  = totalFilledQuantity;
+        EntryPrice = averageFillPrice;
+        EntryFee  += additionalFee;
+        Version++;
+    }
+
     /// <summary>Cierra la posición al precio indicado y devuelve el P&amp;L realizado neto de fees.</summary>
-    public Result<decimal, DomainError> Close(Price closePrice, decimal exitFee = 0m)
+    public Result<decimal, DomainError> Close(Price closePrice, decimal exitFee = 0m, CloseReason closeReason = Enums.CloseReason.Manual)
     {
         if (!IsOpen)
             return Result<decimal, DomainError>.Failure(
@@ -94,6 +114,7 @@ public sealed class Position : AggregateRoot<Guid>
 
         CurrentPrice = closePrice;
         ExitFee      = exitFee;
+        CloseReason  = closeReason;
 
         var grossPnL = Side == OrderSide.Buy
             ? (closePrice.Value - EntryPrice.Value) * Quantity.Value

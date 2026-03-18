@@ -182,10 +182,13 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             "executionReport: BinanceId={BinanceId} Symbol={Symbol} Status={Status} FilledQty={FilledQty}",
             update.Id, update.Symbol, update.Status, update.QuantityFilled);
 
-        _ = Task.Run(async () => await ProcessOrderUpdateAsync(update));
+        // CRIT-3 fix: pasar CancellationToken para que el procesamiento se detenga
+        // durante shutdown y no intente escribir en la DB después de un dispose
+        var token = _cts?.Token ?? CancellationToken.None;
+        _ = Task.Run(async () => await ProcessOrderUpdateAsync(update, token), token);
     }
 
-    private async Task ProcessOrderUpdateAsync(BinanceStreamOrderUpdate update)
+    private async Task ProcessOrderUpdateAsync(BinanceStreamOrderUpdate update, CancellationToken cancellationToken = default)
     {
         var correlationId = $"ws-{Guid.NewGuid().ToString("N")[..8]}";
         using var logScope = _logger.BeginScope(new Dictionary<string, object>
@@ -202,7 +205,7 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             var orderSyncHandler = scope.ServiceProvider.GetRequiredService<IOrderSyncHandler>();
             var unitOfWork     = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            var orders = await orderRepo.GetPendingSyncAsync();
+            var orders = await orderRepo.GetPendingSyncAsync(cancellationToken);
             var order  = orders.FirstOrDefault(o =>
                 o.BinanceOrderId == update.Id.ToString());
 
@@ -212,7 +215,7 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
                 return;
             }
 
-            var tracked = await orderRepo.GetByIdAsync(order.Id);
+            var tracked = await orderRepo.GetByIdAsync(order.Id, cancellationToken);
             if (tracked is null) return;
 
             // Precio promedio = total ejecutado en quote / total ejecutado en base
@@ -232,13 +235,27 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             switch (update.Status)
             {
                 case BinanceEnums.OrderStatus.Filled:
-                    tracked.Fill(filledQty.Value, executedPrice.Value, update.Fee);
-                    // Sincronizar con posiciones: crear nueva o cerrar existente
-                    await orderSyncHandler.HandleOrderFilledAsync(tracked);
+                    // CRIT-A fix: verificar resultado de Fill() antes de sincronizar posiciones.
+                    // Si OrderService ya procesó el fill vía REST, Fill() retorna Failure
+                    // y no debemos crear posiciones duplicadas.
+                    var fillResult = tracked.Fill(filledQty.Value, executedPrice.Value, update.Fee, update.FeeAsset);
+                    if (fillResult.IsSuccess)
+                        await orderSyncHandler.HandleOrderFilledAsync(tracked, cancellationToken);
+                    else
+                        _logger.LogDebug(
+                            "Fill ignorado para orden {OrderId} (ya procesada): {Error}",
+                            tracked.Id, fillResult.Error.Message);
                     break;
 
                 case BinanceEnums.OrderStatus.PartiallyFilled:
-                    tracked.PartialFill(filledQty.Value, executedPrice.Value);
+                    // CRIT-A fix: verificar resultado de PartialFill() antes de sincronizar.
+                    var partialResult = tracked.PartialFill(filledQty.Value, executedPrice.Value);
+                    if (partialResult.IsSuccess)
+                        await orderSyncHandler.HandlePartialFillAsync(tracked, cancellationToken);
+                    else
+                        _logger.LogDebug(
+                            "PartialFill ignorado para orden {OrderId} (ya procesada): {Error}",
+                            tracked.Id, partialResult.Error.Message);
                     break;
 
                 case BinanceEnums.OrderStatus.Canceled:
@@ -248,11 +265,11 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
                     break;
             }
 
-            await orderRepo.UpdateAsync(tracked);
-            await unitOfWork.SaveChangesAsync();
+            await orderRepo.UpdateAsync(tracked, cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Invalidar caché de balance tras cambio de estado
-            await _accountService.InvalidateCacheAsync();
+            await _accountService.InvalidateCacheAsync(cancellationToken);
 
             _logger.LogInformation(
                 "Orden {OrderId} actualizada vía User Data Stream → {Status} (fee: {Fee:F4} {FeeAsset})",

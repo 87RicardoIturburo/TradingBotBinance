@@ -17,7 +17,11 @@ public sealed class GlobalRiskSettings
     /// <summary>Exposición máxima Long del portafolio en USDT. 0 = deshabilitado.</summary>
     public decimal MaxPortfolioLongExposureUsdt { get; set; }
 
-    /// <summary>Exposición máxima Short del portafolio en USDT. 0 = deshabilitado.</summary>
+    /// <summary>
+    /// Exposición máxima Short del portafolio en USDT. 0 = deshabilitado.
+    /// NOTA: En modo Spot solo se opera Long. Esta propiedad está reservada
+    /// para futura implementación de Margin Trading / Futures. No eliminar.
+    /// </summary>
     public decimal MaxPortfolioShortExposureUsdt { get; set; }
 
     /// <summary>Porcentaje máximo de exposición en un solo símbolo sobre el total del portafolio (0-100). 0 = deshabilitado.</summary>

@@ -26,6 +26,19 @@ public sealed record BacktestMetrics(
     /// <summary>Expectancy = (WinRate × AvgWin) − (LossRate × AvgLoss).</summary>
     decimal Expectancy)
 {
+    /// <summary>
+    /// Tope para ratios cuando el denominador es 0 o insignificante.
+    /// Valores como 999 distorsionan comparaciones y el UI.
+    /// </summary>
+    private const decimal RatioCap = 10m;
+
+    /// <summary>
+    /// Mínimo de trades Y días de backtest para anualizar Sharpe/Sortino.
+    /// Con menos datos, la anualización amplifica ruido estadístico.
+    /// </summary>
+    private const int MinTradesForAnnualization = 20;
+    private const double MinDaysForAnnualization = 30;
+
     /// <summary>Calcula las métricas a partir de los trades completados.</summary>
     public static BacktestMetrics Calculate(IReadOnlyList<BacktestTrade> trades)
     {
@@ -33,21 +46,57 @@ public sealed record BacktestMetrics(
             return new BacktestMetrics(0, 0, 0, 0, 0, 0, 0);
 
         var returns = trades.Select(t => t.NetPnL).ToList();
-        var meanReturn = returns.Average();
 
-        // Sharpe Ratio
-        var stdDev = StandardDeviation(returns);
-        var sharpe = stdDev > 0 ? meanReturn / stdDev : 0m;
+        // TRADE-4 fix: usar retornos porcentuales para Sharpe/Sortino.
+        // ReturnPct = NetPnL / (EntryPrice × Quantity) para que sea comparable entre activos.
+        var pctReturns = trades
+            .Select(t =>
+            {
+                var invested = t.EntryPrice * t.Quantity;
+                return invested > 0 ? t.NetPnL / invested : 0m;
+            })
+            .ToList();
 
-        // Sortino Ratio (solo desviación negativa)
-        var negativeReturns = returns.Where(r => r < 0).ToList();
-        var downsideDev = negativeReturns.Count > 0 ? StandardDeviation(negativeReturns) : 0m;
-        var sortino = downsideDev > 0 ? meanReturn / downsideDev : (meanReturn > 0 ? 999m : 0m);
+        var meanPctReturn = pctReturns.Average();
 
-        // Profit Factor
+        // Sharpe Ratio: (meanReturn / stdDev)
+        // Solo anualizar con suficientes datos (≥20 trades Y ≥30 días de backtest).
+        // Con pocos datos la anualización amplifica ruido: 4 trades en 7 días
+        // produce annualizationFactor ≈ 12, convirtiendo un Sharpe crudo de 0.9 en 11.
+        var stdDev = StandardDeviation(pctReturns);
+        var rawSharpe = stdDev > 0 ? meanPctReturn / stdDev : 0m;
+
+        decimal annualizationFactor = 1m;
+        double totalDays = 0;
+        if (trades.Count >= 2)
+        {
+            totalDays = (trades[^1].ExitTime - trades[0].EntryTime).TotalDays;
+            if (totalDays >= MinDaysForAnnualization && trades.Count >= MinTradesForAnnualization)
+            {
+                var tradesPerYear = (decimal)(trades.Count / totalDays * 252); // 252 trading days
+                annualizationFactor = (decimal)Math.Sqrt((double)Math.Max(tradesPerYear, 1m));
+            }
+        }
+        var sharpe = Clamp(rawSharpe * annualizationFactor, -RatioCap, RatioCap);
+
+        // Sortino Ratio (solo desviación negativa).
+        // Con 0 o 1 retornos negativos, StandardDeviation retorna 0 →
+        // no podemos calcular un Sortino significativo. Usamos RatioCap como tope.
+        var negativePctReturns = pctReturns.Where(r => r < 0).ToList();
+        var downsideDev = negativePctReturns.Count > 1 ? StandardDeviation(negativePctReturns) : 0m;
+        decimal rawSortino;
+        if (downsideDev > 0)
+            rawSortino = meanPctReturn / downsideDev;
+        else
+            rawSortino = meanPctReturn > 0 ? RatioCap : 0m;
+        var sortino = Clamp(rawSortino * annualizationFactor, -RatioCap, RatioCap);
+
+        // Profit Factor (sobre P&L absoluto)
         var grossWins = returns.Where(r => r > 0).Sum();
         var grossLosses = Math.Abs(returns.Where(r => r < 0).Sum());
-        var profitFactor = grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? 999m : 0m);
+        var profitFactor = grossLosses > 0
+            ? Math.Min(grossWins / grossLosses, RatioCap)
+            : (grossWins > 0 ? RatioCap : 0m);
 
         // Calmar Ratio: totalReturn / maxDrawdown
         decimal peakEquity = 0, maxDrawdown = 0, runningPnL = 0;
@@ -59,7 +108,9 @@ public sealed record BacktestMetrics(
             if (dd > maxDrawdown) maxDrawdown = dd;
         }
         var totalReturn = returns.Sum();
-        var calmar = maxDrawdown > 0 ? totalReturn / maxDrawdown : (totalReturn > 0 ? 999m : 0m);
+        var calmar = maxDrawdown > 0
+            ? Clamp(totalReturn / maxDrawdown, -RatioCap, RatioCap)
+            : (totalReturn > 0 ? RatioCap : 0m);
 
         // Consecutive wins/losses
         var (maxConsecWins, maxConsecLosses) = CalculateStreaks(returns);
@@ -74,14 +125,17 @@ public sealed record BacktestMetrics(
         var expectancy = (winRate * avgWin) - (lossRate * avgLoss);
 
         return new BacktestMetrics(
-            SharpeRatio: Math.Round(sharpe, 4),
-            SortinoRatio: Math.Round(sortino, 4),
-            CalmarRatio: Math.Round(calmar, 4),
-            ProfitFactor: Math.Round(profitFactor, 4),
+            SharpeRatio: Math.Round(sharpe, 2),
+            SortinoRatio: Math.Round(sortino, 2),
+            CalmarRatio: Math.Round(calmar, 2),
+            ProfitFactor: Math.Round(profitFactor, 2),
             MaxConsecutiveLosses: maxConsecLosses,
             MaxConsecutiveWins: maxConsecWins,
             Expectancy: Math.Round(expectancy, 4));
     }
+
+    private static decimal Clamp(decimal value, decimal min, decimal max) =>
+        value < min ? min : value > max ? max : value;
 
     private static decimal StandardDeviation(IReadOnlyList<decimal> values)
     {

@@ -64,7 +64,7 @@ public sealed class BacktestEngineTests
         var strategy = CreateStrategy();
         var klines = GenerateKlines(100);
 
-        _strategy.ProcessTickAsync(Arg.Any<MarketTickReceivedEvent>(), Arg.Any<CancellationToken>())
+        _strategy.ProcessKlineAsync(Arg.Any<KlineClosedEvent>(), Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -83,17 +83,17 @@ public sealed class BacktestEngineTests
         var klines = GenerateKlines(50);
         var symbol = Symbol.Create("BTCUSDT").Value;
 
-        // Primera señal en tick 5 (compra), luego nada
-        _strategy.ProcessTickAsync(Arg.Any<MarketTickReceivedEvent>(), Arg.Any<CancellationToken>())
+        // Primera señal en kline 5 (compra), luego nada
+        _strategy.ProcessKlineAsync(Arg.Any<KlineClosedEvent>(), Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
         var buySignal = new SignalGeneratedEvent(
             strategy.Id, symbol, OrderSide.Buy,
             Price.Create(49000m).Value, "RSI(14)=25.0000");
 
-        // Tick 5 genera señal de compra
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == klines[5].OpenTime),
+        // Kline 5 genera señal de compra
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == klines[5].OpenTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(buySignal));
 
@@ -110,7 +110,7 @@ public sealed class BacktestEngineTests
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
             Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-            Arg.Any<decimal?>(), Arg.Any<string?>())
+            Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
             .Returns(Result<Order?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -137,18 +137,18 @@ public sealed class BacktestEngineTests
             new(baseTime.AddMinutes(4), 46500, 46600, 46400, 46500, 100), // tick 4
         };
 
-        // Señal de compra en tick 0
+        // Señal de compra en kline 0
         var buySignal = new SignalGeneratedEvent(
             strategy.Id, symbol, OrderSide.Buy,
             Price.Create(50000m).Value, "RSI(14)=25.0000");
 
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == klines[0].OpenTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == klines[0].OpenTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(buySignal));
 
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != klines[0].OpenTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime != klines[0].OpenTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
@@ -164,12 +164,12 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
             orderQty, TradingMode.PaperTrading).Value;
 
-        // EvaluateExitRulesAsync es llamado con posición abierta en ticks 1, 2, 3 y 4.
-        // tick 1 (50000): hold, tick 2 (49000): hold, tick 3 (47000 = -6% → SL): salida
+        // EvaluateExitRulesAsync es llamado con posición abierta en klines 1, 2, 3 y 4.
+        // kline 1 (50000): hold, kline 2 (49000): hold, kline 3 (47000 = -6% → SL): salida
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
             Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-            Arg.Any<decimal?>(), Arg.Any<string?>())
+            Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
             .Returns(
                 Result<Order?, DomainError>.Success(null),
                 Result<Order?, DomainError>.Success(null),
@@ -188,7 +188,7 @@ public sealed class BacktestEngineTests
         var strategy = CreateStrategy();
         var klines = GenerateKlines(200);
 
-        _strategy.ProcessTickAsync(Arg.Any<MarketTickReceivedEvent>(), Arg.Any<CancellationToken>())
+        _strategy.ProcessKlineAsync(Arg.Any<KlineClosedEvent>(), Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -204,7 +204,7 @@ public sealed class BacktestEngineTests
         var strategy = CreateStrategy();
         var klines = GenerateKlines(1000);
 
-        _strategy.ProcessTickAsync(Arg.Any<MarketTickReceivedEvent>(), Arg.Any<CancellationToken>())
+        _strategy.ProcessKlineAsync(Arg.Any<KlineClosedEvent>(), Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
         using var cts = new CancellationTokenSource();
@@ -234,13 +234,13 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Buy,
             Price.Create(50000m).Value, "RSI(14)=25.0000");
 
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == klines[0].OpenTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == klines[0].OpenTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(buySignal));
 
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != klines[0].OpenTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime != klines[0].OpenTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
@@ -256,12 +256,12 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
             orderQty, TradingMode.PaperTrading).Value;
 
-        // EvaluateExitRulesAsync es llamado en ticks 1 y 2 (posición abierta desde tick 0).
-        // tick 1 (51000): hold, tick 2 (53000 = +6% → TP): salida
+        // EvaluateExitRulesAsync es llamado en klines 1 y 2 (posición abierta desde kline 0).
+        // kline 1 (51000): hold, kline 2 (53000 = +6% → TP): salida
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
             Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-            Arg.Any<decimal?>(), Arg.Any<string?>())
+            Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
             .Returns(
                 Result<Order?, DomainError>.Success(null),
                 Result<Order?, DomainError>.Success(sellOrder));
@@ -305,12 +305,12 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Buy,
             Price.Create(50000m).Value, "RSI(14)=28.0000");
 
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == baseTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(signal));
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != baseTime),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime != baseTime),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
@@ -324,7 +324,7 @@ public sealed class BacktestEngineTests
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
             Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-            Arg.Any<decimal?>(), Arg.Any<string?>())
+            Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
             .Returns(Result<Order?, DomainError>.Success(null));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -366,13 +366,13 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Buy,
             Price.Create(50000m).Value, "RSI(14)=28.0000");
 
-        // Señal en tick 0 y tick 2
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime || t.Timestamp == baseTime.AddMinutes(2)),
+        // Señal en kline 0 y kline 2
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == baseTime || k.OpenTime == baseTime.AddMinutes(2)),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(buySignal));
-        _strategy.ProcessTickAsync(
-            Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime.AddMinutes(1)),
+        _strategy.ProcessKlineAsync(
+            Arg.Is<KlineClosedEvent>(k => k.OpenTime == baseTime.AddMinutes(1)),
             Arg.Any<CancellationToken>())
             .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
@@ -388,12 +388,12 @@ public sealed class BacktestEngineTests
             strategy.Id, symbol, OrderSide.Sell, OrderType.Market,
             orderQty, TradingMode.PaperTrading).Value;
 
-        // EvaluateExitRulesAsync se llama en tick 1 (posición abierta desde tick 0).
-        // tick 1 (48000 = -4% → por debajo del stopLossPercent=2%): cierra la posición
+        // EvaluateExitRulesAsync se llama en kline 1 (posición abierta desde kline 0).
+        // kline 1 (48000 = -4% → por debajo del stopLossPercent=2%): cierra la posición
         _ruleEngine.EvaluateExitRulesAsync(
             Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
             Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-            Arg.Any<decimal?>(), Arg.Any<string?>())
+            Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
             .Returns(Result<Order?, DomainError>.Success(sellOrder));
 
         var result = await _engine.RunAsync(strategy, _strategy, _ruleEngine, klines);
@@ -434,12 +434,12 @@ public sealed class BacktestEngineTests
                 Price.Create(50000m).Value, "RSI(14)=28.0000");
 
             var mockTs = Substitute.For<ITradingStrategy>();
-            mockTs.ProcessTickAsync(
-                Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp == baseTime),
+            mockTs.ProcessKlineAsync(
+                Arg.Is<KlineClosedEvent>(k => k.OpenTime == baseTime),
                 Arg.Any<CancellationToken>())
                 .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(signal));
-            mockTs.ProcessTickAsync(
-                Arg.Is<MarketTickReceivedEvent>(t => t.Timestamp != baseTime),
+            mockTs.ProcessKlineAsync(
+                Arg.Is<KlineClosedEvent>(k => k.OpenTime != baseTime),
                 Arg.Any<CancellationToken>())
                 .Returns(Result<SignalGeneratedEvent?, DomainError>.Success(null));
 
@@ -453,7 +453,7 @@ public sealed class BacktestEngineTests
             mockRe.EvaluateExitRulesAsync(
                 Arg.Any<TradingStrategy>(), Arg.Any<Position>(),
                 Arg.Any<Price>(), Arg.Any<CancellationToken>(),
-                Arg.Any<decimal?>(), Arg.Any<string?>())
+                Arg.Any<decimal?>(), Arg.Any<string?>(), Arg.Any<bool>())
                 .Returns(Result<Order?, DomainError>.Success(null));
 
             return _engine.RunAsync(strat, mockTs, mockRe, klines).GetAwaiter().GetResult().TotalInvested;

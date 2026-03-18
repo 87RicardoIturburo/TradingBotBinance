@@ -79,10 +79,21 @@ public static class InfrastructureServiceExtensions
 
         services.Configure<RedisOptions>(configuration.GetSection(RedisOptions.SectionName));
 
-        services.AddSingleton<IConnectionMultiplexer>(_ =>
-            ConnectionMultiplexer.Connect(connectionString));
+        // IMP-6: intentar conectar a Redis; si falla, registrar fallback en memoria
+        try
+        {
+            var connection = ConnectionMultiplexer.Connect(connectionString);
+            connection.GetDatabase().Ping(); // Verificar conectividad
 
-        services.AddSingleton<ICacheService, RedisCacheService>();
+            services.AddSingleton<IConnectionMultiplexer>(connection);
+            services.AddSingleton<ICacheService, RedisCacheService>();
+        }
+        catch (Exception)
+        {
+            // Redis no disponible → fallback a memoria
+            services.AddSingleton<ICacheService, InMemoryCacheService>();
+        }
+
         services.AddSingleton<IIndicatorStateStore, Cache.RedisIndicatorStateStore>();
 
         return services;

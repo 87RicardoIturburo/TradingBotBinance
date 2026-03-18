@@ -31,22 +31,28 @@ internal sealed class BacktestEngine
     /// Ejecuta un backtest completo con los datos históricos proporcionados.
     /// Todo se procesa en memoria — no persiste órdenes ni posiciones.
     /// </summary>
+    /// <param name="initialBalance">Balance inicial simulado en USDT. Si es 0, se usa MaxOrderAmountUsdt × 10 como fallback.</param>
     public async Task<BacktestResult> RunAsync(
         TradingStrategy strategy,
         ITradingStrategy tradingStrategy,
         IRuleEngine ruleEngine,
         IReadOnlyList<Kline> klines,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        decimal initialBalance = 0m)
     {
         var trades = new List<BacktestTrade>();
-        var equityCurve = new List<EquityPoint>();
-        var openPosition = (BacktestPosition?)null;
-        decimal realizedPnL = 0m;
-        decimal totalInvested = 0m;
-        decimal totalFees = 0m;
-        decimal totalSlippage = 0m;
-        decimal peakEquity = 0m;
-        decimal maxDrawdown = 0m;
+            var equityCurve = new List<EquityPoint>();
+            var openPosition = (BacktestPosition?)null;
+            decimal realizedPnL = 0m;
+            decimal totalInvested = 0m;
+            decimal totalFees = 0m;
+            decimal totalSlippage = 0m;
+            // IMP-9: equity y drawdown basados en balance absoluto, no solo P&L
+            var effectiveInitialBalance = initialBalance > 0
+                ? initialBalance
+                : strategy.RiskConfig.MaxOrderAmountUsdt * 10m;
+            decimal peakEquity = effectiveInitialBalance;
+            decimal maxDrawdown = 0m;
 
         _logger.LogInformation(
             "Iniciando backtest de '{Name}' con {Count} velas",
@@ -60,13 +66,14 @@ internal sealed class BacktestEngine
             var price = Price.Create(kline.Close);
             if (price.IsFailure) continue;
 
-            var tick = new MarketTickReceivedEvent(
-                strategy.Symbol,
-                price.Value, price.Value, price.Value,
-                kline.Volume, kline.OpenTime);
+            // TRADE-1 fix: usar ProcessKlineAsync para alimentar indicadores y generar señales.
+            // ProcessTickAsync ya no alimenta indicadores (solo se usa para SL/TP en el tick loop).
+            var klineEvent = new KlineClosedEvent(
+                strategy.Symbol, strategy.Timeframe,
+                kline.Open, kline.High, kline.Low, kline.Close,
+                kline.Volume, kline.OpenTime, kline.OpenTime.AddMinutes(1));
 
-            // 1. Procesar tick → señal? (actualiza indicadores internamente)
-            var signalResult = await tradingStrategy.ProcessTickAsync(tick, cancellationToken);
+            var signalResult = await tradingStrategy.ProcessKlineAsync(klineEvent, cancellationToken);
             // No se interrumpe aquí: la evaluación de salida debe ejecutarse siempre
             // que haya una posición abierta, independientemente del resultado de la señal.
 
@@ -170,10 +177,18 @@ internal sealed class BacktestEngine
 
                         if (strategy.RiskConfig.UseAtrSizing && signal.AtrValue is > 0 && kline.Close > 0)
                         {
-                            // Simular balance como capital inicial (totalInvested cubre lo ya invertido)
-                            var simulatedBalance = strategy.RiskConfig.MaxOrderAmountUsdt * 10m;
+                            // CRIT-4 fix: usar equity curve real (initialBalance + P&L acumulado)
+                            // IMP-9: descontar capital invertido en posición abierta (aunque aquí
+                            // openPosition es null porque solo entramos si no hay posición).
+                            var investedInOpen = openPosition is not null
+                                ? openPosition.EntryPrice * openPosition.Quantity : 0m;
+                            var effectiveBalance = initialBalance > 0
+                                ? initialBalance + realizedPnL - investedInOpen
+                                : strategy.RiskConfig.MaxOrderAmountUsdt * 10m;
+                            if (effectiveBalance < strategy.RiskConfig.MaxOrderAmountUsdt * 0.1m)
+                                effectiveBalance = strategy.RiskConfig.MaxOrderAmountUsdt * 0.1m; // Mínimo para no bloquear
                             var sizing = PositionSizer.Calculate(
-                                simulatedBalance,
+                                effectiveBalance,
                                 strategy.RiskConfig.RiskPercentPerTrade / 100m,
                                 signal.AtrValue.Value,
                                 strategy.RiskConfig.AtrMultiplier,
@@ -229,9 +244,9 @@ internal sealed class BacktestEngine
                 }
             }
 
-            // 4. Calcular equity y drawdown
+            // 4. Calcular equity y drawdown (IMP-9: balance absoluto)
             var unrealized = openPosition?.UnrealizedPnL ?? 0m;
-            var totalEquity = realizedPnL + unrealized;
+            var totalEquity = effectiveInitialBalance + realizedPnL + unrealized;
 
             if (totalEquity > peakEquity)
                 peakEquity = totalEquity;
@@ -380,6 +395,7 @@ internal sealed class BacktestEngine
             {
                 return "Trailing stop";
             }
+            // Trailing stop Short: reservado para Margin/Futures (Spot solo opera Long)
             if (position.Side == OrderSide.Sell
                 && position.LowestPriceSinceEntry < position.EntryPrice
                 && position.CurrentPrice >= position.LowestPriceSinceEntry * (1m + risk.TrailingStopPercent / 100m))

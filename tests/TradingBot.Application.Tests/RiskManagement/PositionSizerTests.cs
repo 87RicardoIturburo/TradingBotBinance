@@ -86,7 +86,8 @@ public sealed class PositionSizerTests
             maxOrderAmountUsdt: 100m);
 
         result.WasAtrCalculated.Should().BeFalse();
-        result.AmountUsdt.Should().Be(100m);
+        // DESIGN-4: fallback conservador al 50% del máximo
+        result.AmountUsdt.Should().Be(50m);
     }
 
     [Fact]

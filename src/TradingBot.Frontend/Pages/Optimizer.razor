@@ -127,11 +127,11 @@
         <div class="col-md-3">
             <label class="form-label">📊 Ordenar resultados por</label>
             <select class="form-select" @bind="selectedRankBy">
-                <option value="PnL">P&amp;L Neto</option>
-                <option value="SharpeRatio">Sharpe Ratio</option>
-                <option value="SortinoRatio">Sortino Ratio</option>
-                <option value="CalmarRatio">Calmar Ratio</option>
-                <option value="ProfitFactor">Profit Factor</option>
+                <option value="PnL" title="Ganancia neta total después de fees y slippage">P&amp;L Neto</option>
+                <option value="SharpeRatio" title="Retorno ajustado por riesgo total (volatilidad). >1 bueno, >2 excelente">Sharpe Ratio</option>
+                <option value="SortinoRatio" title="Retorno ajustado por riesgo de caída. Solo penaliza volatilidad negativa">Sortino Ratio</option>
+                <option value="CalmarRatio" title="Retorno total / Max Drawdown. Mide cuánto ganás por unidad de riesgo máximo">Calmar Ratio</option>
+                <option value="ProfitFactor" title="Ganancias brutas / Pérdidas brutas. >1.5 bueno, >2 excelente">Profit Factor</option>
             </select>
         </div>
         <div class="col-md-9 d-flex align-items-end">
@@ -220,19 +220,19 @@
                         {
                             @foreach (var key in optimizationResult.Results[0].Parameters.Keys)
                             {
-                                <th>@key</th>
+                                <th title="Parámetro optimizado: @key">@key</th>
                             }
                         }
-                        <th>P&amp;L</th>
-                        <th>Invertido</th>
-                        <th>ROI</th>
-                        <th>Trades</th>
-                        <th>Win Rate</th>
-                        <th>Drawdown</th>
-                        <th>Sharpe</th>
-                        <th>Sortino</th>
-                        <th>PF</th>
-                        <th>P&amp;L/Trade</th>
+                        <th title="Profit &amp; Loss neto: ganancia o pérdida total después de descontar fees y slippage">P&amp;L</th>
+                        <th title="Capital total invertido en todas las operaciones (suma de cada entrada)">Invertido</th>
+                        <th title="Return On Investment: (P&amp;L Neto / Invertido) × 100. Rentabilidad porcentual sobre el capital comprometido">ROI</th>
+                        <th title="Cantidad total de operaciones (entrada + salida) ejecutadas durante el período">Trades</th>
+                        <th title="Porcentaje de trades ganadores sobre el total. Win Rate = (Ganadores / Total) × 100">Win Rate</th>
+                        <th title="Máxima caída porcentual desde un pico de equity hasta un valle. Mide el peor escenario de pérdida consecutiva">Drawdown</th>
+                        <th title="Sharpe Ratio: retorno ajustado por riesgo. >1 = bueno, >2 = excelente. Solo se anualiza con ≥20 trades y ≥30 días. Tope: ±10">Sharpe</th>
+                        <th title="Sortino Ratio: como Sharpe pero solo penaliza caídas (volatilidad negativa). Más relevante para trading. >1.5 = bueno. Tope: ±10">Sortino</th>
+                        <th title="Profit Factor: Ganancias brutas / Pérdidas brutas. >1 = rentable, >1.5 = bueno, >2 = excelente. Tope: 10">PF</th>
+                        <th title="P&amp;L promedio por trade: Total P&amp;L / Número de trades. Indica la ganancia esperada por cada operación">P&amp;L/Trade</th>
                     </tr>
                 </thead>
                 <tbody>

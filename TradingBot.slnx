@@ -4,7 +4,6 @@
     <File Path=".github/Pasos_A_Seguir.md" />
     <File Path=".github/PROJECT.md" />
     <File Path="API_KEY_BINANCE.txt" />
-    <File Path="Final.md" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/TradingBot.API/TradingBot.API.csproj" />

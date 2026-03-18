@@ -51,9 +51,12 @@ public sealed record ExchangeSymbolFilters(
     /// Valida y ajusta cantidad y precio contra los filtros del símbolo.
     /// Devuelve error si la cantidad ajustada es inválida o el notional no alcanza el mínimo.
     /// </summary>
+    /// <param name="estimatedPrice">Precio estimado de mercado. Se usa para validar MIN_NOTIONAL
+    /// en Market orders (donde <paramref name="limitPrice"/> es <c>null</c>).</param>
     public Result<(decimal Quantity, decimal? Price), DomainError> ValidateAndAdjust(
         decimal  quantity,
-        decimal? limitPrice)
+        decimal? limitPrice,
+        decimal? estimatedPrice = null)
     {
         var adjustedQty = AdjustQuantity(quantity);
 
@@ -77,10 +80,11 @@ public sealed record ExchangeSymbolFilters(
             ? AdjustPrice(limitPrice.Value)
             : null;
 
-        // Validación MIN_NOTIONAL: solo aplica si tenemos precio
-        if (MinNotional > 0 && adjustedPrice.HasValue)
+        // CRIT-2 fix: validar MIN_NOTIONAL para Market orders usando estimatedPrice
+        var priceForNotional = adjustedPrice ?? estimatedPrice;
+        if (MinNotional > 0 && priceForNotional.HasValue)
         {
-            var notional = adjustedQty * adjustedPrice.Value;
+            var notional = adjustedQty * priceForNotional.Value;
             if (notional < MinNotional)
                 return Result<(decimal, decimal?), DomainError>.Failure(
                     DomainError.Validation(

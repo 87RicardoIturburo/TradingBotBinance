@@ -23,15 +23,17 @@ internal sealed class RiskManager : IRiskManager
     internal const int MinTradesForExpectancy = 30;
 
     /// <summary>
-    /// Reserva de saldo: el 5% del monto de la orden queda como buffer para comisiones.
+    /// DES-A fix: multiplicador sobre la taker fee real para calcular el buffer de saldo.
+    /// 3× la fee cubre fee + slippage razonable. Ej: fee 0.1% → buffer 0.3%.
     /// </summary>
-    private const decimal FeeBuffer = 0.05m;
+    private const decimal FeeBufferMultiplier = 3m;
 
     private readonly IStrategyRepository           _strategyRepository;
     private readonly IPositionRepository           _positionRepository;
     private readonly IAccountService               _accountService;
     private readonly GlobalRiskSettings             _globalRisk;
     private readonly PortfolioRiskManager           _portfolioRisk;
+    private readonly TradingFeeConfig              _feeConfig;
     private readonly ILogger<RiskManager>          _logger;
 
     public RiskManager(
@@ -40,6 +42,7 @@ internal sealed class RiskManager : IRiskManager
         IAccountService              accountService,
         IOptions<GlobalRiskSettings> globalRiskOptions,
         PortfolioRiskManager         portfolioRiskManager,
+        IOptions<TradingFeeConfig>   feeConfig,
         ILogger<RiskManager>         logger)
     {
         _strategyRepository = strategyRepository;
@@ -47,6 +50,7 @@ internal sealed class RiskManager : IRiskManager
         _accountService     = accountService;
         _globalRisk         = globalRiskOptions.Value;
         _portfolioRisk      = portfolioRiskManager;
+        _feeConfig          = feeConfig.Value;
         _logger             = logger;
     }
 
@@ -71,17 +75,20 @@ internal sealed class RiskManager : IRiskManager
             var balanceResult = await _accountService.GetAvailableBalanceAsync(quoteAsset, cancellationToken);
             if (balanceResult.IsSuccess)
             {
-                var required = orderAmount * (1m + FeeBuffer);
+                // DES-A fix: buffer dinámico basado en la taker fee real (3× fee).
+                // Ej: fee 0.1% → buffer 0.3%, en vez del anterior 5% hardcoded.
+                var feeBuffer = _feeConfig.EffectiveTakerFee * FeeBufferMultiplier;
+                var required = orderAmount * (1m + feeBuffer);
                 if (balanceResult.Value < required)
                 {
                     _logger.LogWarning(
-                        "Orden {OrderId} bloqueada: saldo disponible {Balance:F2} {Asset} < requerido {Required:F2} (incluye buffer de comisiones)",
-                        order.Id, balanceResult.Value, quoteAsset, required);
+                        "Orden {OrderId} bloqueada: saldo disponible {Balance:F2} {Asset} < requerido {Required:F2} (incluye buffer de comisiones {Buffer:P2})",
+                        order.Id, balanceResult.Value, quoteAsset, required, feeBuffer);
 
                     return Result<bool, DomainError>.Failure(
                         DomainError.RiskLimitExceeded(
                             $"Saldo insuficiente: {balanceResult.Value:F2} {quoteAsset} disponible, " +
-                            $"se requieren {required:F2} {quoteAsset} (incluye {FeeBuffer:P0} de buffer para comisiones)."));
+                            $"se requieren {required:F2} {quoteAsset} (incluye {feeBuffer:P2} de buffer para comisiones)."));
                 }
             }
             else
@@ -260,8 +267,16 @@ internal sealed class RiskManager : IRiskManager
         if (_globalRisk.MaxAccountDrawdownPercent <= 0)
             return (false, 0m);
 
+        // CRIT-D fix: incluir pérdidas no realizadas de posiciones abiertas
+        // para detectar drawdowns durante caídas sostenidas sin cierres.
         var globalDailyPnL = await GetGlobalDailyLossAsync(cancellationToken);
-        if (globalDailyPnL >= 0)
+
+        var openPositions = await _positionRepository.GetOpenPositionsAsync(cancellationToken);
+        var unrealizedPnL = openPositions.Sum(p => p.UnrealizedPnL);
+
+        var totalDailyPnL = globalDailyPnL + unrealizedPnL;
+
+        if (totalDailyPnL >= 0)
             return (false, 0m);
 
         // Obtener balance actual para estimar drawdown
@@ -270,21 +285,21 @@ internal sealed class RiskManager : IRiskManager
             return (false, 0m);
 
         var currentBalance = balanceResult.Value;
-        // Balance al inicio del día ≈ balance actual - P&L del día
-        var startOfDayBalance = currentBalance - globalDailyPnL;
+        // Balance al inicio del día ≈ balance actual - P&L realizado del día - unrealized actual
+        var startOfDayBalance = currentBalance - globalDailyPnL - unrealizedPnL;
         if (startOfDayBalance <= 0)
             return (false, 0m);
 
-        var drawdownPercent = Math.Abs(globalDailyPnL) / startOfDayBalance * 100m;
+        var drawdownPercent = Math.Abs(totalDailyPnL) / startOfDayBalance * 100m;
         var isTriggered = drawdownPercent >= _globalRisk.MaxAccountDrawdownPercent;
 
         if (isTriggered)
         {
             _logger.LogCritical(
                 "🛑 CIRCUIT BREAKER — Drawdown de cuenta {Drawdown:F1}% >= límite {Limit:F1}%. " +
-                "P&L diario: {PnL:F2} USDT, Balance: {Balance:F2} USDT",
+                "P&L realizado: {Realized:F2}, P&L no realizado: {Unrealized:F2}, Total: {Total:F2} USDT, Balance: {Balance:F2} USDT",
                 drawdownPercent, _globalRisk.MaxAccountDrawdownPercent,
-                globalDailyPnL, currentBalance);
+                globalDailyPnL, unrealizedPnL, totalDailyPnL, currentBalance);
         }
 
         return (isTriggered, Math.Round(drawdownPercent, 2));

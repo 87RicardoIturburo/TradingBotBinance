@@ -258,8 +258,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             return;
 
         // 2. Fallback: warm-up con datos históricos de Binance
+        // CRIT-B fix: calcular warm-up considerando todos los parámetros de periodo
+        // según el tipo de indicador. MACD necesita slowPeriod + signalPeriod, no solo "period".
         var maxPeriod = config.Indicators
-            .Select(i => (int)i.GetParameter("period", 14))
+            .Select(i => GetIndicatorWarmUpPeriod(i))
             .DefaultIfEmpty(0)
             .Max();
 
@@ -278,23 +280,15 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         {
             foreach (var kline in klinesResult.Value)
             {
-                var priceResult = Price.Create(kline.Close);
-                if (priceResult.IsFailure) continue;
-
-                // Usar el precio High como bid (mayor oferta) y Low como ask (menor demanda)
-                // para que ATR reciba variación realista en lugar de H=L=Close=0
-                var highPrice = Price.Create(kline.High);
-                var lowPrice  = Price.Create(kline.Low);
-
-                var syntheticTick = new MarketTickReceivedEvent(
-                    config.Symbol,
-                    lowPrice.IsSuccess ? lowPrice.Value : priceResult.Value,
-                    highPrice.IsSuccess ? highPrice.Value : priceResult.Value,
-                    priceResult.Value,
-                    kline.Volume, kline.OpenTime);
-
-                await tradingStrategy.ProcessTickAsync(syntheticTick, cancellationToken);
+                // TRADE-1/CRIT-1 fix: alimentar indicadores directamente con OHLC.
+                // Esto permite que el ATR calcule True Range real (max(H-L, |H-pC|, |L-pC|))
+                // en vez de la aproximación |close-prevClose|.
+                tradingStrategy.WarmUpOhlc(kline.High, kline.Low, kline.Close);
             }
+
+            // Sincronizar estado previo para evitar señales falsas en la primera vela real
+            if (tradingStrategy is DefaultTradingStrategy defaultStrategy)
+                defaultStrategy.SyncPreviousIndicatorState();
 
             _logger.LogDebug(
                 "Warm-up completado para '{Name}': {Count} klines OHLCV procesadas",
@@ -315,17 +309,11 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             }
 
             foreach (var close in closesResult.Value)
-            {
-                var priceResult = Price.Create(close);
-                if (priceResult.IsFailure) continue;
+                tradingStrategy.WarmUpPrice(close);
 
-                var syntheticTick = new MarketTickReceivedEvent(
-                    config.Symbol,
-                    priceResult.Value, priceResult.Value, priceResult.Value,
-                    0m, DateTimeOffset.UtcNow);
-
-                await tradingStrategy.ProcessTickAsync(syntheticTick, cancellationToken);
-            }
+            // Sincronizar estado previo para evitar señales falsas en la primera vela real
+            if (tradingStrategy is DefaultTradingStrategy defaultStrategy)
+                defaultStrategy.SyncPreviousIndicatorState();
 
             _logger.LogDebug(
                 "Warm-up completado para '{Name}': {Count} cierres históricos procesados (fallback, ATR puede ser impreciso)",
@@ -654,6 +642,63 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         // Procesar vela cerrada → indicadores + señal
         var signalResult = await runner.Strategy.ProcessKlineAsync(kline, cancellationToken);
+
+        var strategy = runner.CachedConfig;
+        if (strategy is null || !strategy.IsActive) return;
+
+        using var scope  = _scopeFactory.CreateScope();
+        var ruleEngine   = scope.ServiceProvider.GetRequiredService<IRuleEngine>();
+        var orderService = scope.ServiceProvider.GetRequiredService<IOrderService>();
+        var positionRepo = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
+        var notifier     = scope.ServiceProvider.GetService<ITradingNotifier>();
+
+        // TRADE-2 fix: evaluar reglas de salida basadas en indicadores al cierre de vela.
+        // Esto complementa el tick loop que solo evalúa SL/TP/trailing (precio puro).
+        var currentAtr = runner.Strategy.CurrentAtrValue;
+        var currentSnapshot = runner.Strategy.GetCurrentSnapshot();
+        var lastPrice = Price.Create(kline.Close);
+
+        if (lastPrice.IsSuccess)
+        {
+            var openPositions = await runner.GetOpenPositionsAsync(positionRepo, cancellationToken);
+
+            foreach (var position in openPositions)
+            {
+                var exitResult = await ruleEngine.EvaluateExitRulesAsync(
+                    strategy, position, lastPrice.Value, cancellationToken,
+                    atrValue: currentAtr,
+                    indicatorSnapshot: currentSnapshot,
+                    evaluateIndicatorRules: true); // Kline loop: evaluar reglas de indicadores
+
+                if (exitResult.IsSuccess && exitResult.Value is { } exitOrder)
+                {
+                    var orderRepo = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
+                    var hasPending = await orderRepo.HasPendingCloseOrderAsync(
+                        runner.StrategyId, exitOrder.Symbol, exitOrder.Side, cancellationToken);
+                    if (hasPending) continue;
+
+                    var exitPlaceResult = await orderService.PlaceOrderAsync(exitOrder, cancellationToken);
+                    if (exitPlaceResult.IsSuccess)
+                    {
+                        runner.OrdersPlaced++;
+                        runner.InvalidatePositionCache();
+                        _logger.LogInformation(
+                            "Orden de salida (kline/indicadores) por '{Name}': {Side} {Symbol} (posición {PosId})",
+                            runner.StrategyName, exitOrder.Side, exitOrder.Symbol.Value, position.Id);
+
+                        if (notifier is not null)
+                            await notifier.NotifyOrderExecutedAsync(
+                                new OrderPlacedEvent(
+                                    exitOrder.Id, exitOrder.StrategyId, exitOrder.Symbol,
+                                    exitOrder.Side, exitOrder.Type, exitOrder.Quantity,
+                                    exitOrder.LimitPrice, exitOrder.IsPaperTrade),
+                                cancellationToken);
+                    }
+                }
+            }
+        }
+
+        // Evaluar señal de entrada
         if (signalResult.IsFailure || signalResult.Value is null) return;
 
         var signal = signalResult.Value;
@@ -669,22 +714,13 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         runner.SignalsGenerated++;
         _metrics.RecordSignalGenerated(runner.StrategyName, runner.Symbol.Value, signal.Direction.ToString());
 
-        using var scope  = _scopeFactory.CreateScope();
-        var ruleEngine   = scope.ServiceProvider.GetRequiredService<IRuleEngine>();
-        var orderService = scope.ServiceProvider.GetRequiredService<IOrderService>();
-        var positionRepo = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
-        var notifier     = scope.ServiceProvider.GetService<ITradingNotifier>();
-
         if (notifier is not null)
             await notifier.NotifySignalGeneratedAsync(signal, cancellationToken);
-
-        var strategy = runner.CachedConfig;
-        if (strategy is null || !strategy.IsActive) return;
 
         // Verificación anti-duplicado adaptada a Spot (solo Long):
         // - Buy: no abrir si ya hay posición Long abierta para este símbolo
         // - Sell: no operar si NO hay posición Long abierta que cerrar (Spot no soporta shorts)
-        var existingPositions = await positionRepo.GetOpenByStrategyIdAsync(runner.StrategyId, cancellationToken);
+        var existingPositions = await runner.GetOpenPositionsAsync(positionRepo, cancellationToken);
         if (signal.Direction == OrderSide.Buy)
         {
             if (existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy))
@@ -748,6 +784,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         if (placeResult.IsSuccess)
         {
             runner.OrdersPlaced++;
+            runner.InvalidatePositionCache();
             _metrics.RecordTickToOrderLatency(sw.Elapsed.TotalMilliseconds, runner.Symbol.Value);
             _logger.LogInformation(
                 "Orden de entrada (kline) por '{Name}': {Side} {Qty} {Symbol}",
@@ -952,8 +989,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         if (strategy is null || !strategy.IsActive) return;
 
         // Ticks ahora solo evalúan reglas de salida (SL/TP) para posiciones abiertas
-        var openPositions = await positionRepo.GetOpenByStrategyIdAsync(
-            runner.StrategyId, cancellationToken);
+        var openPositions = await runner.GetOpenPositionsAsync(positionRepo, cancellationToken);
 
         var currentAtr = runner.Strategy.CurrentAtrValue;
         var positionPriceChanged = false;
@@ -975,7 +1011,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             var exitResult = await ruleEngine.EvaluateExitRulesAsync(
                 strategy, position, tick.LastPrice, cancellationToken,
                 atrValue: currentAtr,
-                indicatorSnapshot: runner.Strategy.GetCurrentSnapshot());
+                indicatorSnapshot: runner.Strategy.GetCurrentSnapshot(),
+                evaluateIndicatorRules: false); // TRADE-2: tick loop solo evalúa SL/TP/trailing
 
             if (exitResult.IsSuccess && exitResult.Value is { } exitOrder)
             {
@@ -995,6 +1032,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                 if (placeResult.IsSuccess)
                 {
                     runner.OrdersPlaced++;
+                    runner.InvalidatePositionCache();
                     _metrics.RecordTickToOrderLatency(sw.Elapsed.TotalMilliseconds, runner.Symbol.Value);
                     _logger.LogInformation(
                         "Orden de salida colocada por '{Name}': {Side} {Symbol} (posición {PosId})",
@@ -1064,6 +1102,17 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         _                             => 1
     };
 
+    /// <summary>
+    /// CRIT-B fix: calcula el número de períodos de warm-up necesarios para un indicador
+    /// según su tipo. MACD requiere slowPeriod + signalPeriod; otros indicadores usan "period".
+    /// </summary>
+    private static int GetIndicatorWarmUpPeriod(IndicatorConfig config) => config.Type switch
+    {
+        IndicatorType.MACD => (int)config.GetParameter("slowPeriod", 26)
+                            + (int)config.GetParameter("signalPeriod", 9),
+        _ => (int)config.GetParameter("period", 14)
+    };
+
     // ── Estado interno por estrategia ──────────────────────────────────────
 
     private sealed class StrategyRunnerState : IDisposable
@@ -1082,6 +1131,32 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         /// <summary>Config de estrategia cacheada. Se recarga solo en <see cref="ReloadStrategyAsync"/>.</summary>
         public TradingStrategy?           CachedConfig           { get; set; }
+
+        // ── DESIGN-2: Caché de posiciones abiertas en memoria ────────────
+        /// <summary>Posiciones abiertas cacheadas. Se invalida al abrir/cerrar posiciones.</summary>
+        private IReadOnlyList<Position>? _cachedPositions;
+        private DateTimeOffset _positionsCachedAt;
+        /// <summary>TTL de la caché de posiciones: 2 segundos.</summary>
+        private static readonly TimeSpan PositionCacheTtl = TimeSpan.FromSeconds(2);
+
+        /// <summary>
+        /// Obtiene posiciones abiertas de la caché si aún es válida, o las recarga de la DB.
+        /// </summary>
+        public async Task<IReadOnlyList<Position>> GetOpenPositionsAsync(
+            IPositionRepository positionRepo,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_cachedPositions is not null && now - _positionsCachedAt < PositionCacheTtl)
+                return _cachedPositions;
+
+            _cachedPositions = await positionRepo.GetOpenByStrategyIdAsync(StrategyId, cancellationToken);
+            _positionsCachedAt = now;
+            return _cachedPositions;
+        }
+
+        /// <summary>Invalida la caché de posiciones (llamar tras abrir/cerrar posición).</summary>
+        public void InvalidatePositionCache() => _cachedPositions = null;
 
         /// <summary>Scope de larga vida que acompaña al runner. Se dispone con el runner.</summary>
         private readonly IServiceScope?   _scope;

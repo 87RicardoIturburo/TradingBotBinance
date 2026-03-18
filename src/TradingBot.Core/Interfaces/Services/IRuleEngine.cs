@@ -29,11 +29,15 @@ public interface IRuleEngine
     /// <param name="atrValue">Valor actual del ATR. Si no es <c>null</c> y <c>UseAtrSizing</c> está habilitado, se usa para stop-loss dinámico.</param>
     /// <param name="indicatorSnapshot">Snapshot de valores actuales de indicadores (ej: "RSI(14)=28.50 | EMA(12)=...").
     /// Si se provee, las condiciones de las reglas de salida pueden evaluarse contra indicadores reales.</param>
+    /// <param name="evaluateIndicatorRules">Si <c>false</c>, solo evalúa reglas de precio (SL/TP/trailing).
+    /// Las reglas de salida basadas en indicadores se omiten. Usar <c>false</c> al llamar desde el tick loop
+    /// y <c>true</c> al llamar desde el kline loop (donde los indicadores están actualizados).</param>
     Task<Result<Order?, DomainError>> EvaluateExitRulesAsync(
         TradingStrategy strategy,
         Position        position,
         Price           currentPrice,
         CancellationToken cancellationToken = default,
         decimal?        atrValue = null,
-        string?         indicatorSnapshot = null);
+        string?         indicatorSnapshot = null,
+        bool            evaluateIndicatorRules = true);
 }

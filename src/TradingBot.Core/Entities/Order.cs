@@ -26,6 +26,12 @@ public sealed class Order : AggregateRoot<Guid>
     public string?        BinanceOrderId { get; private set; }
     /// <summary>Comisión cobrada por el exchange (o simulada en paper trading) en quote asset.</summary>
     public decimal        Fee            { get; private set; }
+    /// <summary>
+    /// Asset en el que se cobró la comisión (ej: "BNB", "USDT", "BTC").
+    /// En paper trading se usa el quote asset del par. En Live refleja el FeeAsset real de Binance.
+    /// Permite calcular P&amp;L real cuando se usa descuento BNB.
+    /// </summary>
+    public string?        FeeAsset       { get; private set; }
     public DateTimeOffset CreatedAt      { get; private set; }
     public DateTimeOffset UpdatedAt      { get; private set; }
     public DateTimeOffset? FilledAt      { get; private set; }
@@ -139,7 +145,7 @@ public sealed class Order : AggregateRoot<Guid>
     }
 
     /// <summary>Marca la orden como completamente ejecutada.</summary>
-    public Result<Order, DomainError> Fill(Quantity filledQuantity, Price executedPrice, decimal fee = 0m)
+    public Result<Order, DomainError> Fill(Quantity filledQuantity, Price executedPrice, decimal fee = 0m, string? feeAsset = null)
     {
         if (Status is not (OrderStatus.Submitted or OrderStatus.PartiallyFilled))
             return Result<Order, DomainError>.Failure(
@@ -148,6 +154,7 @@ public sealed class Order : AggregateRoot<Guid>
         FilledQuantity = filledQuantity;
         ExecutedPrice  = executedPrice;
         Fee            = fee;
+        FeeAsset       = feeAsset;
         Status         = OrderStatus.Filled;
         FilledAt       = DateTimeOffset.UtcNow;
         UpdatedAt      = FilledAt.Value;

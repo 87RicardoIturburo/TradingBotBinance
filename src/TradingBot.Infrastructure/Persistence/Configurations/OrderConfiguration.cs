@@ -48,6 +48,9 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
             .HasDefaultValue(0m)
             .IsRequired();
 
+        builder.Property(x => x.FeeAsset)
+            .HasMaxLength(10);
+
         // EstimatedPrice es transitorio — solo para validación de riesgo pre-ejecución
         builder.Ignore(x => x.EstimatedPrice);
 

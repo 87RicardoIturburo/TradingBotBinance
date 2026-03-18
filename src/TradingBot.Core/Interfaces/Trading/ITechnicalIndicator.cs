@@ -45,3 +45,17 @@ public interface ITechnicalIndicator
     /// <returns><c>true</c> si la restauración fue exitosa; <c>false</c> si el JSON es inválido.</returns>
     bool DeserializeState(string json);
 }
+
+/// <summary>
+/// Indicador que puede recibir datos OHLC completos (High, Low, Close) para un cálculo preciso.
+/// Implementado por indicadores que se benefician de velas completas (ATR, ADX).
+/// Cuando se dispone de datos OHLC, llamar <see cref="UpdateOhlc"/> en vez de <see cref="ITechnicalIndicator.Update"/>.
+/// </summary>
+public interface IOhlcIndicator
+{
+    /// <summary>
+    /// Alimenta una vela completa al indicador.
+    /// Cuando este método está disponible, tiene prioridad sobre <see cref="ITechnicalIndicator.Update"/>.
+    /// </summary>
+    void UpdateOhlc(decimal high, decimal low, decimal close);
+}

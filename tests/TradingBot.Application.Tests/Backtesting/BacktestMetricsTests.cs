@@ -83,7 +83,7 @@ public sealed class BacktestMetricsTests
 
         var metrics = BacktestMetrics.Calculate(trades);
 
-        metrics.ProfitFactor.Should().Be(999m);
+        metrics.ProfitFactor.Should().Be(10m);
     }
 
     [Fact]
@@ -154,6 +154,8 @@ public sealed class BacktestMetricsTests
     public void Calculate_WithKnownReturns_SharpeIsPositive()
     {
         // Returns: [10, -5, 10, -5, 10] → mean=4, positive overall
+        // TRADE-4: Sharpe is now annualized using percentage returns,
+        // so the absolute value depends on trade duration and investment size.
         var trades = new List<BacktestTrade>
         {
             MakeTrade(10m), MakeTrade(-5m), MakeTrade(10m),
@@ -164,8 +166,6 @@ public sealed class BacktestMetricsTests
 
         metrics.SharpeRatio.Should().BeGreaterThan(0,
             "positive mean return should produce positive Sharpe");
-        metrics.SharpeRatio.Should().BeLessThan(1m,
-            "with high variance relative to mean, Sharpe should be moderate");
     }
 
     [Fact]

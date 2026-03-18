@@ -1,4 +1,5 @@
 using TradingBot.Core.Entities;
+using TradingBot.Core.Enums;
 
 namespace TradingBot.Core.Interfaces.Services;
 
@@ -15,4 +16,14 @@ public interface IOrderSyncHandler
     /// o cierra la posición opuesta existente (Sell).
     /// </summary>
     Task HandleOrderFilledAsync(Order order, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Procesa una orden completamente llenada con motivo de cierre explícito.
+    /// </summary>
+    Task HandleOrderFilledAsync(Order order, CloseReason? closeReason, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Procesa un llenado parcial: crea o actualiza posición con la cantidad acumulada.
+    /// </summary>
+    Task HandlePartialFillAsync(Order order, CancellationToken cancellationToken = default);
 }

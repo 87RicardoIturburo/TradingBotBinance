@@ -135,7 +135,7 @@ internal sealed class OptimizationEngine
 
             var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
             for (var i = 0; i < warmUpCount; i++)
-                tradingStrategy.WarmUpPrice(klines[i].Close);
+                tradingStrategy.WarmUpOhlc(klines[i].High, klines[i].Low, klines[i].Close);
 
             // Sincronizar estado previo de RSI/MACD para evitar señales falsas
             // en el primer tick del backtest (sin setear cooldown)

@@ -7,6 +7,7 @@ namespace TradingBot.Application.RiskManagement;
 /// <summary>
 /// Circuit breaker global. Se auto-dispara si se acumulan demasiados errores
 /// del exchange en una ventana de tiempo. Thread-safe para uso concurrente.
+/// Se auto-resetea al inicio del siguiente día UTC (DESIGN-6).
 /// </summary>
 internal sealed class GlobalCircuitBreaker : IGlobalCircuitBreaker
 {
@@ -23,9 +24,40 @@ internal sealed class GlobalCircuitBreaker : IGlobalCircuitBreaker
     private const int MaxRateLimits = 3;
     private static readonly TimeSpan RateLimitWindow = TimeSpan.FromMinutes(1);
 
-    public bool IsOpen { get; private set; }
+    /// <summary>Cooldown mínimo antes de permitir auto-reset (evita flapping).</summary>
+    private static readonly TimeSpan MinCooldownBeforeAutoReset = TimeSpan.FromMinutes(30);
+
+    private bool _isOpen;
     public string? TripReason { get; private set; }
     public DateTimeOffset? TrippedAt { get; private set; }
+
+    /// <summary>
+    /// Indica si el circuit breaker está abierto (trading detenido).
+    /// Se auto-resetea al inicio del siguiente día UTC si han pasado al menos 30 minutos desde el trip.
+    /// </summary>
+    public bool IsOpen
+    {
+        get
+        {
+            if (!_isOpen) return false;
+
+            // Auto-reset: si el trip fue en un día UTC anterior y pasó el cooldown mínimo
+            if (TrippedAt.HasValue)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var trippedDate = TrippedAt.Value.UtcDateTime.Date;
+                var currentDate = now.UtcDateTime.Date;
+
+                if (currentDate > trippedDate && now - TrippedAt.Value >= MinCooldownBeforeAutoReset)
+                {
+                    AutoReset();
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
 
     public GlobalCircuitBreaker(ILogger<GlobalCircuitBreaker> logger)
     {
@@ -36,9 +68,9 @@ internal sealed class GlobalCircuitBreaker : IGlobalCircuitBreaker
     {
         lock (_tripLock)
         {
-            if (IsOpen) return;
+            if (_isOpen) return;
 
-            IsOpen = true;
+            _isOpen = true;
             TripReason = reason;
             TrippedAt = DateTimeOffset.UtcNow;
 
@@ -52,7 +84,7 @@ internal sealed class GlobalCircuitBreaker : IGlobalCircuitBreaker
     {
         lock (_tripLock)
         {
-            IsOpen = false;
+            _isOpen = false;
             TripReason = null;
             TrippedAt = null;
 
@@ -60,7 +92,29 @@ internal sealed class GlobalCircuitBreaker : IGlobalCircuitBreaker
             while (_recentErrors.TryDequeue(out _)) { }
             while (_recentRateLimits.TryDequeue(out _)) { }
 
-            _logger.LogWarning("Circuit breaker reseteado. Trading reanudado.");
+            _logger.LogWarning("Circuit breaker reseteado manualmente. Trading reanudado.");
+        }
+    }
+
+    /// <summary>
+    /// Auto-reset al inicio del siguiente día UTC.
+    /// Limpia contadores de errores para permitir que el trading se reanude automáticamente.
+    /// </summary>
+    private void AutoReset()
+    {
+        lock (_tripLock)
+        {
+            _isOpen = false;
+            var previousReason = TripReason;
+            TripReason = null;
+            TrippedAt = null;
+
+            while (_recentErrors.TryDequeue(out _)) { }
+            while (_recentRateLimits.TryDequeue(out _)) { }
+
+            _logger.LogWarning(
+                "Circuit breaker auto-reseteado al inicio del nuevo día UTC. Razón anterior: {Reason}. Trading reanudado.",
+                previousReason);
         }
     }
 

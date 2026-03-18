@@ -32,10 +32,13 @@ internal static class PositionSizer
     {
         if (atrValue <= 0 || currentPrice <= 0 || accountBalanceUsdt <= 0)
         {
+            // DESIGN-4 fix: fallback conservador al 50% del máximo cuando ATR no está disponible.
+            // Evita exponer el máximo permitido en condiciones de incertidumbre.
+            var fallbackAmount = maxOrderAmountUsdt * 0.5m;
             return new PositionSizeResult(
-                AmountUsdt: maxOrderAmountUsdt,
+                AmountUsdt: fallbackAmount,
                 StopDistancePrice: 0,
-                QuantityBaseAsset: maxOrderAmountUsdt / (currentPrice > 0 ? currentPrice : 1),
+                QuantityBaseAsset: fallbackAmount / (currentPrice > 0 ? currentPrice : 1),
                 WasAtrCalculated: false);
         }
 

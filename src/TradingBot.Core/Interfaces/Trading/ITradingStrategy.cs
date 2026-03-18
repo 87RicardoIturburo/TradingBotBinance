@@ -83,6 +83,13 @@ public interface ITradingStrategy
     void WarmUpPrice(decimal price);
 
     /// <summary>
+    /// Alimenta datos OHLC a los indicadores sin evaluar señales.
+    /// Preferido sobre <see cref="WarmUpPrice"/> cuando se dispone de velas completas,
+    /// ya que permite calcular ATR con True Range real en vez de aproximaciones.
+    /// </summary>
+    void WarmUpOhlc(decimal high, decimal low, decimal close);
+
+    /// <summary>
     /// Devuelve un snapshot de los valores actuales de todos los indicadores listos,
     /// en el formato "RSI(14)=28.5000 | EMA(12)=50100.0000".
     /// Usado por el RuleEngine para evaluar condiciones de reglas de salida.

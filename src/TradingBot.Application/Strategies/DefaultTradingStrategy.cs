@@ -29,6 +29,8 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     // ── Multi-Timeframe Analysis ────────────────────────────────────────
     /// <summary>EMA del timeframe de confirmación (HTF). Determina tendencia macro.</summary>
     private EmaIndicator? _confirmationEma;
+    /// <summary>Período configurado de la EMA de confirmación. Usado en logs.</summary>
+    private int _confirmationEmaPeriod;
     private decimal? _lastConfirmationClose;
 
     /// <summary>Tiempo mínimo entre señales consecutivas. Se calcula dinámicamente según el timeframe de la estrategia.</summary>
@@ -58,8 +60,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         RebuildIndicators(config);
 
         // Multi-Timeframe: crear EMA de confirmación con período configurable
+        _confirmationEmaPeriod = config.RiskConfig.ConfirmationEmaPeriod;
         _confirmationEma = config.ConfirmationTimeframe.HasValue
-            ? new EmaIndicator(config.RiskConfig.ConfirmationEmaPeriod)
+            ? new EmaIndicator(_confirmationEmaPeriod)
             : null;
         _lastConfirmationClose = null;
 
@@ -84,15 +87,11 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
                 Result<SignalGeneratedEvent?, DomainError>.Failure(
                     DomainError.InvalidOperation("La estrategia no está inicializada.")));
 
-        var price = tick.LastPrice.Value;
-
-        foreach (var indicator in _indicators.Values)
-            indicator.Update(price);
-
-        var signal = EvaluateSignal(tick);
-
+        // TRADE-1 fix: los indicadores solo se alimentan con velas cerradas (ProcessKlineAsync).
+        // Los ticks solo se usan para evaluar SL/TP (en StrategyEngine) y notificar al frontend.
+        // No generar señales desde ticks — las señales provienen de klines.
         return Task.FromResult(
-            Result<SignalGeneratedEvent?, DomainError>.Success(signal));
+            Result<SignalGeneratedEvent?, DomainError>.Success((SignalGeneratedEvent?)null));
     }
 
     public Task<Result<SignalGeneratedEvent?, DomainError>> ProcessKlineAsync(
@@ -104,9 +103,15 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
                 Result<SignalGeneratedEvent?, DomainError>.Failure(
                     DomainError.InvalidOperation("La estrategia no está inicializada.")));
 
-        // Actualizar indicadores con el precio de cierre de la vela
+        // Actualizar indicadores con datos de la vela cerrada.
+        // CRIT-1 fix: indicadores OHLC (ATR) reciben datos completos para True Range preciso.
         foreach (var indicator in _indicators.Values)
-            indicator.Update(kline.Close);
+        {
+            if (indicator is IOhlcIndicator ohlc)
+                ohlc.UpdateOhlc(kline.High, kline.Low, kline.Close);
+            else
+                indicator.Update(kline.Close);
+        }
 
         // Crear un tick sintético a partir de la vela para evaluar la señal
         var lastPrice = Price.Create(kline.Close);
@@ -138,8 +143,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         RebuildIndicators(config);
 
         // Reconstruir confirmación si cambió
+        _confirmationEmaPeriod = config.RiskConfig.ConfirmationEmaPeriod;
         _confirmationEma = config.ConfirmationTimeframe.HasValue
-            ? new EmaIndicator(config.RiskConfig.ConfirmationEmaPeriod)
+            ? new EmaIndicator(_confirmationEmaPeriod)
             : null;
         _lastConfirmationClose = null;
 
@@ -167,7 +173,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             var trend = kline.Close > emaVal ? "ALCISTA" : "BAJISTA";
             _logger.LogDebug(
                 "HTF EMA({Period})={Ema:F2} Close={Close:F2} → Tendencia {Trend}",
-                20, emaVal, kline.Close, trend);
+                _confirmationEmaPeriod, emaVal, kline.Close, trend);
         }
     }
 
@@ -206,6 +212,17 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     {
         foreach (var indicator in _indicators.Values)
             indicator.Update(price);
+    }
+
+    public void WarmUpOhlc(decimal high, decimal low, decimal close)
+    {
+        foreach (var indicator in _indicators.Values)
+        {
+            if (indicator is IOhlcIndicator ohlc)
+                ohlc.UpdateOhlc(high, low, close);
+            else
+                indicator.Update(close);
+        }
     }
 
     public string GetCurrentSnapshot() => BuildSnapshot();
@@ -458,8 +475,11 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         }
 
         // 3. Bollinger Bands: precio toca banda inferior/superior
+        // TRADE-3 fix: BB es mean-reversion — solo genera señales en mercado lateral (Ranging/Unknown).
+        // En mercado trending, el precio puede caminar por la banda durante días causando pérdidas.
         if (_indicators.TryGetValue(IndicatorType.BollingerBands, out var bbIndicator)
-            && bbIndicator is BollingerBandsIndicator bbGen && bbGen.IsReady)
+            && bbIndicator is BollingerBandsIndicator bbGen && bbGen.IsReady
+            && _lastRegime?.Regime is not MarketRegime.Trending)
         {
             if (price <= bbGen.LowerBand!.Value)
                 return (OrderSide.Buy, IndicatorType.BollingerBands);

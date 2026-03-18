@@ -19,6 +19,7 @@ namespace TradingBot.Application.Tests.Services;
 public sealed class OrderServiceTests
 {
     private readonly IOrderRepository    _orderRepo    = Substitute.For<IOrderRepository>();
+    private readonly IStrategyRepository _strategyRepo = Substitute.For<IStrategyRepository>();
     private readonly IUnitOfWork         _unitOfWork   = Substitute.For<IUnitOfWork>();
     private readonly IRiskManager        _riskManager  = Substitute.For<IRiskManager>();
     private readonly IMarketDataService  _marketData   = Substitute.For<IMarketDataService>();
@@ -50,7 +51,7 @@ public sealed class OrderServiceTests
         _circuitBreaker.IsOpen.Returns(false);
 
         _sut = new OrderService(
-            _orderRepo, _unitOfWork,
+            _orderRepo, _strategyRepo, _unitOfWork,
             _riskManager, _marketData, _spotExecutor,
             _accountService, _exchangeInfo, _executionLock,
             _circuitBreaker, _orderSyncHandler, _metrics,

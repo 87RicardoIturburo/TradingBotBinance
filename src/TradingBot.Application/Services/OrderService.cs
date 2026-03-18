@@ -19,6 +19,7 @@ namespace TradingBot.Application.Services;
 internal sealed class OrderService : IOrderService
 {
     private readonly IOrderRepository _orderRepository;
+    private readonly IStrategyRepository _strategyRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRiskManager _riskManager;
     private readonly IMarketDataService _marketDataService;
@@ -34,6 +35,7 @@ internal sealed class OrderService : IOrderService
 
     public OrderService(
         IOrderRepository orderRepository,
+        IStrategyRepository strategyRepository,
         IUnitOfWork unitOfWork,
         IRiskManager riskManager,
         IMarketDataService marketDataService,
@@ -48,6 +50,7 @@ internal sealed class OrderService : IOrderService
         ILogger<OrderService> logger)
     {
         _orderRepository     = orderRepository;
+        _strategyRepository  = strategyRepository;
         _unitOfWork          = unitOfWork;
         _riskManager         = riskManager;
         _marketDataService   = marketDataService;
@@ -103,7 +106,7 @@ internal sealed class OrderService : IOrderService
         // 3. Validar spread bid-ask para órdenes Market (protección contra flash crash)
         if (order.LimitPrice is null)
         {
-            var spreadResult = ValidateSpread(order);
+            var spreadResult = await ValidateSpreadAsync(order, cancellationToken);
             if (spreadResult.IsFailure)
             {
                 _metrics.RecordOrderFailed(order.Symbol.Value, "spread_guard");
@@ -261,7 +264,8 @@ internal sealed class OrderService : IOrderService
         var filters = filtersResult.Value;
         var validateResult = filters.ValidateAndAdjust(
             order.Quantity.Value,
-            order.LimitPrice?.Value);
+            order.LimitPrice?.Value,
+            estimatedPrice: order.EstimatedPrice?.Value);
 
         if (validateResult.IsFailure)
         {
@@ -468,10 +472,12 @@ internal sealed class OrderService : IOrderService
     }
 
     /// <summary>
-    /// Valida que el spread bid-ask no exceda el máximo configurado.
-    /// Solo aplica a órdenes Market. Si no hay datos de bid/ask disponibles, se permite la orden con warning.
+    /// CRIT-C fix: valida spread bid-ask usando <c>MaxSpreadPercent</c> de la estrategia.
+    /// Fallback a 1.0% si la estrategia no se encuentra.
     /// </summary>
-    private Result<bool, DomainError> ValidateSpread(Order order)
+    private async Task<Result<bool, DomainError>> ValidateSpreadAsync(
+        Order order,
+        CancellationToken cancellationToken)
     {
         var bidAsk = _marketDataService.GetLastBidAsk(order.Symbol);
         if (bidAsk is null)
@@ -488,24 +494,29 @@ internal sealed class OrderService : IOrderService
         var midPrice = (bid.Value + ask.Value) / 2m;
         var spreadPercent = (ask.Value - bid.Value) / midPrice * 100m;
 
-        // Usar un default de 1.0% si no se puede determinar MaxSpreadPercent de la estrategia
+        // Obtener MaxSpreadPercent de la estrategia; fallback a 1.0% si no disponible
         const decimal defaultMaxSpread = 1.0m;
+        var maxSpread = defaultMaxSpread;
 
-        if (spreadPercent > defaultMaxSpread)
+        var strategy = await _strategyRepository.GetByIdAsync(order.StrategyId, cancellationToken);
+        if (strategy is not null && strategy.RiskConfig.MaxSpreadPercent > 0)
+            maxSpread = strategy.RiskConfig.MaxSpreadPercent;
+
+        if (spreadPercent > maxSpread)
         {
             _logger.LogWarning(
                 "⚠ Spread excesivo para {Symbol}: {Spread:F3}% (máx {Max:F1}%). Orden {OrderId} rechazada.",
-                order.Symbol.Value, spreadPercent, defaultMaxSpread, order.Id);
+                order.Symbol.Value, spreadPercent, maxSpread, order.Id);
             return Result<bool, DomainError>.Failure(
                 DomainError.RiskLimitExceeded(
-                    $"Spread bid-ask de {spreadPercent:F3}% excede el máximo de {defaultMaxSpread:F1}% para {order.Symbol.Value}."));
+                    $"Spread bid-ask de {spreadPercent:F3}% excede el máximo de {maxSpread:F1}% para {order.Symbol.Value}."));
         }
 
-        if (spreadPercent > defaultMaxSpread * 0.5m)
+        if (spreadPercent > maxSpread * 0.5m)
         {
             _logger.LogWarning(
                 "⚠ Spread elevado para {Symbol}: {Spread:F3}% (advertencia > {Warn:F1}%)",
-                order.Symbol.Value, spreadPercent, defaultMaxSpread * 0.5m);
+                order.Symbol.Value, spreadPercent, maxSpread * 0.5m);
         }
 
         return Result<bool, DomainError>.Success(true);

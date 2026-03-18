@@ -66,7 +66,7 @@
     @* ── Métricas principales ─────────────────────────────────────── *@
     <div class="row mb-4">
         <div class="col-md-2">
-            <div class="card text-center">
+            <div class="card text-center" title="Ganancia o pérdida total ANTES de descontar comisiones y slippage">
                 <div class="card-body">
                     <h6 class="text-muted">P&amp;L Bruto</h6>
                     <span class="fs-5 @GetPnLClass(result.GrossPnL)">
@@ -76,7 +76,7 @@
             </div>
         </div>
         <div class="col-md-2">
-            <div class="card text-center border-2 @(result.TotalPnL >= 0 ? "border-success" : "border-danger")">
+            <div class="card text-center border-2 @(result.TotalPnL >= 0 ? "border-success" : "border-danger")" title="Ganancia o pérdida total DESPUÉS de descontar fees y slippage. Es el resultado real">
                 <div class="card-body">
                     <h6 class="text-muted">P&amp;L Neto</h6>
                     <span class="fs-4 fw-bold @GetPnLClass(result.TotalPnL)">
@@ -86,7 +86,7 @@
             </div>
         </div>
         <div class="col-md-2">
-            <div class="card text-center">
+            <div class="card text-center" title="Comisiones totales pagadas al exchange (maker/taker fee). Incluye descuento BNB si aplica">
                 <div class="card-body">
                     <h6 class="text-muted">Fees</h6>
                     <span class="fs-5 text-warning">-@result.TotalFeesUsdt.ToString("N4") USDT</span>
@@ -94,7 +94,7 @@
             </div>
         </div>
         <div class="col-md-2">
-            <div class="card text-center">
+            <div class="card text-center" title="Costo estimado por diferencia entre precio esperado y precio real de ejecución en órdenes Market">
                 <div class="card-body">
                     <h6 class="text-muted">Slippage</h6>
                     <span class="fs-5 text-warning">-@result.TotalSlippageUsdt.ToString("N4") USDT</span>
@@ -102,7 +102,7 @@
             </div>
         </div>
         <div class="col-md-2">
-            <div class="card text-center">
+            <div class="card text-center" title="Return On Investment: (P&amp;L Neto / Capital invertido) × 100. Rentabilidad porcentual sobre el capital comprometido">
                 <div class="card-body">
                     <h6 class="text-muted">ROI</h6>
                     <span class="fs-4 fw-bold @GetPnLClass(result.ReturnOnInvestment)">
@@ -112,7 +112,7 @@
             </div>
         </div>
         <div class="col-md-2">
-            <div class="card text-center">
+            <div class="card text-center" title="Máxima caída porcentual desde un pico de equity hasta un valle. Mide el peor escenario de pérdida consecutiva experimentado">
                 <div class="card-body">
                     <h6 class="text-muted">Max Drawdown</h6>
                     <span class="fs-4 fw-bold text-danger">
@@ -124,28 +124,28 @@
     </div>
 
     <div class="row mb-4">
-        <div class="col-md-2">
+        <div class="col-md-2" title="Cantidad total de operaciones (entrada + salida) ejecutadas">
             <strong>Trades:</strong> @result.TotalTrades
         </div>
         <div class="col-md-2">
-            <strong>Ganadores:</strong> <span class="text-success">@result.WinningTrades</span>
-            &nbsp; <strong>Perdedores:</strong> <span class="text-danger">@result.LosingTrades</span>
+            <strong title="Trades que cerraron con ganancia neta positiva">Ganadores:</strong> <span class="text-success">@result.WinningTrades</span>
+            &nbsp; <strong title="Trades que cerraron con pérdida neta">Perdedores:</strong> <span class="text-danger">@result.LosingTrades</span>
         </div>
-        <div class="col-md-2">
+        <div class="col-md-2" title="Porcentaje de trades ganadores sobre el total: (Ganadores / Total) × 100">
             <strong>Win Rate:</strong>
             <span class="@(result.WinRate >= 50 ? "text-success" : "text-danger")">
                 @result.WinRate.ToString("N1")%
             </span>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-3" title="P&L Neto total dividido entre el número de trades. Ganancia esperada por operación">
             <strong>P&amp;L promedio/trade:</strong>
             <span class="@GetPnLClass(result.AveragePnLPerTrade)">
                 @FormatPnL(result.AveragePnLPerTrade)
             </span>
         </div>
         <div class="col-md-3">
-            <strong>Mejor:</strong> <span class="text-success">@FormatPnL(result.BestTrade)</span>
-            &nbsp; <strong>Peor:</strong> <span class="text-danger">@FormatPnL(result.WorstTrade)</span>
+            <strong title="Trade con mayor ganancia neta en el período">Mejor:</strong> <span class="text-success">@FormatPnL(result.BestTrade)</span>
+            &nbsp; <strong title="Trade con mayor pérdida neta en el período">Peor:</strong> <span class="text-danger">@FormatPnL(result.WorstTrade)</span>
         </div>
     </div>
 
@@ -155,7 +155,7 @@
         <h5>📐 Métricas de Calidad</h5>
         <div class="row mb-4">
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Sharpe Ratio anualizado: retorno ajustado por riesgo total (volatilidad). >1 = bueno, >2 = excelente, <0 = pierde más de lo que gana por unidad de riesgo">
                     <div class="card-body py-2">
                         <small class="text-muted">Sharpe</small>
                         <div class="fs-5 fw-bold @(result.Metrics.SharpeRatio > 1 ? "text-success" : result.Metrics.SharpeRatio > 0 ? "text-warning" : "text-danger")">
@@ -165,7 +165,7 @@
                 </div>
             </div>
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Sortino Ratio: similar al Sharpe pero solo penaliza la volatilidad negativa (caídas). Más relevante para trading porque no castiga ganancias volátiles. >1.5 = bueno">
                     <div class="card-body py-2">
                         <small class="text-muted">Sortino</small>
                         <div class="fs-5 fw-bold @(result.Metrics.SortinoRatio > 1.5m ? "text-success" : result.Metrics.SortinoRatio > 0 ? "text-warning" : "text-danger")">
@@ -175,7 +175,7 @@
                 </div>
             </div>
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Profit Factor: Ganancias brutas / Pérdidas brutas. >1 = rentable, >1.5 = bueno, >2 = excelente. PF=1 significa break-even">
                     <div class="card-body py-2">
                         <small class="text-muted">Profit Factor</small>
                         <div class="fs-5 fw-bold @(result.Metrics.ProfitFactor > 1.5m ? "text-success" : result.Metrics.ProfitFactor >= 1 ? "text-warning" : "text-danger")">
@@ -185,7 +185,7 @@
                 </div>
             </div>
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Esperanza Matemática: (WinRate × AvgWin) − (LossRate × AvgLoss). Valor positivo = estrategia rentable a largo plazo. Negativo = perdedora">
                     <div class="card-body py-2">
                         <small class="text-muted">Expectancy</small>
                         <div class="fs-5 fw-bold @GetPnLClass(result.Metrics.Expectancy)">
@@ -195,7 +195,7 @@
                 </div>
             </div>
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Máxima racha de trades ganadores consecutivos. Rachas largas pueden indicar buen timing de la estrategia">
                     <div class="card-body py-2">
                         <small class="text-muted">Consec. Wins</small>
                         <div class="fs-5 fw-bold text-success">@result.Metrics.MaxConsecutiveWins</div>
@@ -203,7 +203,7 @@
                 </div>
             </div>
             <div class="col-md-2">
-                <div class="card text-center">
+                <div class="card text-center" title="Máxima racha de trades perdedores consecutivos. Rachas largas pueden indicar problemas con la estrategia o condiciones adversas de mercado">
                     <div class="card-body py-2">
                         <small class="text-muted">Consec. Losses</small>
                         <div class="fs-5 fw-bold text-danger">@result.Metrics.MaxConsecutiveLosses</div>
@@ -248,16 +248,16 @@
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                        <th>Lado</th>
-                        <th>Cantidad</th>
-                        <th>Precio Entrada</th>
-                        <th>Precio Salida</th>
-                        <th>Bruto</th>
-                        <th>Fees</th>
-                        <th>Neto</th>
-                        <th>Razón</th>
+                        <th title="Fecha y hora de apertura de la posición">Entrada</th>
+                        <th title="Fecha y hora de cierre de la posición">Salida</th>
+                        <th title="Dirección de la operación: Buy (compra/long) o Sell (venta/short)">Lado</th>
+                        <th title="Cantidad del activo base operada (ej: 0.001 BTC)">Cantidad</th>
+                        <th title="Precio al que se abrió la posición (incluye slippage simulado)">Precio Entrada</th>
+                        <th title="Precio al que se cerró la posición">Precio Salida</th>
+                        <th title="Ganancia o pérdida antes de descontar comisiones">Bruto</th>
+                        <th title="Comisiones del exchange cobradas en esta operación (entrada + salida)">Fees</th>
+                        <th title="Resultado final del trade después de descontar fees y slippage">Neto</th>
+                        <th title="Motivo de cierre: StopLoss, TakeProfit, TrailingStop, ExitRule o Signal">Razón</th>
                     </tr>
                 </thead>
                 <tbody>

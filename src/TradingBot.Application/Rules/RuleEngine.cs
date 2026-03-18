@@ -65,7 +65,8 @@ internal sealed class RuleEngine : IRuleEngine
         Price           currentPrice,
         CancellationToken cancellationToken = default,
         decimal?        atrValue = null,
-        string?         indicatorSnapshot = null)
+        string?         indicatorSnapshot = null,
+        bool            evaluateIndicatorRules = true)
     {
         var risk = strategy.RiskConfig;
 
@@ -215,40 +216,46 @@ internal sealed class RuleEngine : IRuleEngine
                     error => Result<Order?, DomainError>.Failure(error)));
         }
 
-        // Evaluar reglas de salida configuradas.
-        // Usa el snapshot de indicadores reales para evaluar condiciones como RSI > 65.
-        // Sin snapshot, las condiciones de indicadores siempre fallan (snapshot incompleto).
-        var exitRules = strategy.Rules
-            .Where(r => r.IsEnabled && r.Type is RuleType.Exit)
-            .ToList();
-
-        var snapshot = indicatorSnapshot
-            ?? $"Price={currentPrice.Value:F4}|PnL={takeProfitPnl:F2}%";
-
-        foreach (var rule in exitRules)
+        // TRADE-2 fix: las reglas de salida basadas en indicadores solo se evalúan
+        // al cierre de vela (evaluateIndicatorRules=true), no en cada tick.
+        // En el tick loop, los indicadores no se actualizan y el snapshot sería stale.
+        if (evaluateIndicatorRules)
         {
-            var signal = new SignalGeneratedEvent(
-                strategy.Id, position.Symbol,
-                position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
-                currentPrice, snapshot);
+            // Evaluar reglas de salida configuradas.
+            // Usa el snapshot de indicadores reales para evaluar condiciones como RSI > 65.
+            // Sin snapshot, las condiciones de indicadores siempre fallan (snapshot incompleto).
+            var exitRules = strategy.Rules
+                .Where(r => r.IsEnabled && r.Type is RuleType.Exit)
+                .ToList();
 
-            if (!EvaluateCondition(rule.Condition, signal))
-                continue;
+            var snapshot = indicatorSnapshot
+                ?? $"Price={currentPrice.Value:F4}|PnL={takeProfitPnl:F2}%";
 
-            _logger.LogInformation(
-                "Regla de salida '{RuleName}' activada para posición {PositionId} (snapshot: {Snapshot})",
-                rule.Name, position.Id, snapshot);
+            foreach (var rule in exitRules)
+            {
+                var signal = new SignalGeneratedEvent(
+                    strategy.Id, position.Symbol,
+                    position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
+                    currentPrice, snapshot);
 
-            var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
-            var orderResult = Order.Create(
-                strategy.Id, position.Symbol, exitSide,
-                OrderType.Market, position.Quantity, strategy.Mode,
-                estimatedPrice: currentPrice);
+                if (!EvaluateCondition(rule.Condition, signal))
+                    continue;
 
-            return Task.FromResult(
-                orderResult.Match<Result<Order?, DomainError>>(
-                    order => Result<Order?, DomainError>.Success(order),
-                    error => Result<Order?, DomainError>.Failure(error)));
+                _logger.LogInformation(
+                    "Regla de salida '{RuleName}' activada para posición {PositionId} (snapshot: {Snapshot})",
+                    rule.Name, position.Id, snapshot);
+
+                var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                var orderResult = Order.Create(
+                    strategy.Id, position.Symbol, exitSide,
+                    OrderType.Market, position.Quantity, strategy.Mode,
+                    estimatedPrice: currentPrice);
+
+                return Task.FromResult(
+                    orderResult.Match<Result<Order?, DomainError>>(
+                        order => Result<Order?, DomainError>.Success(order),
+                        error => Result<Order?, DomainError>.Failure(error)));
+            }
         }
 
         return Task.FromResult(

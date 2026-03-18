@@ -56,18 +56,33 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WhenRsiDropsBelowOversold_ReturnsBuySignal()
+    public async Task ProcessTickAsync_WhenRsiDropsBelowOversold_ReturnsNull_BecauseTicksDontGenerateSignals()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
-        // Warm up RSI with descending prices to push RSI low
+        // TRADE-1: ticks no longer feed indicators nor generate signals
+        var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
+        foreach (var price in prices)
+        {
+            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Should().BeNull("ProcessTickAsync should never generate signals after TRADE-1 fix");
+        }
+    }
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenRsiDropsBelowOversold_ReturnsBuySignal()
+    {
+        var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
+        await _sut.InitializeAsync(strategy);
+
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         SignalGeneratedEvent? lastSignal = null;
 
         foreach (var price in prices)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
             result.IsSuccess.Should().BeTrue();
             if (result.Value is not null)
                 lastSignal = result.Value;
@@ -78,18 +93,32 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WhenRsiRisesAboveOverbought_ReturnsSellSignal()
+    public async Task ProcessTickAsync_WhenRsiRisesAboveOverbought_ReturnsNull()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
-        // Warm up RSI with ascending prices to push RSI high
+        var prices = GenerateAscendingPrices(startPrice: 100m, count: 7, increment: 2m);
+        foreach (var price in prices)
+        {
+            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenRsiRisesAboveOverbought_ReturnsSellSignal()
+    {
+        var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
+        await _sut.InitializeAsync(strategy);
+
         var prices = GenerateAscendingPrices(startPrice: 100m, count: 7, increment: 2m);
         SignalGeneratedEvent? lastSignal = null;
 
         foreach (var price in prices)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
             result.IsSuccess.Should().BeTrue();
             if (result.Value is not null)
                 lastSignal = result.Value;
@@ -130,7 +159,7 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WhenBuySignalGenerated_IncludesSnapshot()
+    public async Task ProcessKlineAsync_WhenBuySignalGenerated_IncludesSnapshot()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
@@ -140,7 +169,7 @@ public sealed class DefaultTradingStrategyTests
 
         foreach (var price in prices)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
             if (result.Value is not null)
                 signal = result.Value;
         }
@@ -150,27 +179,24 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WhenRsiCrossesOversoldOnce_DoesNotSignalAgain()
+    public async Task ProcessKlineAsync_WhenRsiCrossesOversoldOnce_DoesNotSignalAgain()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
-        // Push RSI into oversold territory
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         var signalCount = 0;
 
         foreach (var price in prices)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
             if (result.Value is not null)
                 signalCount++;
         }
 
-        // Continue with more descending prices — should NOT trigger again
-        // because _previousRsi is already below oversold
         for (var i = 0; i < 3; i++)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(80m - i * 2));
+            var result = await _sut.ProcessKlineAsync(CreateKline(80m - i * 2));
             if (result.Value is not null)
                 signalCount++;
         }
@@ -206,9 +232,8 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WithRsiOnly_StillGeneratesSignal()
+    public async Task ProcessKlineAsync_WithRsiOnly_StillGeneratesSignal()
     {
-        // Verify backward compatibility — RSI alone still generates signals
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
@@ -217,7 +242,7 @@ public sealed class DefaultTradingStrategyTests
 
         foreach (var price in prices)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(price));
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
             if (result.Value is not null)
                 lastSignal = result.Value;
         }
@@ -266,7 +291,7 @@ public sealed class DefaultTradingStrategyTests
     // ── Signal Cooldown ─────────────────────────────────────────────────
 
     [Fact]
-    public async Task ProcessTickAsync_WhenSignalWithinCooldown_SuppressesSecondSignal()
+    public async Task ProcessKlineAsync_WhenSignalWithinCooldown_SuppressesSecondSignal()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
@@ -278,7 +303,7 @@ public sealed class DefaultTradingStrategyTests
         SignalGeneratedEvent? firstSignal = null;
         for (var i = 0; i < prices.Length; i++)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(prices[i], baseTime.AddSeconds(i)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddSeconds(i)));
             if (result.Value is not null) firstSignal = result.Value;
         }
         firstSignal.Should().NotBeNull("should generate first Buy signal");
@@ -290,13 +315,11 @@ public sealed class DefaultTradingStrategyTests
         var offset = prices.Length;
 
         foreach (var p in neutralPrices)
-        {
-            await _sut.ProcessTickAsync(CreateTick(p, baseTime.AddSeconds(offset++)));
-        }
+            await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
+
         foreach (var p in reEntryPrices)
         {
-            // Still within cooldown window (< 60 seconds total)
-            var result = await _sut.ProcessTickAsync(CreateTick(p, baseTime.AddSeconds(offset++)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
             if (result.Value is not null) secondSignalCount++;
         }
 
@@ -304,7 +327,7 @@ public sealed class DefaultTradingStrategyTests
     }
 
     [Fact]
-    public async Task ProcessTickAsync_WhenSignalAfterCooldown_GeneratesSignal()
+    public async Task ProcessKlineAsync_WhenSignalAfterCooldown_GeneratesSignal()
     {
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
@@ -314,13 +337,13 @@ public sealed class DefaultTradingStrategyTests
         // 1. Generate first Buy signal
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         for (var i = 0; i < prices.Length; i++)
-            await _sut.ProcessTickAsync(CreateTick(prices[i], baseTime.AddSeconds(i)));
+            await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddSeconds(i)));
 
         // 2. Neutral zone, then re-enter oversold AFTER cooldown
         var neutralPrices = GenerateAscendingPrices(startPrice: 90m, count: 6, increment: 3m);
         var offset = prices.Length;
         foreach (var p in neutralPrices)
-            await _sut.ProcessTickAsync(CreateTick(p, baseTime.AddSeconds(offset++)));
+            await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
 
         // Jump past cooldown (> 1 minute)
         var afterCooldown = baseTime.AddMinutes(2);
@@ -328,7 +351,7 @@ public sealed class DefaultTradingStrategyTests
         SignalGeneratedEvent? signal = null;
         for (var i = 0; i < reEntry.Length; i++)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(reEntry[i], afterCooldown.AddSeconds(i)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(reEntry[i], afterCooldown.AddSeconds(i)));
             if (result.Value is not null) signal = result.Value;
         }
 
@@ -369,15 +392,13 @@ public sealed class DefaultTradingStrategyTests
     // ── P1-2: Independent signal generators ─────────────────────────────
 
     [Fact]
-    public async Task ProcessTickAsync_WhenOnlyMacd_GeneratesCrossoverSignal()
+    public async Task ProcessKlineAsync_WhenOnlyMacd_GeneratesCrossoverSignal()
     {
-        // Strategy with MACD only — no RSI
         var strategy = CreateStrategy();
         var macd = IndicatorConfig.Macd(3, 6, 3).Value;
         strategy.AddIndicator(macd);
         await _sut.InitializeAsync(strategy);
 
-        // Feed ascending prices to build positive histogram, then descending to cross zero
         var prices = GenerateAscendingPrices(startPrice: 100m, count: 15, increment: 2m)
             .Concat(GenerateDescendingPrices(startPrice: 130m, count: 10, decrement: 3m))
             .ToArray();
@@ -387,13 +408,12 @@ public sealed class DefaultTradingStrategyTests
 
         for (var i = 0; i < prices.Length; i++)
         {
-            var result = await _sut.ProcessTickAsync(CreateTick(prices[i], baseTime.AddMinutes(i * 2)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddMinutes(i * 2)));
             result.IsSuccess.Should().BeTrue();
             if (result.Value is not null)
                 signal = result.Value;
         }
 
-        // MACD histogram crossover should generate a Sell signal when crossing from positive to negative
         signal.Should().NotBeNull("MACD crossover should generate a signal without RSI");
     }
 
@@ -493,6 +513,16 @@ public sealed class DefaultTradingStrategyTests
         var bidPrice = Price.Create(price - 1m).Value;
         var askPrice = Price.Create(price + 1m).Value;
         return new MarketTickReceivedEvent(symbol, bidPrice, askPrice, pricevo, 1000m, timestamp ?? DateTimeOffset.UtcNow);
+    }
+
+    private static KlineClosedEvent CreateKline(decimal close, DateTimeOffset? timestamp = null, decimal? high = null, decimal? low = null)
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        return new KlineClosedEvent(
+            symbol, CandleInterval.OneMinute,
+            close, high ?? close + 1m, low ?? close - 1m, close,
+            1000m, ts.AddMinutes(-1), ts);
     }
 
     private static decimal[] GenerateDescendingPrices(decimal startPrice, int count, decimal decrement)
