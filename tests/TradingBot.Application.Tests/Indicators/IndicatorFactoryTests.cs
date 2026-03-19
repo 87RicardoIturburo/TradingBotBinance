@@ -94,4 +94,15 @@ public sealed class IndicatorFactoryTests
         indicator.Type.Should().Be(IndicatorType.ATR);
         indicator.Name.Should().Be("ATR(14)");
     }
+
+    [Fact]
+    public void Create_WhenVolumeSma_ReturnsVolumeSmaIndicator()
+    {
+        var config = IndicatorConfig.VolumeSma(20).Value;
+
+        var indicator = IndicatorFactory.Create(config);
+
+        indicator.Type.Should().Be(IndicatorType.Volume);
+        indicator.Name.Should().Be("VolSMA(20)");
+    }
 }

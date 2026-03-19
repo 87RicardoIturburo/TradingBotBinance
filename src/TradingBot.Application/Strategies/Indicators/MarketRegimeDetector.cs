@@ -13,23 +13,19 @@ namespace TradingBot.Application.Strategies.Indicators;
 /// </summary>
 internal sealed class MarketRegimeDetector
 {
-    private const decimal AdxTrendingThreshold = 25m;
-    private const decimal AdxRangingThreshold = 20m;
-
-    /// <summary>
-    /// BandWidth relativo alto indica volatilidad extrema.
-    /// BandWidth = (Upper - Lower) / Middle. Un valor > 0.08 (8%) es alto.
-    /// </summary>
-    private const decimal HighVolatilityBandWidthThreshold = 0.08m;
-
     /// <summary>
     /// Detecta el régimen actual basándose en los indicadores disponibles.
+    /// Los umbrales son configurables por estrategia vía <see cref="RiskConfig"/>.
     /// </summary>
     public static MarketRegimeResult Detect(
         AdxIndicator? adx,
         BollingerBandsIndicator? bollinger,
         AtrIndicator? atr,
-        decimal currentPrice)
+        decimal currentPrice,
+        decimal adxTrendingThreshold = 25m,
+        decimal adxRangingThreshold = 20m,
+        decimal highVolatilityBandWidthPercent = 0.08m,
+        decimal highVolatilityAtrPercent = 0.03m)
     {
         // Si no hay ningún indicador disponible, no podemos clasificar
         if (adx is null or { IsReady: false }
@@ -49,8 +45,8 @@ internal sealed class MarketRegimeDetector
             : null;
 
         // Alta volatilidad tiene prioridad
-        if (bandWidth > HighVolatilityBandWidthThreshold
-            || (atrPercent.HasValue && atrPercent.Value > 0.03m)) // ATR > 3% del precio
+        if (bandWidth > highVolatilityBandWidthPercent
+            || (atrPercent.HasValue && atrPercent.Value > highVolatilityAtrPercent))
         {
             return new MarketRegimeResult(MarketRegime.HighVolatility, adxValue, bandWidth, atrPercent);
         }
@@ -58,14 +54,14 @@ internal sealed class MarketRegimeDetector
         // Trending vs Ranging basado en ADX
         if (adxValue.HasValue)
         {
-            if (adxValue.Value >= AdxTrendingThreshold)
+            if (adxValue.Value >= adxTrendingThreshold)
                 return new MarketRegimeResult(MarketRegime.Trending, adxValue, bandWidth, atrPercent);
 
-            if (adxValue.Value <= AdxRangingThreshold)
+            if (adxValue.Value <= adxRangingThreshold)
                 return new MarketRegimeResult(MarketRegime.Ranging, adxValue, bandWidth, atrPercent);
         }
 
-        // ADX entre 20-25: zona ambigua — usar BandWidth como desempate
+        // ADX entre ranging-trending: zona ambigua — usar BandWidth como desempate
         if (bandWidth.HasValue)
         {
             return bandWidth.Value < 0.04m

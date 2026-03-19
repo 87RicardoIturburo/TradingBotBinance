@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using TradingBot.API.Dtos;
 using TradingBot.Application.Diagnostics;
 using TradingBot.Core.Interfaces.Services;
@@ -16,7 +17,8 @@ public sealed class SystemController(
     IAccountService       accountService,
     IRiskManager          riskManager,
     IGlobalCircuitBreaker circuitBreaker,
-    TradingMetrics        tradingMetrics) : ControllerBase
+    TradingMetrics        tradingMetrics,
+    HealthCheckService    healthCheckService) : ControllerBase
 {
     /// <summary>Devuelve el estado del bot y de todas las estrategias activas.</summary>
     [HttpGet("status")]
@@ -126,6 +128,22 @@ public sealed class SystemController(
     {
         circuitBreaker.Reset();
         return Results.Ok(new { message = "Circuit breaker reseteado" });
+    }
+
+    /// <summary>Devuelve el estado de salud de los componentes de infraestructura (BD, cache, Binance).</summary>
+    [HttpGet("health")]
+    public async Task<IResult> GetHealth(CancellationToken ct)
+    {
+        var report = await healthCheckService.CheckHealthAsync(
+            r => r.Tags.Contains("ready"), ct);
+
+        var components = report.Entries.Select(e => new ComponentHealthDto(
+            e.Key,
+            e.Value.Status.ToString(),
+            e.Value.Exception?.Message)).ToList();
+
+        return Results.Ok(new InfrastructureHealthDto(
+            report.Status.ToString(), components));
     }
 
     /// <summary>Devuelve un snapshot de las métricas de trading para el dashboard.</summary>

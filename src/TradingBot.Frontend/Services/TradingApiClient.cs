@@ -160,6 +160,18 @@ public sealed class TradingApiClient(HttpClient http)
     public Task<MetricsSnapshotDto?> GetMetricsAsync() =>
         http.GetFromJsonAsync<MetricsSnapshotDto>("api/system/metrics");
 
+    public async Task<InfrastructureHealthDto?> GetHealthAsync()
+    {
+        try
+        {
+            return await http.GetFromJsonAsync<InfrastructureHealthDto>("api/system/health");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // ── Positions & P&L ──────────────────────────────────────────────────
 
     public Task<List<PositionDto>?> GetOpenPositionsAsync() =>

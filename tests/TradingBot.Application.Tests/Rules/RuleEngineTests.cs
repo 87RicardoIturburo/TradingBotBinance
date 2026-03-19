@@ -794,4 +794,181 @@ public sealed class RuleEngineTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeNull("RSI=55 no supera el umbral de salida de 65");
     }
+
+    // ── EST-4: Scaled Take-Profit ────────────────────────────────────────
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenScaledTp1Reached_ReturnsPartialCloseOrder()
+    {
+        var strategy = CreateScaledTpStrategy(tp1Percent: 2m, tp1ClosePercent: 50m, tp2Percent: 5m);
+        var position = CreatePosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 102.5m, quantity: 1m);
+
+        var currentPrice = Price.Create(102.5m).Value;
+
+        var result = await _sut.EvaluateExitRulesAsync(strategy, position, currentPrice);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.Quantity.Value.Should().BeApproximately(0.5m, 0.01m);
+    }
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenScaledTp2Reached_ReturnsLargerPartialClose()
+    {
+        var strategy = CreateScaledTpStrategy(tp1Percent: 2m, tp1ClosePercent: 50m, tp2Percent: 5m, tp2ClosePercent: 60m);
+        var position = CreatePosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 106m, quantity: 1m);
+
+        var currentPrice = Price.Create(106m).Value;
+
+        var result = await _sut.EvaluateExitRulesAsync(strategy, position, currentPrice);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.Quantity.Value.Should().BeApproximately(0.6m, 0.01m);
+    }
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenScaledTpNotReached_FallsToSimpleTp()
+    {
+        var strategy = CreateScaledTpStrategy(tp1Percent: 2m, tp1ClosePercent: 50m, simpleTp: 10m);
+        var position = CreatePosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 101m, quantity: 1m);
+
+        var currentPrice = Price.Create(101m).Value;
+
+        var result = await _sut.EvaluateExitRulesAsync(strategy, position, currentPrice);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeNull();
+    }
+
+    private static TradingStrategy CreateScaledTpStrategy(
+        decimal tp1Percent = 2m,
+        decimal tp1ClosePercent = 50m,
+        decimal tp2Percent = 0m,
+        decimal tp2ClosePercent = 60m,
+        decimal simpleTp = 10m)
+    {
+        var symbol     = Symbol.Create("BTCUSDT").Value;
+        var riskConfig = RiskConfig.Create(
+            100m, 500m, 2m, simpleTp, 5,
+            takeProfit1Percent: tp1Percent,
+            takeProfit1ClosePercent: tp1ClosePercent,
+            takeProfit2Percent: tp2Percent,
+            takeProfit2ClosePercent: tp2ClosePercent).Value;
+        return TradingStrategy.Create("Scaled TP Strategy", symbol, TradingMode.PaperTrading, riskConfig).Value;
+    }
+
+    // ── Regime Change Exit ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenRegimeChangeEnabled_AndAdxDrops_ClosesPosition()
+    {
+        var strategy = CreateRegimeChangeStrategy();
+        var position = CreatePosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 101m, quantity: 1m);
+
+        var currentPrice = Price.Create(101m).Value;
+        var snapshot = "ADX(14)=15.0000 | RSI(14)=55.0000";
+
+        var result = await _sut.EvaluateExitRulesAsync(
+            strategy, position, currentPrice,
+            indicatorSnapshot: snapshot);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.Side.Should().Be(OrderSide.Sell);
+    }
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenRegimeChangeDisabled_AndAdxDrops_DoesNotClose()
+    {
+        var strategy = CreateStrategy(stopLoss: 2m, takeProfit: 10m);
+        var position = CreatePosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 101m, quantity: 1m);
+
+        var currentPrice = Price.Create(101m).Value;
+        var snapshot = "ADX(14)=15.0000 | RSI(14)=55.0000";
+
+        var result = await _sut.EvaluateExitRulesAsync(
+            strategy, position, currentPrice,
+            indicatorSnapshot: snapshot);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeNull();
+    }
+
+    // ── Time-Based Exit ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenPositionExceedsMaxDuration_ClosesPosition()
+    {
+        var strategy = CreateTimeLimitedStrategy(maxCandles: 6);
+        var position = CreateOldPosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 100.5m, quantity: 1m,
+            openedMinutesAgo: 10);
+
+        var currentPrice = Price.Create(100.5m).Value;
+
+        var result = await _sut.EvaluateExitRulesAsync(strategy, position, currentPrice);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task EvaluateExitRulesAsync_WhenPositionWithinDuration_DoesNotClose()
+    {
+        var strategy = CreateTimeLimitedStrategy(maxCandles: 60);
+        var position = CreateOldPosition(strategy.Id, OrderSide.Buy,
+            entryPrice: 100m, currentPrice: 100.5m, quantity: 1m,
+            openedMinutesAgo: 5);
+
+        var currentPrice = Price.Create(100.5m).Value;
+
+        var result = await _sut.EvaluateExitRulesAsync(strategy, position, currentPrice);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeNull();
+    }
+
+    private static TradingStrategy CreateRegimeChangeStrategy()
+    {
+        var symbol     = Symbol.Create("BTCUSDT").Value;
+        var riskConfig = RiskConfig.Create(
+            100m, 500m, 2m, 10m, 5,
+            exitOnRegimeChange: true).Value;
+        return TradingStrategy.Create("Regime Change Strategy", symbol, TradingMode.PaperTrading, riskConfig).Value;
+    }
+
+    private static TradingStrategy CreateTimeLimitedStrategy(int maxCandles = 6)
+    {
+        var symbol     = Symbol.Create("BTCUSDT").Value;
+        var riskConfig = RiskConfig.Create(
+            100m, 500m, 2m, 10m, 5,
+            maxPositionDurationCandles: maxCandles).Value;
+        return TradingStrategy.Create("Time Limited Strategy", symbol, TradingMode.PaperTrading, riskConfig).Value;
+    }
+
+    private static Position CreateOldPosition(
+        Guid strategyId,
+        OrderSide side,
+        decimal entryPrice,
+        decimal currentPrice,
+        decimal quantity,
+        int openedMinutesAgo)
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var entry  = Price.Create(entryPrice).Value;
+        var qty    = Quantity.Create(quantity).Value;
+        var pos    = Position.Open(strategyId, symbol, side, entry, qty);
+        pos.UpdatePrice(Price.Create(currentPrice).Value);
+        // Position.OpenedAt se establece en Open() con DateTimeOffset.UtcNow.
+        // Para simular una posición antigua, usamos reflection (solo en tests).
+        var openedAtField = typeof(Position).GetProperty("OpenedAt")!;
+        openedAtField.SetValue(pos, DateTimeOffset.UtcNow.AddMinutes(-openedMinutesAgo));
+        return pos;
+    }
 }

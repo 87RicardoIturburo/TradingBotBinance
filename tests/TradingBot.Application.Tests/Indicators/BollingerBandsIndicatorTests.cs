@@ -264,4 +264,66 @@ public sealed class BollingerBandsIndicatorTests
         sut.LowerBand.Should().BeNull();
         sut.BandWidth.Should().BeNull();
     }
+
+    // ── Squeeze detection ────────────────────────────────────────────────
+
+    [Fact]
+    public void IsSqueezing_WhenNotEnoughHistory_ReturnsFalse()
+    {
+        var sut = new BollingerBandsIndicator(5, 2m);
+
+        for (var i = 0; i < 5; i++)
+            sut.Update(100m);
+
+        sut.IsSqueezing.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsSqueezing_WhenBandWidthCompresses_ReturnsTrue()
+    {
+        var sut = new BollingerBandsIndicator(5, 2m);
+
+        // Fase 1: volatilidad alta para llenar el historial de BandWidth
+        for (var i = 0; i < 25; i++)
+            sut.Update(100m + (i % 2 == 0 ? 10m : -10m));
+
+        // Fase 2: precios planos → BandWidth se comprime
+        for (var i = 0; i < 10; i++)
+            sut.Update(100m);
+
+        sut.IsSqueezing.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SqueezeReleased_WhenBandWidthExpandsAfterSqueeze_ReturnsTrue()
+    {
+        var sut = new BollingerBandsIndicator(5, 2m);
+
+        // Fase 1: volatilidad alta
+        for (var i = 0; i < 25; i++)
+            sut.Update(100m + (i % 2 == 0 ? 10m : -10m));
+
+        // Fase 2: compresión (precios planos)
+        for (var i = 0; i < 10; i++)
+            sut.Update(100m);
+
+        sut.IsSqueezing.Should().BeTrue();
+
+        // Fase 3: una sola expansión (breakout) — verificar inmediatamente
+        sut.Update(120m);
+
+        sut.SqueezeReleased.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SqueezeReleased_WhenNoSqueezeBefore_ReturnsFalse()
+    {
+        var sut = new BollingerBandsIndicator(5, 2m);
+
+        // BandWidth creciente progresivo — nunca hubo squeeze
+        for (var i = 0; i < 30; i++)
+            sut.Update(100m + i * 2m);
+
+        sut.SqueezeReleased.Should().BeFalse();
+    }
 }

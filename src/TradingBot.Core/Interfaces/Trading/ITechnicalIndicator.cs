@@ -59,3 +59,13 @@ public interface IOhlcIndicator
     /// </summary>
     void UpdateOhlc(decimal high, decimal low, decimal close);
 }
+
+/// <summary>
+/// Indicador que se alimenta con datos de volumen en vez de precio.
+/// Implementado por indicadores como Volume SMA que analizan el volumen de trading.
+/// </summary>
+public interface IVolumeIndicator
+{
+    /// <summary>Alimenta un valor de volumen al buffer del indicador.</summary>
+    void UpdateVolume(decimal volume);
+}

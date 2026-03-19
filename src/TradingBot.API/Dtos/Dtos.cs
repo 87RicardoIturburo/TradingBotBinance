@@ -144,6 +144,17 @@ public sealed record OrderDto(
         o.CreatedAt, o.FilledAt);
 }
 
+/// <summary>Estado de salud de un componente de infraestructura.</summary>
+public sealed record ComponentHealthDto(
+    string  Name,
+    string  Status,
+    string? Error);
+
+/// <summary>Reporte de salud de toda la infraestructura.</summary>
+public sealed record InfrastructureHealthDto(
+    string                     OverallStatus,
+    List<ComponentHealthDto>   Components);
+
 /// <summary>Estado del sistema devuelto por /api/system/status.</summary>
 public sealed record SystemStatusDto(
     bool                                                IsRunning,

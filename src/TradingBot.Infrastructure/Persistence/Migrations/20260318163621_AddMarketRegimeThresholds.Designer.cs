@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TradingBot.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using TradingBot.Infrastructure.Persistence;
 namespace TradingBot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(TradingBotDbContext))]
-    partial class TradingBotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260318163621_AddMarketRegimeThresholds")]
+    partial class AddMarketRegimeThresholds
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -142,11 +145,6 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("OpenedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<decimal>("PartialRealizedPnL")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("numeric")
-                        .HasDefaultValue(0m);
-
                     b.Property<decimal>("Quantity")
                         .HasColumnType("numeric");
 
@@ -163,16 +161,6 @@ namespace TradingBot.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
-
-                    b.Property<bool>("TakeProfit1Hit")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<bool>("TakeProfit2Hit")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
 
                     b.Property<int>("Version")
                         .IsConcurrencyToken()

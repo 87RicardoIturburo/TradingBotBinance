@@ -220,7 +220,7 @@ public sealed class RiskManagerTests
     {
         var strategyId = Guid.NewGuid();
         _positionRepo.GetTradeStatsAsync(strategyId, Arg.Any<CancellationToken>())
-            .Returns((RiskManager.MinTradesForExpectancy - 1, 3, 30m, 20m));
+            .Returns((29, 3, 30m, 20m));
 
         var result = await _sut.GetMathematicalExpectancyAsync(strategyId);
 
@@ -434,6 +434,85 @@ public sealed class RiskManagerTests
         result.IsSuccess.Should().BeTrue();
     }
 
+    // ── Exit Orders (CRIT-NEW-1) ─────────────────────────────────────────
+
+    [Fact]
+    public async Task ValidateOrder_WhenExitOrderAndDailyLossExceeded_ReturnsSuccess()
+    {
+        var strategyId = Guid.NewGuid();
+        var strategy   = CreateStrategy(strategyId, maxDailyLoss: 100m);
+        var exitOrder  = CreateSellOrder(strategyId, quantity: 0.001m, limitPrice: 50000m);
+
+        _strategyRepo.GetByIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(strategy);
+        _positionRepo.GetDailyRealizedPnLAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(-200m); // Excede maxDailyLoss
+        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(new List<Position> { CreateOpenPositionForStrategy(strategyId) });
+
+        var result = await _sut.ValidateOrderAsync(exitOrder);
+
+        result.IsSuccess.Should().BeTrue("las exit orders no deben bloquearse por daily loss");
+    }
+
+    [Fact]
+    public async Task ValidateOrder_WhenExitOrderAndNegativeExpectancy_ReturnsSuccess()
+    {
+        var strategyId = Guid.NewGuid();
+        var strategy   = CreateStrategy(strategyId);
+        var exitOrder  = CreateSellOrder(strategyId, quantity: 0.001m, limitPrice: 50000m);
+
+        _strategyRepo.GetByIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(strategy);
+        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(new List<Position> { CreateOpenPositionForStrategy(strategyId) });
+        // Expectancy muy negativa — no debe bloquear exit
+        _positionRepo.GetTradeStatsAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns((36, 9, 90m, 540m));
+
+        var result = await _sut.ValidateOrderAsync(exitOrder);
+
+        result.IsSuccess.Should().BeTrue("las exit orders no deben bloquearse por expectancy negativa");
+    }
+
+    [Fact]
+    public async Task ValidateOrder_WhenExitOrderExceedsMaxAmount_ReturnsRiskLimitExceeded()
+    {
+        var strategyId = Guid.NewGuid();
+        var strategy   = CreateStrategy(strategyId, maxOrderAmount: 10m);
+        // Exit order de 50 USDT > maxOrderAmount 10 USDT → debe bloquearse
+        var exitOrder  = CreateSellOrder(strategyId, quantity: 0.001m, limitPrice: 50000m);
+
+        _strategyRepo.GetByIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(strategy);
+        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(new List<Position> { CreateOpenPositionForStrategy(strategyId) });
+
+        var result = await _sut.ValidateOrderAsync(exitOrder);
+
+        result.IsFailure.Should().BeTrue("el monto máximo por orden aplica incluso a exits");
+        result.Error.Code.Should().Be("RISK_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public async Task ValidateOrder_WhenSellOrderWithoutOpenPosition_IsNotExitOrder()
+    {
+        var strategyId = Guid.NewGuid();
+        var strategy   = CreateStrategy(strategyId, maxDailyLoss: 100m);
+        var sellOrder  = CreateSellOrder(strategyId, quantity: 0.001m, limitPrice: 10m);
+
+        _strategyRepo.GetByIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(strategy);
+        _positionRepo.GetOpenByStrategyIdAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(new List<Position>()); // Sin posiciones abiertas
+        _positionRepo.GetDailyRealizedPnLAsync(strategyId, Arg.Any<CancellationToken>())
+            .Returns(-200m); // Excede maxDailyLoss
+
+        var result = await _sut.ValidateOrderAsync(sellOrder);
+
+        result.IsFailure.Should().BeTrue("un Sell sin posición abierta no es exit order");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private void SetupPassingChecks(Guid strategyId, TradingStrategy strategy)
@@ -519,5 +598,28 @@ public sealed class RiskManagerTests
         var price  = Price.Create(100m).Value;
         var qty    = Quantity.Create(0.01m).Value;
         return Position.Open(Guid.NewGuid(), symbol, OrderSide.Buy, price, qty);
+    }
+
+    private static Position CreateOpenPositionForStrategy(Guid strategyId)
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var price  = Price.Create(50000m).Value;
+        var qty    = Quantity.Create(0.01m).Value;
+        return Position.Open(strategyId, symbol, OrderSide.Buy, price, qty);
+    }
+
+    private static Order CreateSellOrder(
+        Guid? strategyId = null,
+        decimal quantity = 0.01m,
+        decimal? limitPrice = null)
+    {
+        var symbol = Symbol.Create("BTCUSDT").Value;
+        var qty    = Quantity.Create(quantity).Value;
+        var limit  = limitPrice.HasValue ? Price.Create(limitPrice.Value).Value : null;
+        var type   = limitPrice.HasValue ? OrderType.Limit : OrderType.Market;
+
+        return Order.Create(
+            strategyId ?? Guid.NewGuid(), symbol, OrderSide.Sell, type,
+            qty, TradingMode.PaperTrading, limit).Value;
     }
 }

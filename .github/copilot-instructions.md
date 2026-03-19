@@ -160,6 +160,17 @@ TradingBot/
 - Actualizar `.github/Pasos_A_Seguir.md` a medida que se cumplen hitos importantes del proyecto
 - Responde siempre en español
 - Programa en ingles, pero documenta en español
+- Evitar poner comentarios, colocar solo cuando sea muy necesario. ejemplo:
+ ```csharp
+ /// <summary>
+/// Motor de estrategias. Orquesta el flujo completo como <see cref="BackgroundService"/>:
+/// <c>MarketTick → ITradingStrategy → IRuleEngine → IRiskManager → IOrderService</c>.
+/// <para>
+/// Cada estrategia activa se ejecuta en su propio loop asíncrono consumiendo
+/// el <see cref="IAsyncEnumerable{T}"/> de ticks del <see cref="IMarketDataService"/>.
+/// </para>
+/// </summary>
+ ```
 
 ---
 
@@ -170,3 +181,4 @@ TradingBot/
 - No hacer llamadas a Binance REST directamente desde controladores
 - No modificar estrategias activas sin pasar por `IStrategyConfigService`
 - No commitear archivos `appsettings.Development.json` con keys reales
+- No coloques comentarios de código, ejemplo `// CRIT-NEW-4 fix: ReloadConfigAsync ejecuta RebuildIndicators que limpia` 

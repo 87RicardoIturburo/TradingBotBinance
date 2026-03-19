@@ -12,15 +12,16 @@ namespace TradingBot.Application.Strategies.Indicators;
 ///   <item><c>+DI &gt; -DI</c> → tendencia alcista</item>
 ///   <item><c>-DI &gt; +DI</c> → tendencia bajista</item>
 /// </list>
-/// Usa Wilder smoothing (factor = 1/period) internamente.
-/// Como el bot recibe solo precios de cierre (ticks), se aproximan
-/// +DM/-DM usando cambios de precio consecutivos.
+/// EST-12: Implementa <see cref="IOhlcIndicator"/> para calcular +DM/-DM y True Range
+/// usando High/Low reales en vez de aproximaciones con precios de cierre.
+/// <see cref="Update(decimal)"/> mantiene la aproximación como fallback.
 /// </summary>
-internal sealed class AdxIndicator : ITechnicalIndicator
+internal sealed class AdxIndicator : ITechnicalIndicator, IOhlcIndicator
 {
     private readonly int _period;
-    private decimal? _previousPrice;
-    private decimal? _prevPrevPrice;
+    private decimal? _previousHigh;
+    private decimal? _previousLow;
+    private decimal? _previousClose;
     private decimal _smoothedPlusDm;
     private decimal _smoothedMinusDm;
     private decimal _smoothedTr;
@@ -55,47 +56,85 @@ internal sealed class AdxIndicator : ITechnicalIndicator
         _period = period;
     }
 
-    public void Update(decimal value)
+    /// <summary>
+    /// EST-12: Alimenta con datos OHLC completos. Calcula +DM/-DM y True Range reales:
+    /// <c>+DM = max(0, CurrentHigh − PreviousHigh)</c> si &gt; −DM, else 0.
+    /// <c>−DM = max(0, PreviousLow − CurrentLow)</c> si &gt; +DM, else 0.
+    /// <c>TR = max(High−Low, |High−prevClose|, |Low−prevClose|)</c>.
+    /// </summary>
+    public void UpdateOhlc(decimal high, decimal low, decimal close)
     {
         _count++;
 
-        if (_previousPrice is null)
+        if (_previousClose is null)
         {
-            _previousPrice = value;
+            _previousHigh = high;
+            _previousLow = low;
+            _previousClose = close;
             return;
         }
 
-        if (_prevPrevPrice is null)
-        {
-            _prevPrevPrice = _previousPrice;
-            _previousPrice = value;
-            return;
-        }
-
-        // Aproximación de Directional Movement con precios de cierre:
-        // upMove = current - previous, downMove = prevPrev - previous
-        var upMove = value - _previousPrice.Value;
-        var downMove = _prevPrevPrice.Value - _previousPrice.Value;
+        // +DM / -DM estándar con High/Low
+        var upMove = high - (_previousHigh ?? high);
+        var downMove = (_previousLow ?? low) - low;
 
         var plusDm = (upMove > 0 && upMove > downMove) ? upMove : 0m;
         var minusDm = (downMove > 0 && downMove > upMove) ? downMove : 0m;
 
-        // True Range simplificado
-        var tr = Math.Abs(value - _previousPrice.Value);
+        // True Range real
+        var hl = high - low;
+        var hpc = Math.Abs(high - _previousClose.Value);
+        var lpc = Math.Abs(low - _previousClose.Value);
+        var tr = Math.Max(hl, Math.Max(hpc, lpc));
 
-        _prevPrevPrice = _previousPrice;
-        _previousPrice = value;
+        _previousHigh = high;
+        _previousLow = low;
+        _previousClose = close;
 
+        ApplyDmAndTr(plusDm, minusDm, tr);
+    }
+
+    /// <summary>
+    /// Fallback: alimenta con precio de cierre. Aproxima +DM/-DM usando cambios
+    /// de precio consecutivos. Menos preciso que <see cref="UpdateOhlc"/>.
+    /// </summary>
+    public void Update(decimal value)
+    {
+        _count++;
+
+        if (_previousClose is null)
+        {
+            _previousClose = value;
+            _previousHigh = value;
+            _previousLow = value;
+            return;
+        }
+
+        var upMove = value - _previousClose.Value;
+        var downMove = _previousClose.Value - value;
+
+        var plusDm = (upMove > 0 && upMove > downMove) ? upMove : 0m;
+        var minusDm = (downMove > 0 && downMove > upMove) ? downMove : 0m;
+
+        var tr = Math.Abs(value - _previousClose.Value);
+
+        _previousClose = value;
+        _previousHigh = value;
+        _previousLow = value;
+
+        ApplyDmAndTr(plusDm, minusDm, tr);
+    }
+
+    private void ApplyDmAndTr(decimal plusDm, decimal minusDm, decimal tr)
+    {
         if (_count <= _period + 1)
         {
-            // Acumular para el primer smoothing
             _smoothedPlusDm += plusDm;
             _smoothedMinusDm += minusDm;
             _smoothedTr += tr;
 
             if (_count == _period + 1)
             {
-                // Primera media
                 _smoothedPlusDm /= _period;
                 _smoothedMinusDm /= _period;
                 _smoothedTr /= _period;
@@ -132,8 +171,9 @@ internal sealed class AdxIndicator : ITechnicalIndicator
 
     public void Reset()
     {
-        _previousPrice = null;
-        _prevPrevPrice = null;
+        _previousHigh = null;
+        _previousLow = null;
+        _previousClose = null;
         _smoothedPlusDm = 0;
         _smoothedMinusDm = 0;
         _smoothedTr = 0;
@@ -144,7 +184,7 @@ internal sealed class AdxIndicator : ITechnicalIndicator
 
     public string SerializeState() => JsonSerializer.Serialize(new
     {
-        _period, _previousPrice, _prevPrevPrice,
+        _period, _previousHigh, _previousLow, _previousClose,
         _smoothedPlusDm, _smoothedMinusDm, _smoothedTr, _smoothedAdx,
         _count, _adxInitialized
     });
@@ -156,10 +196,14 @@ internal sealed class AdxIndicator : ITechnicalIndicator
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (root.GetProperty("_period").GetInt32() != _period) return false;
-            _previousPrice = root.TryGetProperty("_previousPrice", out var pp) && pp.ValueKind != JsonValueKind.Null
-                ? pp.GetDecimal() : null;
-            _prevPrevPrice = root.TryGetProperty("_prevPrevPrice", out var ppp) && ppp.ValueKind != JsonValueKind.Null
-                ? ppp.GetDecimal() : null;
+            _previousHigh = root.TryGetProperty("_previousHigh", out var ph) && ph.ValueKind != JsonValueKind.Null
+                ? ph.GetDecimal() : null;
+            _previousLow = root.TryGetProperty("_previousLow", out var pl) && pl.ValueKind != JsonValueKind.Null
+                ? pl.GetDecimal() : null;
+            _previousClose = root.TryGetProperty("_previousClose", out var pc) && pc.ValueKind != JsonValueKind.Null
+                ? pc.GetDecimal()
+                : root.TryGetProperty("_previousPrice", out var pp) && pp.ValueKind != JsonValueKind.Null
+                    ? pp.GetDecimal() : null;
             _smoothedPlusDm  = root.GetProperty("_smoothedPlusDm").GetDecimal();
             _smoothedMinusDm = root.GetProperty("_smoothedMinusDm").GetDecimal();
             _smoothedTr      = root.GetProperty("_smoothedTr").GetDecimal();

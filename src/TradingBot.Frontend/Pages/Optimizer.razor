@@ -413,6 +413,9 @@
                 .Select(r => new SavedParameterRangeDto(r.Name, r.Min, r.Max, r.Step))
                 .ToList();
             await Api.SaveOptimizationProfileAsync(selectedStrategy.Id, dtos);
+
+            strategies = await Api.GetStrategiesAsync();
+            selectedStrategy = strategies?.FirstOrDefault(s => s.Id == selectedStrategy.Id);
         }
         catch (Exception ex)
         {

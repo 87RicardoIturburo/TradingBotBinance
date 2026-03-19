@@ -34,4 +34,20 @@ public sealed record Symbol
     public override string ToString() => Value;
 
     public static implicit operator string(Symbol symbol) => symbol.Value;
+
+    /// <summary>
+    /// Extrae el quote asset del símbolo de trading (ej: BTCUSDT → USDT, ETHBNB → BNB).
+    /// Soporta los principales quote assets de Binance.
+    /// </summary>
+    public static string ExtractQuoteAsset(string symbol)
+    {
+        ReadOnlySpan<char> s = symbol;
+        string[] quoteAssets = ["USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"];
+        foreach (var qa in quoteAssets)
+        {
+            if (s.EndsWith(qa, StringComparison.OrdinalIgnoreCase))
+                return qa;
+        }
+        return "USDT";
+    }
 }

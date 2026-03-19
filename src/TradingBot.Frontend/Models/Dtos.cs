@@ -4,6 +4,17 @@ namespace TradingBot.Frontend.Models;
 
 public sealed record AuthStatusResponse(bool Authenticated);
 
+// ── Infrastructure Health ─────────────────────────────────────────────────
+
+public sealed record ComponentHealthDto(
+    string  Name,
+    string  Status,
+    string? Error);
+
+public sealed record InfrastructureHealthDto(
+    string                     OverallStatus,
+    List<ComponentHealthDto>?  Components);
+
 // ── Symbols ───────────────────────────────────────────────────────────────
 
 public sealed record SymbolInfoDto(

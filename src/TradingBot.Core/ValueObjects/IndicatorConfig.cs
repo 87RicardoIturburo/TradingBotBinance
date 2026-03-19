@@ -46,6 +46,7 @@ public sealed record IndicatorConfig
             IndicatorType.LinearRegression => ValidatePeriod(parameters, "LinearRegression"),
             IndicatorType.ADX              => ValidatePeriod(parameters, "ADX"),
             IndicatorType.ATR              => ValidatePeriod(parameters, "ATR"),
+            IndicatorType.Volume           => ValidatePeriod(parameters, "Volume"),
             _                              => null
         };
 
@@ -68,8 +69,13 @@ public sealed record IndicatorConfig
     public static Result<IndicatorConfig, DomainError> Macd(int fastPeriod = 12, int slowPeriod = 26, int signalPeriod = 9)
         => Create(IndicatorType.MACD, new() { ["fastPeriod"] = fastPeriod, ["slowPeriod"] = slowPeriod, ["signalPeriod"] = signalPeriod });
 
-    public static Result<IndicatorConfig, DomainError> Ema(int period = 20)
-        => Create(IndicatorType.EMA, new() { ["period"] = period });
+    public static Result<IndicatorConfig, DomainError> Ema(int period = 20, int crossoverPeriod = 0)
+    {
+        var parameters = new Dictionary<string, decimal> { ["period"] = period };
+        if (crossoverPeriod > 0)
+            parameters["crossoverPeriod"] = crossoverPeriod;
+        return Create(IndicatorType.EMA, parameters);
+    }
 
     public static Result<IndicatorConfig, DomainError> Sma(int period = 20)
         => Create(IndicatorType.SMA, new() { ["period"] = period });
@@ -88,6 +94,14 @@ public sealed record IndicatorConfig
 
     public static Result<IndicatorConfig, DomainError> Atr(int period = 14)
         => Create(IndicatorType.ATR, new() { ["period"] = period });
+
+    public static Result<IndicatorConfig, DomainError> VolumeSma(int period = 20, decimal minRatio = 1.5m)
+    {
+        var parameters = new Dictionary<string, decimal> { ["period"] = period };
+        if (minRatio != 1.5m)
+            parameters["minRatio"] = minRatio;
+        return Create(IndicatorType.Volume, parameters);
+    }
 
     // ── Validaciones privadas ──────────────────────────────────────────────
 

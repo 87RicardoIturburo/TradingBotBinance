@@ -143,7 +143,24 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
             d.MaxOrderAmountUsdt, d.MaxDailyLossUsdt,
             d.StopLossPercent, d.TakeProfitPercent, d.MaxOpenPositions,
             d.UseAtrSizing, d.RiskPercentPerTrade, d.AtrMultiplier,
-            maxSpreadPercent: d.MaxSpreadPercent).Value;
+            d.UseTrailingStop, d.TrailingStopPercent,
+            maxSpreadPercent: d.MaxSpreadPercent,
+            limitOrderTimeoutSeconds: d.LimitOrderTimeoutSeconds,
+            confirmationEmaPeriod: d.ConfirmationEmaPeriod,
+            signalCooldownPercent: d.SignalCooldownPercent,
+            adxTrendingThreshold: d.AdxTrendingThreshold,
+            adxRangingThreshold: d.AdxRangingThreshold,
+            highVolatilityBandWidthPercent: d.HighVolatilityBandWidthPercent,
+            highVolatilityAtrPercent: d.HighVolatilityAtrPercent,
+            minConfirmationPercent: d.MinConfirmationPercent,
+            takeProfit1Percent: d.TakeProfit1Percent,
+            takeProfit1ClosePercent: d.TakeProfit1ClosePercent,
+            takeProfit2Percent: d.TakeProfit2Percent,
+            takeProfit2ClosePercent: d.TakeProfit2ClosePercent,
+            maxPositionDurationCandles: d.MaxPositionDurationCandles,
+            exitOnRegimeChange: d.ExitOnRegimeChange,
+            takeProfit1AtrMultiplier: d.TakeProfit1AtrMultiplier,
+            takeProfit2AtrMultiplier: d.TakeProfit2AtrMultiplier).Value;
     }
 
     private static List<IndicatorConfig> DeserializeIndicators(string json)
@@ -162,7 +179,25 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         bool    UseAtrSizing = false,
         decimal RiskPercentPerTrade = 1m,
         decimal AtrMultiplier = 2m,
-        decimal MaxSpreadPercent = 1.0m);
+        decimal MaxSpreadPercent = 1.0m,
+        bool    UseTrailingStop = false,
+        decimal TrailingStopPercent = 1.5m,
+        int     LimitOrderTimeoutSeconds = 0,
+        int     ConfirmationEmaPeriod = 20,
+        decimal SignalCooldownPercent = 50m,
+        decimal AdxTrendingThreshold = 25m,
+        decimal AdxRangingThreshold = 20m,
+        decimal HighVolatilityBandWidthPercent = 0.08m,
+        decimal HighVolatilityAtrPercent = 0.03m,
+        decimal MinConfirmationPercent = 50m,
+        decimal TakeProfit1Percent = 0m,
+        decimal TakeProfit1ClosePercent = 50m,
+        decimal TakeProfit2Percent = 0m,
+        decimal TakeProfit2ClosePercent = 60m,
+        int     MaxPositionDurationCandles = 0,
+        bool    ExitOnRegimeChange = false,
+        decimal TakeProfit1AtrMultiplier = 0m,
+        decimal TakeProfit2AtrMultiplier = 0m);
 
     private sealed record IndicatorConfigDto(
         IndicatorType                  Type,

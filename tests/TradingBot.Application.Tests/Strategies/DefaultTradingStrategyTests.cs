@@ -77,10 +77,24 @@ public sealed class DefaultTradingStrategyTests
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
+        // Descend into oversold zone
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         SignalGeneratedEvent? lastSignal = null;
 
         foreach (var price in prices)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
+            result.IsSuccess.Should().BeTrue();
+            if (result.Value is not null)
+                lastSignal = result.Value;
+        }
+
+        // RSI should NOT have signaled yet (still inside oversold zone)
+        lastSignal.Should().BeNull();
+
+        // Reverse out of oversold zone → Buy signal fires on crossover exit
+        var reversalPrices = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        foreach (var price in reversalPrices)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(price));
             result.IsSuccess.Should().BeTrue();
@@ -113,10 +127,24 @@ public sealed class DefaultTradingStrategyTests
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
+        // Ascend into overbought zone
         var prices = GenerateAscendingPrices(startPrice: 100m, count: 7, increment: 2m);
         SignalGeneratedEvent? lastSignal = null;
 
         foreach (var price in prices)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
+            result.IsSuccess.Should().BeTrue();
+            if (result.Value is not null)
+                lastSignal = result.Value;
+        }
+
+        // RSI should NOT have signaled yet (still inside overbought zone)
+        lastSignal.Should().BeNull();
+
+        // Reverse out of overbought zone → Sell signal fires on crossover exit
+        var reversalPrices = GenerateDescendingPrices(startPrice: 110m, count: 5, decrement: 3m);
+        foreach (var price in reversalPrices)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(price));
             result.IsSuccess.Should().BeTrue();
@@ -164,10 +192,20 @@ public sealed class DefaultTradingStrategyTests
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
+        // Descend into oversold
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         SignalGeneratedEvent? signal = null;
 
         foreach (var price in prices)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
+            if (result.Value is not null)
+                signal = result.Value;
+        }
+
+        // Reverse out of oversold to trigger Buy
+        var reversalPrices = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        foreach (var price in reversalPrices)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(price));
             if (result.Value is not null)
@@ -184,6 +222,7 @@ public sealed class DefaultTradingStrategyTests
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
+        // Descend into oversold
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         var signalCount = 0;
 
@@ -194,6 +233,18 @@ public sealed class DefaultTradingStrategyTests
                 signalCount++;
         }
 
+        // Reverse out of oversold → first Buy signal
+        var reversal = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        foreach (var price in reversal)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
+            if (result.Value is not null)
+                signalCount++;
+        }
+
+        signalCount.Should().Be(1);
+
+        // Stay below oversold — no second signal without a new reversal exit
         for (var i = 0; i < 3; i++)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(80m - i * 2));
@@ -237,10 +288,20 @@ public sealed class DefaultTradingStrategyTests
         var strategy = CreateStrategyWithRsi(period: 5, oversold: 30, overbought: 70);
         await _sut.InitializeAsync(strategy);
 
+        // Descend into oversold
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         SignalGeneratedEvent? lastSignal = null;
 
         foreach (var price in prices)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(price));
+            if (result.Value is not null)
+                lastSignal = result.Value;
+        }
+
+        // Reverse out of oversold to trigger Buy
+        var reversalPrices = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        foreach (var price in reversalPrices)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(price));
             if (result.Value is not null)
@@ -298,26 +359,31 @@ public sealed class DefaultTradingStrategyTests
 
         var baseTime = DateTimeOffset.UtcNow;
 
-        // 1. Generate first Buy signal (descending prices)
+        // 1. Descend into oversold
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
-        SignalGeneratedEvent? firstSignal = null;
         for (var i = 0; i < prices.Length; i++)
+            await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddSeconds(i)));
+
+        // Reverse out of oversold → first Buy signal
+        SignalGeneratedEvent? firstSignal = null;
+        var reversal = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        var offset = prices.Length;
+        for (var i = 0; i < reversal.Length; i++)
         {
-            var result = await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddSeconds(i)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(reversal[i], baseTime.AddSeconds(offset + i)));
             if (result.Value is not null) firstSignal = result.Value;
         }
         firstSignal.Should().NotBeNull("should generate first Buy signal");
 
-        // 2. Reset RSI to neutral, then push back to oversold quickly (within cooldown)
-        var neutralPrices = GenerateAscendingPrices(startPrice: 90m, count: 6, increment: 3m);
-        var reEntryPrices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
-        var secondSignalCount = 0;
-        var offset = prices.Length;
-
-        foreach (var p in neutralPrices)
+        // 2. Re-enter oversold and try to reverse again quickly (within cooldown)
+        offset += reversal.Length;
+        var reEntry = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
+        foreach (var p in reEntry)
             await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
 
-        foreach (var p in reEntryPrices)
+        var reReversal = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        var secondSignalCount = 0;
+        foreach (var p in reReversal)
         {
             var result = await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
             if (result.Value is not null) secondSignalCount++;
@@ -334,24 +400,40 @@ public sealed class DefaultTradingStrategyTests
 
         var baseTime = DateTimeOffset.UtcNow;
 
-        // 1. Generate first Buy signal
+        // 1. Descend into oversold (same pattern as other RSI tests)
         var prices = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
         for (var i = 0; i < prices.Length; i++)
             await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddSeconds(i)));
 
-        // 2. Neutral zone, then re-enter oversold AFTER cooldown
-        var neutralPrices = GenerateAscendingPrices(startPrice: 90m, count: 6, increment: 3m);
+        // 2. Reverse out → first Buy signal
+        var reversal = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        SignalGeneratedEvent? firstSignal = null;
         var offset = prices.Length;
-        foreach (var p in neutralPrices)
-            await _sut.ProcessKlineAsync(CreateKline(p, baseTime.AddSeconds(offset++)));
-
-        // Jump past cooldown (> 1 minute)
-        var afterCooldown = baseTime.AddMinutes(2);
-        var reEntry = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
-        SignalGeneratedEvent? signal = null;
-        for (var i = 0; i < reEntry.Length; i++)
+        for (var i = 0; i < reversal.Length; i++)
         {
-            var result = await _sut.ProcessKlineAsync(CreateKline(reEntry[i], afterCooldown.AddSeconds(i)));
+            var result = await _sut.ProcessKlineAsync(CreateKline(reversal[i], baseTime.AddSeconds(offset + i)));
+            if (result.Value is not null) firstSignal = result.Value;
+        }
+        firstSignal.Should().NotBeNull("first signal should fire on RSI reversal");
+
+        // 3. Reset and re-initialize to simulate a fresh cycle after cooldown
+        _sut.Reset();
+        await _sut.InitializeAsync(strategy);
+
+        // Jump well past cooldown
+        var afterCooldown = baseTime.AddMinutes(10);
+
+        // 4. Same descent → oversold
+        var reEntry = GenerateDescendingPrices(startPrice: 100m, count: 7, decrement: 2m);
+        for (var i = 0; i < reEntry.Length; i++)
+            await _sut.ProcessKlineAsync(CreateKline(reEntry[i], afterCooldown.AddSeconds(i)));
+
+        // 5. Reverse out → second Buy signal
+        var reReversal = GenerateAscendingPrices(startPrice: 90m, count: 5, increment: 3m);
+        SignalGeneratedEvent? signal = null;
+        for (var i = 0; i < reReversal.Length; i++)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(reReversal[i], afterCooldown.AddSeconds(reEntry.Length + i)));
             if (result.Value is not null) signal = result.Value;
         }
 
@@ -641,5 +723,123 @@ public sealed class DefaultTradingStrategyTests
         {
             signal.IndicatorSnapshot.Should().Contain("ADX(5)=");
         }
+    }
+
+    // ── EST-7: EMA Crossover ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenEmaCrossoverConfigured_UsesCrossoverSignal()
+    {
+        var strategy = CreateStrategy();
+        var ema = IndicatorConfig.Ema(period: 5, crossoverPeriod: 3).Value;
+        strategy.AddIndicator(ema);
+        await _sut.InitializeAsync(strategy);
+
+        var baseTime = DateTimeOffset.UtcNow;
+
+        // Fase 1: precios descendentes → EMA rápida(3) < EMA lenta(5)
+        var prices = GenerateDescendingPrices(startPrice: 100m, count: 10, decrement: 1m);
+        for (var i = 0; i < prices.Length; i++)
+            await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddMinutes(i * 2)));
+
+        // Fase 2: reversión alcista → EMA rápida(3) cruza arriba de EMA lenta(5) → Buy
+        SignalGeneratedEvent? signal = null;
+        var reversal = GenerateAscendingPrices(startPrice: 92m, count: 10, increment: 3m);
+        for (var i = 0; i < reversal.Length; i++)
+        {
+            var result = await _sut.ProcessKlineAsync(
+                CreateKline(reversal[i], baseTime.AddMinutes((10 + i) * 2)));
+            if (result.Value is not null)
+                signal = result.Value;
+        }
+
+        signal.Should().NotBeNull();
+        signal!.Direction.Should().Be(OrderSide.Buy);
+    }
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenEmaNoCrossover_UsesPriceCrossover()
+    {
+        var strategy = CreateStrategy();
+        var ema = IndicatorConfig.Ema(period: 3).Value;
+        strategy.AddIndicator(ema);
+        await _sut.InitializeAsync(strategy);
+
+        var baseTime = DateTimeOffset.UtcNow;
+
+        // EMA sin crossoverPeriod → usa cruce precio/EMA como antes
+        var prices = GenerateDescendingPrices(startPrice: 100m, count: 6, decrement: 2m);
+        for (var i = 0; i < prices.Length; i++)
+            await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddMinutes(i * 2)));
+
+        SignalGeneratedEvent? signal = null;
+        var reversal = GenerateAscendingPrices(startPrice: 90m, count: 6, increment: 4m);
+        for (var i = 0; i < reversal.Length; i++)
+        {
+            var result = await _sut.ProcessKlineAsync(
+                CreateKline(reversal[i], baseTime.AddMinutes((6 + i) * 2)));
+            if (result.Value is not null)
+                signal = result.Value;
+        }
+
+        signal.Should().NotBeNull();
+        signal!.Direction.Should().Be(OrderSide.Buy);
+    }
+
+    // ── EST-2: RSI Aggressive Mode ──────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenRsiAggressiveMode_SignalsOnEntryIntoOversold()
+    {
+        var strategy = CreateStrategy();
+        var rsi = IndicatorConfig.Create(IndicatorType.RSI,
+            new Dictionary<string, decimal>
+            {
+                ["period"] = 5, ["oversold"] = 30, ["overbought"] = 70, ["mode"] = 1
+            }).Value;
+        strategy.AddIndicator(rsi);
+        await _sut.InitializeAsync(strategy);
+
+        var baseTime = DateTimeOffset.UtcNow;
+
+        var prices = GenerateDescendingPrices(startPrice: 100m, count: 8, decrement: 2m);
+        SignalGeneratedEvent? signal = null;
+
+        for (var i = 0; i < prices.Length; i++)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddMinutes(i * 2)));
+            if (result.Value is not null)
+                signal = result.Value;
+        }
+
+        signal.Should().NotBeNull();
+        signal!.Direction.Should().Be(OrderSide.Buy);
+    }
+
+    [Fact]
+    public async Task ProcessKlineAsync_WhenRsiConservativeMode_DoesNotSignalOnEntryIntoOversold()
+    {
+        var strategy = CreateStrategy();
+        var rsi = IndicatorConfig.Create(IndicatorType.RSI,
+            new Dictionary<string, decimal>
+            {
+                ["period"] = 5, ["oversold"] = 30, ["overbought"] = 70, ["mode"] = 0
+            }).Value;
+        strategy.AddIndicator(rsi);
+        await _sut.InitializeAsync(strategy);
+
+        var baseTime = DateTimeOffset.UtcNow;
+
+        var prices = GenerateDescendingPrices(startPrice: 100m, count: 8, decrement: 2m);
+        SignalGeneratedEvent? signal = null;
+
+        for (var i = 0; i < prices.Length; i++)
+        {
+            var result = await _sut.ProcessKlineAsync(CreateKline(prices[i], baseTime.AddMinutes(i * 2)));
+            if (result.Value is not null)
+                signal = result.Value;
+        }
+
+        signal.Should().BeNull();
     }
 }

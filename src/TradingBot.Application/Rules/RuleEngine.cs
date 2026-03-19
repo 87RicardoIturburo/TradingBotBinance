@@ -153,8 +153,9 @@ internal sealed class RuleEngine : IRuleEngine
             }
         }
 
-        // Trailing stop: protege ganancias no realizadas ajustando el stop al peak price
-        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0)
+        // Trailing stop porcentual: solo cuando NO se usa ATR trailing (evita doble trailing — EST-B)
+        var atrTrailingActive = risk.UseAtrSizing && risk.UseTrailingStop && atrValue is > 0;
+        if (risk.UseTrailingStop && risk.TrailingStopPercent > 0 && !atrTrailingActive)
         {
             var peakPrice = position.Side == OrderSide.Buy
                 ? position.HighestPriceSinceEntry.Value
@@ -196,8 +197,60 @@ internal sealed class RuleEngine : IRuleEngine
             }
         }
 
-        // Take-profit automático (siempre porcentual)
+        // Take-profit: escalonado (EST-4) o simple según configuración
         var takeProfitPnl = position.UnrealizedPnLPercent;
+
+        if (risk.UseScaledTakeProfit)
+        {
+            // EST-16: calcular umbrales de TP dinámicos con ATR si están configurados
+            var tp1Threshold = risk.TakeProfit1Percent;
+            var tp2Threshold = risk.TakeProfit2Percent;
+
+            if (atrValue is > 0 && position.EntryPrice.Value > 0)
+            {
+                if (risk.TakeProfit1AtrMultiplier > 0)
+                    tp1Threshold = atrValue.Value * risk.TakeProfit1AtrMultiplier
+                                   / position.EntryPrice.Value * 100m;
+                if (risk.TakeProfit2AtrMultiplier > 0)
+                    tp2Threshold = atrValue.Value * risk.TakeProfit2AtrMultiplier
+                                   / position.EntryPrice.Value * 100m;
+            }
+
+            var closeQuantity = CalculateScaledTakeProfitQuantity(
+                risk, position, takeProfitPnl, tp1Threshold, tp2Threshold);
+            if (closeQuantity is > 0)
+            {
+                var partialQty = Quantity.Create(closeQuantity.Value);
+                if (partialQty.IsSuccess)
+                {
+                    var isTP2 = !position.TakeProfit2Hit
+                                && tp2Threshold > 0
+                                && takeProfitPnl >= tp2Threshold;
+                    var tpLevel = isTP2 ? "TP2" : "TP1";
+
+                    if (isTP2)
+                        position.MarkTakeProfit2Hit();
+                    else
+                        position.MarkTakeProfit1Hit();
+
+                    _logger.LogInformation(
+                        "{TpLevel} escalonado activado para posición {PositionId}: PnL {PnL:F2}%, cerrando {Qty:F8} de {Total:F8}",
+                        tpLevel, position.Id, takeProfitPnl, closeQuantity.Value, position.Quantity.Value);
+
+                    var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                    var orderResult = Order.Create(
+                        strategy.Id, position.Symbol, exitSide,
+                        OrderType.Market, partialQty.Value, strategy.Mode,
+                        estimatedPrice: currentPrice);
+
+                    return Task.FromResult(
+                        orderResult.Match<Result<Order?, DomainError>>(
+                            order => Result<Order?, DomainError>.Success(order),
+                            error => Result<Order?, DomainError>.Failure(error)));
+                }
+            }
+        }
+
         if (takeProfitPnl >= (decimal)risk.TakeProfitPercent)
         {
             _logger.LogInformation(
@@ -221,6 +274,57 @@ internal sealed class RuleEngine : IRuleEngine
         // En el tick loop, los indicadores no se actualizan y el snapshot sería stale.
         if (evaluateIndicatorRules)
         {
+            // Salida por cambio de régimen: si ExitOnRegimeChange está habilitado y el ADX
+            // cae por debajo del umbral de ranging, la tendencia murió → cerrar posición.
+            if (risk.ExitOnRegimeChange && indicatorSnapshot is not null)
+            {
+                var adxValue = ParseFromSnapshot(IndicatorType.ADX, indicatorSnapshot);
+                if (adxValue is not null && adxValue.Value < risk.AdxRangingThreshold)
+                {
+                    _logger.LogWarning(
+                        "Salida por cambio de régimen: ADX={Adx:F1} < {Threshold} para posición {PositionId}",
+                        adxValue.Value, risk.AdxRangingThreshold, position.Id);
+
+                    var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                    var orderResult = Order.Create(
+                        strategy.Id, position.Symbol, exitSide,
+                        OrderType.Market, position.Quantity, strategy.Mode,
+                        estimatedPrice: currentPrice);
+
+                    return Task.FromResult(
+                        orderResult.Match<Result<Order?, DomainError>>(
+                            order => Result<Order?, DomainError>.Success(order),
+                            error => Result<Order?, DomainError>.Failure(error)));
+                }
+            }
+
+            // Time-based exit: si MaxPositionDurationCandles > 0 y la posición lleva más
+            // tiempo abierta que el máximo permitido, cerrar para liberar capital.
+            if (risk.MaxPositionDurationCandles > 0 && position.IsOpen)
+            {
+                var candleMinutes = strategy.Timeframe.ToMinutes();
+                var maxDuration = TimeSpan.FromMinutes(candleMinutes * risk.MaxPositionDurationCandles);
+                var elapsed = DateTimeOffset.UtcNow - position.OpenedAt;
+
+                if (elapsed >= maxDuration)
+                {
+                    _logger.LogWarning(
+                        "Time-based exit: posición {PositionId} abierta {Elapsed:F0}min > máximo {MaxMin:F0}min ({Candles} velas)",
+                        position.Id, elapsed.TotalMinutes, maxDuration.TotalMinutes, risk.MaxPositionDurationCandles);
+
+                    var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+                    var orderResult = Order.Create(
+                        strategy.Id, position.Symbol, exitSide,
+                        OrderType.Market, position.Quantity, strategy.Mode,
+                        estimatedPrice: currentPrice);
+
+                    return Task.FromResult(
+                        orderResult.Match<Result<Order?, DomainError>>(
+                            order => Result<Order?, DomainError>.Success(order),
+                            error => Result<Order?, DomainError>.Failure(error)));
+                }
+            }
+
             // Evaluar reglas de salida configuradas.
             // Usa el snapshot de indicadores reales para evaluar condiciones como RSI > 65.
             // Sin snapshot, las condiciones de indicadores siempre fallan (snapshot incompleto).
@@ -366,5 +470,39 @@ internal sealed class RuleEngine : IRuleEngine
         return orderResult.Match<Result<Order?, DomainError>>(
             order => Result<Order?, DomainError>.Success(order),
             error => Result<Order?, DomainError>.Failure(error));
+    }
+
+    /// <summary>
+    /// EST-4/EST-10/EST-16: Calcula la cantidad a cerrar según el nivel de TP escalonado alcanzado.
+    /// Los umbrales <paramref name="tp1Threshold"/> y <paramref name="tp2Threshold"/> pueden ser
+    /// porcentajes fijos o dinámicos (calculados con ATR por EST-16).
+    /// Verifica <see cref="Position.TakeProfit1Hit"/> y <see cref="Position.TakeProfit2Hit"/>
+    /// para evitar que un mismo nivel se dispare más de una vez.
+    /// Devuelve <c>null</c> si no se alcanzó ningún nivel nuevo.
+    /// </summary>
+    private static decimal? CalculateScaledTakeProfitQuantity(
+        RiskConfig risk,
+        Position position,
+        decimal currentPnlPercent,
+        decimal tp1Threshold,
+        decimal tp2Threshold)
+    {
+        if (tp2Threshold > 0
+            && currentPnlPercent >= tp2Threshold
+            && !position.TakeProfit2Hit)
+        {
+            var closeQty = position.Quantity.Value * (risk.TakeProfit2ClosePercent / 100m);
+            return closeQty > 0 ? closeQty : null;
+        }
+
+        if (tp1Threshold > 0
+            && currentPnlPercent >= tp1Threshold
+            && !position.TakeProfit1Hit)
+        {
+            var closeQty = position.Quantity.Value * (risk.TakeProfit1ClosePercent / 100m);
+            return closeQty > 0 ? closeQty : null;
+        }
+
+        return null;
     }
 }

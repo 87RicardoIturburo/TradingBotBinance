@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TradingBot.Core.Common;
 using TradingBot.Core.Entities;
+using TradingBot.Core.Enums;
 using TradingBot.Core.Events;
 using TradingBot.Core.Interfaces.Repositories;
 using TradingBot.Core.Interfaces.Services;
@@ -15,13 +16,6 @@ namespace TradingBot.Application.RiskManagement;
 /// </summary>
 internal sealed class RiskManager : IRiskManager
 {
-    /// <summary>
-    /// Mínimo de trades cerrados necesarios para evaluar la esperanza matemática.
-    /// Un valor bajo (ej: 10) puede bloquear la estrategia prematuramente por
-    /// una mala racha inicial que es estadísticamente normal.
-    /// </summary>
-    internal const int MinTradesForExpectancy = 30;
-
     /// <summary>
     /// DES-A fix: multiplicador sobre la taker fee real para calcular el buffer de saldo.
     /// 3× la fee cubre fee + slippage razonable. Ej: fee 0.1% → buffer 0.3%.
@@ -66,11 +60,21 @@ internal sealed class RiskManager : IRiskManager
         var risk = strategy.RiskConfig;
         var orderAmount = order.NotionalValue;
 
-        // 0. Balance disponible en la cuenta (sólo en modo Live/Testnet)
-        if (!order.IsPaperTrade)
+        // Detectar si es una orden de salida (cierra posición existente).
+        // Las exit orders NO deben bloquearse por daily loss, max positions o expectancy,
+        // ya que impediría cerrar posiciones y agravaría las pérdidas (CRIT-NEW-1).
+        var isExitOrder = false;
+        if (order.Side == OrderSide.Sell)
         {
-            var quoteAsset = order.Symbol.Value.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
-                             ? "USDT" : "BTC";
+            var openPositions = await _positionRepository.GetOpenByStrategyIdAsync(
+                order.StrategyId, cancellationToken);
+            isExitOrder = openPositions.Any(p => p.Symbol == order.Symbol && p.Side == OrderSide.Buy);
+        }
+
+        // 0. Balance disponible en la cuenta (sólo en modo Live/Testnet, no para exits — CRIT-NEW-2)
+        if (!order.IsPaperTrade && !isExitOrder)
+        {
+            var quoteAsset = Core.ValueObjects.Symbol.ExtractQuoteAsset(order.Symbol.Value);
 
             var balanceResult = await _accountService.GetAvailableBalanceAsync(quoteAsset, cancellationToken);
             if (balanceResult.IsSuccess)
@@ -106,6 +110,27 @@ internal sealed class RiskManager : IRiskManager
             }
         }
 
+        // 0b. Balance virtual para Paper Trading (EST-D fix)
+        if (order.IsPaperTrade && !isExitOrder && _globalRisk.PaperTradingBalanceUsdt > 0)
+        {
+            var openPositions = await _positionRepository.GetOpenPositionsAsync(cancellationToken);
+            var exposedUsdt = openPositions
+                .Where(p => p.Side == OrderSide.Buy)
+                .Sum(p => p.EntryPrice.Value * p.Quantity.Value);
+            var availableVirtual = _globalRisk.PaperTradingBalanceUsdt - exposedUsdt;
+
+            if (orderAmount > availableVirtual)
+            {
+                _logger.LogWarning(
+                    "Orden Paper {OrderId} bloqueada: balance virtual disponible {Available:F2} USDT < requerido {Amount:F2} (total virtual: {Total:F2}, expuesto: {Exposed:F2})",
+                    order.Id, availableVirtual, orderAmount, _globalRisk.PaperTradingBalanceUsdt, exposedUsdt);
+
+                return Result<bool, DomainError>.Failure(
+                    DomainError.RiskLimitExceeded(
+                        $"Balance virtual insuficiente: {availableVirtual:F2} USDT disponible de {_globalRisk.PaperTradingBalanceUsdt:F2} USDT (expuesto: {exposedUsdt:F2} USDT)."));
+            }
+        }
+
         // 1. Monto máximo por orden
         if (orderAmount > risk.MaxOrderAmountUsdt)
         {
@@ -116,6 +141,15 @@ internal sealed class RiskManager : IRiskManager
             return Result<bool, DomainError>.Failure(
                 DomainError.RiskLimitExceeded(
                     $"El monto de la orden ({orderAmount:F2} USDT) supera el máximo permitido ({risk.MaxOrderAmountUsdt:F2} USDT)."));
+        }
+
+        // CRIT-NEW-1: las exit orders solo validan monto máximo — deben poder cerrar posiciones siempre
+        if (isExitOrder)
+        {
+            _logger.LogDebug(
+                "Orden de salida {OrderId} aprobada por RiskManager (monto: {Amount:F2}, exit order)",
+                order.Id, orderAmount);
+            return Result<bool, DomainError>.Success(true);
         }
 
         // 2. Pérdida diaria acumulada
@@ -144,19 +178,19 @@ internal sealed class RiskManager : IRiskManager
                     $"Número de posiciones abiertas ({openCount}) alcanzó el máximo ({risk.MaxOpenPositions})."));
         }
 
-        // 4. Límite global de pérdida diaria (todas las estrategias)
+        // 4. Límite global de pérdida diaria (todas las estrategias, incluye unrealized — ALTA-NEW-3)
         if (_globalRisk.MaxDailyLossUsdt > 0)
         {
-            var globalDailyLoss = await GetGlobalDailyLossAsync(cancellationToken);
-            if (globalDailyLoss <= -_globalRisk.MaxDailyLossUsdt)
+            var globalDailyPnL = await GetGlobalDailyPnLIncludingUnrealizedAsync(cancellationToken);
+            if (globalDailyPnL <= -_globalRisk.MaxDailyLossUsdt)
             {
                 _logger.LogCritical(
-                    "🛑 KILL SWITCH — Orden {OrderId} bloqueada: pérdida diaria GLOBAL {Loss:F2} >= límite {Limit:F2}",
-                    order.Id, globalDailyLoss, _globalRisk.MaxDailyLossUsdt);
+                    "🛑 KILL SWITCH — Orden {OrderId} bloqueada: pérdida diaria GLOBAL {Loss:F2} >= límite {Limit:F2} (incluye unrealized)",
+                    order.Id, globalDailyPnL, _globalRisk.MaxDailyLossUsdt);
 
                 return Result<bool, DomainError>.Failure(
                     DomainError.RiskLimitExceeded(
-                        $"Límite de pérdida diaria GLOBAL alcanzado ({globalDailyLoss:F2} USDT / -{_globalRisk.MaxDailyLossUsdt:F2} USDT). Todas las órdenes bloqueadas."));
+                        $"Límite de pérdida diaria GLOBAL alcanzado ({globalDailyPnL:F2} USDT / -{_globalRisk.MaxDailyLossUsdt:F2} USDT). Todas las órdenes bloqueadas."));
             }
         }
 
@@ -222,9 +256,18 @@ internal sealed class RiskManager : IRiskManager
     /// <summary>Pérdida diaria global (todas las estrategias).</summary>
     private async Task<decimal> GetGlobalDailyLossAsync(CancellationToken cancellationToken)
     {
-        var today = new DateTimeOffset(DateTimeOffset.UtcNow.Date, TimeSpan.Zero);
+        var today = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
         var positions = await _positionRepository.GetClosedByDateRangeAsync(today, DateTimeOffset.UtcNow, cancellationToken);
         return positions.Sum(p => p.RealizedPnL ?? 0m);
+    }
+
+    /// <summary>PnL diario global incluyendo posiciones abiertas (realized + unrealized).</summary>
+    private async Task<decimal> GetGlobalDailyPnLIncludingUnrealizedAsync(CancellationToken cancellationToken)
+    {
+        var realizedPnL = await GetGlobalDailyLossAsync(cancellationToken);
+        var openPositions = await _positionRepository.GetOpenPositionsAsync(cancellationToken);
+        var unrealizedPnL = openPositions.Sum(p => p.UnrealizedPnL);
+        return realizedPnL + unrealizedPnL;
     }
 
     /// <summary>Número global de posiciones abiertas (todas las estrategias).</summary>
@@ -236,7 +279,7 @@ internal sealed class RiskManager : IRiskManager
 
     /// <summary>
     /// E = (WinRate × AvgWin) − (LossRate × AvgLoss)
-    /// Devuelve null si hay menos de <see cref="MinTradesForExpectancy"/> trades cerrados.
+    /// Devuelve null si hay menos de <see cref="GlobalRiskSettings.MinTradesForExpectancy"/> trades cerrados.
     /// </summary>
     public async Task<decimal?> GetMathematicalExpectancyAsync(
         Guid strategyId,
@@ -245,7 +288,7 @@ internal sealed class RiskManager : IRiskManager
         var (totalTrades, wins, totalWinAmount, totalLossAmount) =
             await _positionRepository.GetTradeStatsAsync(strategyId, cancellationToken);
 
-        if (totalTrades < MinTradesForExpectancy)
+        if (totalTrades < _globalRisk.MinTradesForExpectancy)
             return null;
 
         var losses   = totalTrades - wins;
@@ -267,14 +310,8 @@ internal sealed class RiskManager : IRiskManager
         if (_globalRisk.MaxAccountDrawdownPercent <= 0)
             return (false, 0m);
 
-        // CRIT-D fix: incluir pérdidas no realizadas de posiciones abiertas
-        // para detectar drawdowns durante caídas sostenidas sin cierres.
-        var globalDailyPnL = await GetGlobalDailyLossAsync(cancellationToken);
-
-        var openPositions = await _positionRepository.GetOpenPositionsAsync(cancellationToken);
-        var unrealizedPnL = openPositions.Sum(p => p.UnrealizedPnL);
-
-        var totalDailyPnL = globalDailyPnL + unrealizedPnL;
+        // CRIT-D fix + ALTA-NEW-3: incluir pérdidas no realizadas de posiciones abiertas
+        var totalDailyPnL = await GetGlobalDailyPnLIncludingUnrealizedAsync(cancellationToken);
 
         if (totalDailyPnL >= 0)
             return (false, 0m);
@@ -285,8 +322,8 @@ internal sealed class RiskManager : IRiskManager
             return (false, 0m);
 
         var currentBalance = balanceResult.Value;
-        // Balance al inicio del día ≈ balance actual - P&L realizado del día - unrealized actual
-        var startOfDayBalance = currentBalance - globalDailyPnL - unrealizedPnL;
+        // Balance al inicio del día ≈ balance actual - P&L total del día
+        var startOfDayBalance = currentBalance - totalDailyPnL;
         if (startOfDayBalance <= 0)
             return (false, 0m);
 
@@ -297,9 +334,9 @@ internal sealed class RiskManager : IRiskManager
         {
             _logger.LogCritical(
                 "🛑 CIRCUIT BREAKER — Drawdown de cuenta {Drawdown:F1}% >= límite {Limit:F1}%. " +
-                "P&L realizado: {Realized:F2}, P&L no realizado: {Unrealized:F2}, Total: {Total:F2} USDT, Balance: {Balance:F2} USDT",
+                "P&L total diario: {Total:F2} USDT, Balance: {Balance:F2} USDT",
                 drawdownPercent, _globalRisk.MaxAccountDrawdownPercent,
-                globalDailyPnL, unrealizedPnL, totalDailyPnL, currentBalance);
+                totalDailyPnL, currentBalance);
         }
 
         return (isTriggered, Math.Round(drawdownPercent, 2));

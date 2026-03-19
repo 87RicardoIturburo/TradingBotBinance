@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using global::Binance.Net.Interfaces.Clients;
 using global::Binance.Net.Objects.Models.Spot.Socket;
 using CryptoExchange.Net.Objects.Sockets;
@@ -33,6 +34,16 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
     private CancellationTokenSource? _cts;
     private volatile bool _isConnected;
 
+    // DES-C fix: Channel serializa el procesamiento de fills para evitar race conditions
+    private readonly Channel<BinanceStreamOrderUpdate> _orderUpdateChannel =
+        Channel.CreateBounded<BinanceStreamOrderUpdate>(new BoundedChannelOptions(200)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+    private Task? _consumerTask;
+
     public bool IsConnected => _isConnected;
 
     public UserDataStreamService(
@@ -61,6 +72,9 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
         }
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // DES-C fix: consumer secuencial para order updates
+        _consumerTask = Task.Run(() => ProcessOrderUpdatesLoopAsync(_cts.Token), cancellationToken);
 
         // Ejecutar la conexión en background para no bloquear el arranque del host
         _ = Task.Run(() => ConnectAsync(_cts.Token), cancellationToken);
@@ -182,10 +196,37 @@ internal sealed class UserDataStreamService : IUserDataStreamService, IHostedSer
             "executionReport: BinanceId={BinanceId} Symbol={Symbol} Status={Status} FilledQty={FilledQty}",
             update.Id, update.Symbol, update.Status, update.QuantityFilled);
 
-        // CRIT-3 fix: pasar CancellationToken para que el procesamiento se detenga
-        // durante shutdown y no intente escribir en la DB después de un dispose
-        var token = _cts?.Token ?? CancellationToken.None;
-        _ = Task.Run(async () => await ProcessOrderUpdateAsync(update, token), token);
+        // DES-C fix: encolar en channel para procesamiento secuencial
+        if (!_orderUpdateChannel.Writer.TryWrite(update))
+            _logger.LogWarning("Order update channel lleno, descartando update para BinanceId={BinanceId}", update.Id);
+    }
+
+    /// <summary>
+    /// DES-C fix: consumer secuencial que procesa order updates uno a uno.
+    /// Evita race conditions al escribir en la BD desde múltiples fills simultáneos.
+    /// </summary>
+    private async Task ProcessOrderUpdatesLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var update in _orderUpdateChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await ProcessOrderUpdateAsync(update, cancellationToken);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Error procesando order update para BinanceId={BinanceId}", update.Id);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown normal
+        }
     }
 
     private async Task ProcessOrderUpdateAsync(BinanceStreamOrderUpdate update, CancellationToken cancellationToken = default)

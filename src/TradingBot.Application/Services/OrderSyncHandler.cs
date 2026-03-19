@@ -32,15 +32,38 @@ internal sealed class OrderSyncHandler(
 
         if (positionToClose is not null && order.ExecutedPrice is not null)
         {
-            // Cerrar posición existente del lado opuesto, descontando fee de salida
-            var reason = closeReason ?? CloseReason.Manual;
-            positionToClose.Close(order.ExecutedPrice, order.Fee, reason);
-            await positionRepository.UpdateAsync(positionToClose, cancellationToken);
+            // EST-10: distinguir cierre parcial (TP escalonado) de cierre total.
+            // Si la cantidad vendida es menor que la posición, reducir sin cerrar.
+            var isPartialClose = order.FilledQuantity is not null
+                                 && order.FilledQuantity.Value < positionToClose.Quantity.Value;
 
-            logger.LogInformation(
-                "Posición {PosId} cerrada ({Reason}): {Side} {Symbol} PnL={PnL:F2} (fees: entry={EntryFee:F4}, exit={ExitFee:F4})",
-                positionToClose.Id, reason, positionToClose.Side, order.Symbol.Value,
-                positionToClose.RealizedPnL, positionToClose.EntryFee, positionToClose.ExitFee);
+            if (isPartialClose)
+            {
+                var partialResult = positionToClose.ReduceQuantity(
+                    order.FilledQuantity!, order.ExecutedPrice, order.Fee);
+
+                await positionRepository.UpdateAsync(positionToClose, cancellationToken);
+
+                if (partialResult.IsSuccess)
+                {
+                    logger.LogInformation(
+                        "Cierre parcial (TP escalonado) posición {PosId}: vendido {Qty} {Symbol} @ {Price}, " +
+                        "restante {Remaining}, PnL parcial={PartialPnL:F4}",
+                        positionToClose.Id, order.FilledQuantity!.Value, order.Symbol.Value,
+                        order.ExecutedPrice.Value, positionToClose.Quantity.Value, partialResult.Value);
+                }
+            }
+            else
+            {
+                var reason = closeReason ?? CloseReason.Manual;
+                positionToClose.Close(order.ExecutedPrice, order.Fee, reason);
+                await positionRepository.UpdateAsync(positionToClose, cancellationToken);
+
+                logger.LogInformation(
+                    "Posición {PosId} cerrada ({Reason}): {Side} {Symbol} PnL={PnL:F2} (fees: entry={EntryFee:F4}, exit={ExitFee:F4})",
+                    positionToClose.Id, reason, positionToClose.Side, order.Symbol.Value,
+                    positionToClose.RealizedPnL, positionToClose.EntryFee, positionToClose.ExitFee);
+            }
         }
         else if (order.Side == OrderSide.Buy)
         {

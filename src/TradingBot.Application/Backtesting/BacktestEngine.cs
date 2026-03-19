@@ -68,10 +68,12 @@ internal sealed class BacktestEngine
 
             // TRADE-1 fix: usar ProcessKlineAsync para alimentar indicadores y generar señales.
             // ProcessTickAsync ya no alimenta indicadores (solo se usa para SL/TP en el tick loop).
+            // DES-E fix: CloseTime calculado según el timeframe real, no hardcoded +1min.
+            var intervalMinutes = strategy.Timeframe.ToMinutes();
             var klineEvent = new KlineClosedEvent(
                 strategy.Symbol, strategy.Timeframe,
                 kline.Open, kline.High, kline.Low, kline.Close,
-                kline.Volume, kline.OpenTime, kline.OpenTime.AddMinutes(1));
+                kline.Volume, kline.OpenTime, kline.OpenTime.AddMinutes(intervalMinutes));
 
             var signalResult = await tradingStrategy.ProcessKlineAsync(klineEvent, cancellationToken);
             // No se interrumpe aquí: la evaluación de salida debe ejecutarse siempre

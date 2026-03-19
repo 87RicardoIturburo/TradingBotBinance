@@ -67,6 +67,19 @@ public interface ITradingStrategy
     bool IsConfirmationAligned(OrderSide side);
 
     /// <summary>
+    /// EST-15: Procesa una vela cerrada de BTCUSDT para el filtro de correlación.
+    /// Solo relevante para estrategias que operan altcoins (no BTC).
+    /// </summary>
+    void ProcessBtcKline(KlineClosedEvent kline);
+
+    /// <summary>
+    /// EST-15: Indica si la tendencia de BTC está alineada con la dirección indicada.
+    /// Para Buy: BTC debe estar por encima de su EMA. <c>true</c> si el filtro no aplica
+    /// (la estrategia opera BTCUSDT) o no está listo.
+    /// </summary>
+    bool IsBtcAligned(OrderSide side);
+
+    /// <summary>
     /// Recarga la configuración en caliente sin detener el procesamiento.
     /// Publicado por <see cref="StrategyUpdatedEvent"/>.
     /// </summary>
@@ -74,6 +87,12 @@ public interface ITradingStrategy
 
     /// <summary>Reinicia los buffers internos de todos los indicadores.</summary>
     void Reset();
+
+    /// <summary>
+    /// EST-17: Notifica a la estrategia que una posición fue cerrada por stop-loss.
+    /// Permite activar el modo de re-entrada con cooldown reducido si la tendencia sigue intacta.
+    /// </summary>
+    void NotifyStopLossHit();
 
     /// <summary>
     /// Alimenta un precio a los indicadores sin evaluar señales ni afectar
@@ -87,7 +106,7 @@ public interface ITradingStrategy
     /// Preferido sobre <see cref="WarmUpPrice"/> cuando se dispone de velas completas,
     /// ya que permite calcular ATR con True Range real en vez de aproximaciones.
     /// </summary>
-    void WarmUpOhlc(decimal high, decimal low, decimal close);
+    void WarmUpOhlc(decimal high, decimal low, decimal close, decimal volume = 0m);
 
     /// <summary>
     /// Devuelve un snapshot de los valores actuales de todos los indicadores listos,

@@ -135,7 +135,7 @@ internal sealed class OptimizationEngine
 
             var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
             for (var i = 0; i < warmUpCount; i++)
-                tradingStrategy.WarmUpOhlc(klines[i].High, klines[i].Low, klines[i].Close);
+                tradingStrategy.WarmUpOhlc(klines[i].High, klines[i].Low, klines[i].Close, klines[i].Volume);
 
             // Sincronizar estado previo de RSI/MACD para evitar señales falsas
             // en el primer tick del backtest (sin setear cooldown)
@@ -369,9 +369,6 @@ internal sealed class OptimizationEngine
                 copy.AddIndicator(indicator);
         }
 
-        // Copiar reglas, aplicando amountUsdt y sincronizando umbrales de indicadores.
-        // Cuando se optimiza RSI.oversold=25, las condiciones de regla "RSI < X" también
-        // se actualizan a 25 para que señal y regla usen el mismo umbral.
         var overrideAmount = parameters.TryGetValue("amountUsdt", out var amt) ? amt : (decimal?)null;
 
         foreach (var rule in baseStrategy.Rules)
@@ -380,7 +377,9 @@ internal sealed class OptimizationEngine
                 ? new RuleAction(rule.Action.Type, overrideAmount.Value, rule.Action.LimitPriceOffsetPercent)
                 : rule.Action;
 
-            var updatedCondition = RebuildCondition(rule.Condition, parameters);
+            var updatedCondition = rule.Type == RuleType.Entry
+                ? RebuildCondition(rule.Condition, parameters)
+                : rule.Condition;
 
             var ruleResult = TradingRule.Create(
                 copy.Id, rule.Name, rule.Type,

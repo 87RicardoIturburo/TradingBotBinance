@@ -56,9 +56,9 @@ internal static class PositionSizer
             quantityBase = amountUsdt / currentPrice;
         }
 
-        // Mínimo viable
-        if (amountUsdt < 1m)
-            amountUsdt = 1m;
+        // Mínimo viable: Binance MIN_NOTIONAL requiere al menos $10 por orden
+        if (amountUsdt < 10m)
+            amountUsdt = 10m;
 
         return new PositionSizeResult(
             AmountUsdt: amountUsdt,

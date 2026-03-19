@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TradingBot.Application.Diagnostics;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Entities;
@@ -29,6 +30,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     private readonly IMarketDataService                               _marketDataService;
     private readonly IGlobalCircuitBreaker                            _circuitBreaker;
     private readonly IIndicatorStateStore                             _indicatorStateStore;
+    private readonly GlobalRiskSettings                                _globalRisk;
     private readonly TradingMetrics                                   _metrics;
     private readonly ILogger<StrategyEngine>                          _logger;
     private readonly ConcurrentDictionary<Guid, StrategyRunnerState>  _runners = new();
@@ -44,6 +46,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         IMarketDataService     marketDataService,
         IGlobalCircuitBreaker  circuitBreaker,
         IIndicatorStateStore   indicatorStateStore,
+        IOptions<GlobalRiskSettings> globalRiskOptions,
         TradingMetrics         metrics,
         ILogger<StrategyEngine> logger)
     {
@@ -51,35 +54,71 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         _marketDataService   = marketDataService;
         _circuitBreaker      = circuitBreaker;
         _indicatorStateStore = indicatorStateStore;
+        _globalRisk          = globalRiskOptions.Value;
         _metrics             = metrics;
         _logger              = logger;
     }
 
     // ── BackgroundService ──────────────────────────────────────────────────
 
+    private const int MaxStartupRetries = 10;
+    private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(5);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("StrategyEngine arrancando…");
 
-        await LoadAndStartActiveStrategiesAsync(stoppingToken);
+        await LoadWithRetryAsync(stoppingToken);
 
         _logger.LogInformation(
             "StrategyEngine iniciado con {Count} estrategias activas", _runners.Count);
 
-        // Watchdog: verificar periódicamente que todas las estrategias reciben ticks
         _ = RunTickWatchdogAsync(stoppingToken);
 
-        // Drawdown checker: verificar periódicamente el drawdown de la cuenta y activar circuit breaker
         _ = RunDrawdownCheckerAsync(stoppingToken);
 
-        // Mantener vivo hasta que se detenga el host
         try
         {
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException)
         {
-            // Shutdown normal
+        }
+    }
+
+    private async Task LoadWithRetryAsync(CancellationToken stoppingToken)
+    {
+        var delay = InitialRetryDelay;
+
+        for (var attempt = 1; attempt <= MaxStartupRetries; attempt++)
+        {
+            try
+            {
+                await LoadAndStartActiveStrategiesAsync(stoppingToken);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "No se pudo cargar estrategias activas (intento {Attempt}/{Max}). Reintentando en {Delay}s…",
+                    attempt, MaxStartupRetries, delay.TotalSeconds);
+
+                if (attempt == MaxStartupRetries)
+                {
+                    _logger.LogError(
+                        "Se agotaron los reintentos ({Max}) para cargar estrategias. " +
+                        "El engine arrancará sin estrategias activas y esperará comandos manuales.",
+                        MaxStartupRetries);
+                    return;
+                }
+
+                await Task.Delay(delay, stoppingToken);
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 60));
+            }
         }
     }
 
@@ -159,6 +198,11 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             // Hot-reload: recargar config en la instancia existente y actualizar cache
             await existing.Strategy.ReloadConfigAsync(config, cancellationToken);
             existing.CachedConfig = config;
+
+            // CRIT-NEW-4 fix: ReloadConfigAsync ejecuta RebuildIndicators que limpia
+            // todos los indicadores. Re-ejecutar warm-up para reconstruir el estado.
+            await WarmUpIndicatorsAsync(existing.Strategy, config, cancellationToken);
+
             _logger.LogInformation("Hot-reload completado para estrategia '{Name}' ({Id})", config.Name, strategyId);
         }
         else
@@ -222,6 +266,21 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             await _marketDataService.SubscribeKlinesAsync(
                 config.Symbol, config.ConfirmationTimeframe.Value, cancellationToken);
 
+        // EST-15: para altcoins, suscribir a klines de BTCUSDT para filtro de correlación
+        var isBtcPair = config.Symbol.Value.StartsWith("BTC", StringComparison.OrdinalIgnoreCase);
+        Symbol? btcSymbol = null;
+        CandleInterval btcInterval = default;
+        if (!isBtcPair)
+        {
+            var btcResult = Symbol.Create("BTCUSDT");
+            if (btcResult.IsSuccess)
+            {
+                btcSymbol = btcResult.Value;
+                btcInterval = config.ConfirmationTimeframe ?? CandleInterval.FourHours;
+                await _marketDataService.SubscribeKlinesAsync(btcSymbol, btcInterval, cancellationToken);
+            }
+        }
+
         // Crear y arrancar el runner
         var cts    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var runner = new StrategyRunnerState(config.Id, config.Name, config.Symbol, tradingStrategy, cts, runnerScope);
@@ -237,6 +296,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             // Multi-Timeframe: loop de confirmación en paralelo
             if (config.ConfirmationTimeframe.HasValue)
                 tasks.Add(ProcessConfirmationKlinesLoopAsync(runner, config.ConfirmationTimeframe.Value));
+
+            // EST-15: loop de BTC klines para altcoins
+            if (btcSymbol is not null)
+                tasks.Add(ProcessBtcKlinesLoopAsync(runner, btcSymbol, btcInterval));
 
             await Task.WhenAll(tasks);
         }, cts.Token);
@@ -283,7 +346,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                 // TRADE-1/CRIT-1 fix: alimentar indicadores directamente con OHLC.
                 // Esto permite que el ATR calcule True Range real (max(H-L, |H-pC|, |L-pC|))
                 // en vez de la aproximación |close-prevClose|.
-                tradingStrategy.WarmUpOhlc(kline.High, kline.Low, kline.Close);
+                tradingStrategy.WarmUpOhlc(kline.High, kline.Low, kline.Close, kline.Volume);
             }
 
             // Sincronizar estado previo para evitar señales falsas en la primera vela real
@@ -319,6 +382,102 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                 "Warm-up completado para '{Name}': {Count} cierres históricos procesados (fallback, ATR puede ser impreciso)",
                 config.Name, closesResult.Value.Count);
         }
+
+        // ALTA-NEW-2: warm-up de la EMA de confirmación HTF
+        await WarmUpConfirmationEmaAsync(tradingStrategy, config, cancellationToken);
+
+        // EST-15: warm-up de la EMA de BTC para filtro de correlación en altcoins
+        await WarmUpBtcEmaAsync(tradingStrategy, config, cancellationToken);
+    }
+
+    /// <summary>
+    /// ALTA-NEW-2: Precalienta la EMA de confirmación HTF con klines históricas.
+    /// Sin esto, la EMA necesita N×HTF velas en tiempo real (ej: EMA 20 en 4H = 80h).
+    /// </summary>
+    private async Task WarmUpConfirmationEmaAsync(
+        ITradingStrategy tradingStrategy,
+        TradingStrategy config,
+        CancellationToken cancellationToken)
+    {
+        if (!config.ConfirmationTimeframe.HasValue)
+            return;
+
+        var htfInterval = config.ConfirmationTimeframe.Value;
+        var htfIntervalMinutes = GetIntervalMinutes(htfInterval);
+        var htfCount = config.RiskConfig.ConfirmationEmaPeriod + 10;
+        var htfFrom = DateTimeOffset.UtcNow.AddMinutes(-(htfCount * htfIntervalMinutes));
+
+        var htfKlines = await _marketDataService.GetKlinesAsync(
+            config.Symbol, htfFrom, DateTimeOffset.UtcNow, cancellationToken, htfInterval);
+
+        if (htfKlines.IsFailure || htfKlines.Value.Count == 0)
+        {
+            _logger.LogWarning(
+                "No se pudieron obtener klines HTF ({Interval}) para warm-up de confirmación EMA de '{Name}'",
+                htfInterval, config.Name);
+            return;
+        }
+
+        foreach (var k in htfKlines.Value)
+        {
+            tradingStrategy.ProcessConfirmationKline(new KlineClosedEvent(
+                config.Symbol,
+                htfInterval,
+                k.Open, k.High, k.Low, k.Close, k.Volume,
+                k.OpenTime,
+                k.OpenTime.AddMinutes(htfIntervalMinutes)));
+        }
+
+        _logger.LogDebug(
+            "Warm-up HTF completado para '{Name}': {Count} klines de {Interval} procesadas (confirmación EMA {Period})",
+            config.Name, htfKlines.Value.Count, htfInterval, config.RiskConfig.ConfirmationEmaPeriod);
+    }
+
+    /// <summary>
+    /// EST-15: Precalienta la EMA de BTC con klines históricas de BTCUSDT.
+    /// Solo aplica para estrategias que operan altcoins (no BTC).
+    /// </summary>
+    private async Task WarmUpBtcEmaAsync(
+        ITradingStrategy tradingStrategy,
+        TradingStrategy config,
+        CancellationToken cancellationToken)
+    {
+        if (config.Symbol.Value.StartsWith("BTC", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var btcSymbolResult = Symbol.Create("BTCUSDT");
+        if (btcSymbolResult.IsFailure)
+            return;
+
+        var btcInterval = config.ConfirmationTimeframe ?? CandleInterval.FourHours;
+        var btcIntervalMinutes = GetIntervalMinutes(btcInterval);
+        var btcCount = config.RiskConfig.ConfirmationEmaPeriod + 10;
+        var btcFrom = DateTimeOffset.UtcNow.AddMinutes(-(btcCount * btcIntervalMinutes));
+
+        var btcKlines = await _marketDataService.GetKlinesAsync(
+            btcSymbolResult.Value, btcFrom, DateTimeOffset.UtcNow, cancellationToken, btcInterval);
+
+        if (btcKlines.IsFailure || btcKlines.Value.Count == 0)
+        {
+            _logger.LogWarning(
+                "No se pudieron obtener klines de BTCUSDT ({Interval}) para warm-up de correlación BTC de '{Name}'",
+                btcInterval, config.Name);
+            return;
+        }
+
+        foreach (var k in btcKlines.Value)
+        {
+            tradingStrategy.ProcessBtcKline(new KlineClosedEvent(
+                btcSymbolResult.Value,
+                btcInterval,
+                k.Open, k.High, k.Low, k.Close, k.Volume,
+                k.OpenTime,
+                k.OpenTime.AddMinutes(btcIntervalMinutes)));
+        }
+
+        _logger.LogDebug(
+            "Warm-up BTC completado para '{Name}': {Count} klines de BTCUSDT {Interval} procesadas",
+            config.Name, btcKlines.Value.Count, btcInterval);
     }
 
     /// <summary>
@@ -457,7 +616,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     /// </summary>
     private async Task RunTickWatchdogAsync(CancellationToken cancellationToken)
     {
-        const int checkIntervalSeconds = 60;
+        var checkIntervalSeconds = _globalRisk.WatchdogIntervalSeconds;
         const int maxSilenceMinutes    = 5;
 
         try
@@ -509,7 +668,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     /// </summary>
     private async Task RunDrawdownCheckerAsync(CancellationToken cancellationToken)
     {
-        const int checkIntervalSeconds = 30;
+        var checkIntervalSeconds = _globalRisk.DrawdownCheckIntervalSeconds;
 
         try
         {
@@ -726,13 +885,61 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             if (existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy))
                 return;
         }
-        else // Sell → solo si hay Long que cerrar
+        else // Sell
         {
-            if (!existingPositions.Any(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy))
+            var longPosition = existingPositions
+                .FirstOrDefault(p => p.Symbol == signal.Symbol && p.Side == OrderSide.Buy);
+
+            if (longPosition is null)
             {
                 _logger.LogDebug(
                     "Señal Sell descartada para '{Name}': no hay posición Long abierta en {Symbol}",
                     runner.StrategyName, signal.Symbol.Value);
+                return;
+            }
+
+            // EST-18: señal Sell con posición Long en ganancia → cierre proactivo.
+            // Saltea filtros de confirmación/BTC (queremos cerrar antes de reversión).
+            if (longPosition.UnrealizedPnLPercent > 0)
+            {
+                _logger.LogInformation(
+                    "EST-18: cierre proactivo de posición {PosId} por señal Sell ({Source}). PnL={PnL:F2}%",
+                    longPosition.Id, signal.IndicatorSnapshot, longPosition.UnrealizedPnLPercent);
+
+                var exitSide = OrderSide.Sell;
+                var exitOrderResult = Order.Create(
+                    strategy.Id, longPosition.Symbol, exitSide,
+                    OrderType.Market, longPosition.Quantity, strategy.Mode,
+                    estimatedPrice: signal.CurrentPrice);
+
+                if (exitOrderResult.IsSuccess)
+                {
+                    var exitOrder = exitOrderResult.Value;
+                    var orderRepo = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
+                    var hasPending = await orderRepo.HasPendingCloseOrderAsync(
+                        runner.StrategyId, exitOrder.Symbol, exitOrder.Side, cancellationToken);
+                    if (!hasPending)
+                    {
+                        var proactivePlaceResult = await orderService.PlaceOrderAsync(exitOrder, cancellationToken);
+                        if (proactivePlaceResult.IsSuccess)
+                        {
+                            runner.OrdersPlaced++;
+                            runner.InvalidatePositionCache();
+                            _logger.LogInformation(
+                                "Orden de cierre proactivo por '{Name}': Sell {Symbol} (posición {PosId}, PnL={PnL:F2}%)",
+                                runner.StrategyName, exitOrder.Symbol.Value, longPosition.Id,
+                                longPosition.UnrealizedPnLPercent);
+
+                            if (notifier is not null)
+                                await notifier.NotifyOrderExecutedAsync(
+                                    new OrderPlacedEvent(
+                                        exitOrder.Id, exitOrder.StrategyId, exitOrder.Symbol,
+                                        exitOrder.Side, exitOrder.Type, exitOrder.Quantity,
+                                        exitOrder.LimitPrice, exitOrder.IsPaperTrade),
+                                    cancellationToken);
+                        }
+                    }
+                }
                 return;
             }
         }
@@ -742,6 +949,15 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         {
             _logger.LogDebug(
                 "Señal {Direction} en '{Name}' rechazada: HTF no confirma la dirección",
+                signal.Direction, runner.StrategyName);
+            return;
+        }
+
+        // EST-15: verificar que BTC confirma la dirección (solo altcoins)
+        if (!runner.Strategy.IsBtcAligned(signal.Direction))
+        {
+            _logger.LogDebug(
+                "Señal {Direction} en '{Name}' rechazada: BTC no confirma la dirección",
                 signal.Direction, runner.StrategyName);
             return;
         }
@@ -841,6 +1057,47 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         {
             _logger.LogError(ex,
                 "Confirmation kline loop terminado inesperadamente para '{Name}' ({Id})",
+                runner.StrategyName, runner.StrategyId);
+        }
+    }
+
+    // ── EST-15: Loop de BTC klines para filtro de correlación ────────────
+
+    private async Task ProcessBtcKlinesLoopAsync(
+        StrategyRunnerState runner,
+        Symbol btcSymbol,
+        CandleInterval btcInterval)
+    {
+        var token = runner.CancellationTokenSource.Token;
+
+        _logger.LogDebug(
+            "BTC correlation kline loop iniciado para '{Name}' ({Id}) [{Interval}]",
+            runner.StrategyName, runner.StrategyId, btcInterval);
+
+        try
+        {
+            await foreach (var kline in _marketDataService.GetKlineStreamAsync(
+                               btcSymbol, btcInterval, token))
+            {
+                if (token.IsCancellationRequested) break;
+
+                try
+                {
+                    runner.Strategy.ProcessBtcKline(kline);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Error procesando BTC kline para '{Name}' ({Id})",
+                        runner.StrategyName, runner.StrategyId);
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* shutdown normal */ }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "BTC correlation kline loop terminado inesperadamente para '{Name}' ({Id})",
                 runner.StrategyName, runner.StrategyId);
         }
     }
@@ -1038,6 +1295,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
                         "Orden de salida colocada por '{Name}': {Side} {Symbol} (posición {PosId})",
                         runner.StrategyName, exitOrder.Side, exitOrder.Symbol.Value, position.Id);
 
+                    // EST-17: notificar a la estrategia si fue un stop-loss
+                    if (position.UnrealizedPnLPercent <= -(decimal)strategy.RiskConfig.StopLossPercent)
+                        runner.Strategy.NotifyStopLossHit();
+
                     if (notifier is not null)
                         await notifier.NotifyOrderExecutedAsync(
                             new OrderPlacedEvent(
@@ -1089,18 +1350,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// <summary>Duración en minutos de un intervalo de vela. Usado para calcular el rango histórico de warm-up.</summary>
-    private static int GetIntervalMinutes(CandleInterval interval) => interval switch
-    {
-        CandleInterval.OneMinute      => 1,
-        CandleInterval.FiveMinutes    => 5,
-        CandleInterval.FifteenMinutes => 15,
-        CandleInterval.ThirtyMinutes  => 30,
-        CandleInterval.OneHour        => 60,
-        CandleInterval.FourHours      => 240,
-        CandleInterval.OneDay         => 1440,
-        _                             => 1
-    };
+    /// <summary>Duración en minutos de un intervalo de vela. Delega a la extensión centralizada.</summary>
+    private static int GetIntervalMinutes(CandleInterval interval) => interval.ToMinutes();
 
     /// <summary>
     /// CRIT-B fix: calcula el número de períodos de warm-up necesarios para un indicador

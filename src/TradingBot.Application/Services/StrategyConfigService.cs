@@ -10,29 +10,23 @@ namespace TradingBot.Application.Services;
 /// <summary>
 /// Servicio de configuración de estrategias con hot-reload.
 /// Gestiona el ciclo de vida completo CRUD + activación/desactivación.
-/// Invalida el caché de Redis al modificar y notifica al StrategyEngine.
+/// Notifica al StrategyEngine tras modificaciones.
 /// </summary>
 internal sealed class StrategyConfigService : IStrategyConfigService
 {
     private readonly IStrategyRepository              _repository;
     private readonly IUnitOfWork                      _unitOfWork;
-    private readonly ICacheService                    _cache;
     private readonly IStrategyEngine                  _strategyEngine;
     private readonly ILogger<StrategyConfigService>   _logger;
-
-    private const string CachePrefix     = "strategy:";
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
 
     public StrategyConfigService(
         IStrategyRepository            repository,
         IUnitOfWork                    unitOfWork,
-        ICacheService                  cache,
         IStrategyEngine                strategyEngine,
         ILogger<StrategyConfigService> logger)
     {
         _repository     = repository;
         _unitOfWork     = unitOfWork;
-        _cache          = cache;
         _strategyEngine = strategyEngine;
         _logger         = logger;
     }
@@ -41,18 +35,11 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         Guid id,
         CancellationToken cancellationToken = default)
     {
-        var cached = await _cache.GetAsync<TradingStrategy>(
-            $"{CachePrefix}{id}", cancellationToken);
-
-        if (cached is not null)
-            return Result<TradingStrategy, DomainError>.Success(cached);
-
         var strategy = await _repository.GetWithRulesAsync(id, cancellationToken);
         if (strategy is null)
             return Result<TradingStrategy, DomainError>.Failure(
                 DomainError.NotFound($"Estrategia '{id}'"));
 
-        await _cache.SetAsync($"{CachePrefix}{id}", strategy, CacheTtl, cancellationToken);
         return Result<TradingStrategy, DomainError>.Success(strategy);
     }
 
@@ -71,7 +58,6 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         await _repository.AddAsync(strategy, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        await _cache.SetAsync($"{CachePrefix}{strategy.Id}", strategy, CacheTtl, cancellationToken);
         _logger.LogInformation("Estrategia '{Name}' ({Id}) creada", strategy.Name, strategy.Id);
 
         return Result<TradingStrategy, DomainError>.Success(strategy);
@@ -84,7 +70,6 @@ internal sealed class StrategyConfigService : IStrategyConfigService
         await _repository.UpdateAsync(strategy, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        await _cache.SetAsync($"{CachePrefix}{strategy.Id}", strategy, CacheTtl, cancellationToken);
         _logger.LogInformation("Estrategia '{Name}' ({Id}) actualizada", strategy.Name, strategy.Id);
 
         await _strategyEngine.ReloadStrategyAsync(strategy.Id, cancellationToken);
@@ -107,7 +92,6 @@ internal sealed class StrategyConfigService : IStrategyConfigService
 
         await _repository.UpdateAsync(strategy, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.SetAsync($"{CachePrefix}{id}", strategy, CacheTtl, cancellationToken);
 
         _logger.LogInformation("Estrategia '{Name}' ({Id}) activada", strategy.Name, id);
 
@@ -129,7 +113,6 @@ internal sealed class StrategyConfigService : IStrategyConfigService
 
         await _repository.UpdateAsync(strategy, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync($"{CachePrefix}{id}", cancellationToken);
 
         _logger.LogInformation("Estrategia '{Name}' ({Id}) desactivada", strategy.Name, id);
 
@@ -154,7 +137,6 @@ internal sealed class StrategyConfigService : IStrategyConfigService
 
         await _repository.DeleteAsync(id, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync($"{CachePrefix}{id}", cancellationToken);
 
         _logger.LogInformation("Estrategia ({Id}) eliminada", id);
         return Result<bool, DomainError>.Success(true);

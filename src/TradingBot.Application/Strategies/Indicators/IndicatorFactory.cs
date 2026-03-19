@@ -29,6 +29,8 @@ internal static class IndicatorFactory
                                               (int)config.GetParameter("period", 14)),
         IndicatorType.ATR              => new AtrIndicator(
                                               (int)config.GetParameter("period", 14)),
+        IndicatorType.Volume           => new VolumeSmaIndicator(
+                                              (int)config.GetParameter("period", 20)),
         _                              => throw new NotSupportedException($"Indicador '{config.Type}' no soportado aún.")
     };
 }

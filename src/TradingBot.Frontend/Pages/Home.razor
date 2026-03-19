@@ -20,6 +20,31 @@
     </div>
 }
 
+@* ── Banner de infraestructura degradada ─────────────────────────────── *@
+@if (infraHealth is not null && infraHealth.OverallStatus != "Healthy")
+{
+    var unhealthy = infraHealth.Components?
+        .Where(c => c.Status != "Healthy")
+        .ToList() ?? [];
+
+    <div class="alert alert-warning py-2 mb-3">
+        <div class="d-flex align-items-center">
+            <strong class="me-2">⚠ Infraestructura degradada</strong>
+            @foreach (var comp in unhealthy)
+            {
+                var badgeClass = comp.Status == "Unhealthy" ? "bg-danger" : "bg-warning text-dark";
+                <span class="badge @badgeClass me-1">@ComponentDisplayName(comp.Name): @comp.Status</span>
+            }
+        </div>
+        @foreach (var comp in unhealthy.Where(c => c.Error is not null))
+        {
+            <div class="small text-muted mt-1">
+                <strong>@ComponentDisplayName(comp.Name):</strong> @comp.Error
+            </div>
+        }
+    </div>
+}
+
 @* ── Estado del sistema ──────────────────────────────────────────────── *@
 <div class="row mb-4">
     <div class="col-md-3">
@@ -376,6 +401,7 @@ else
 
 @code {
     private SystemStatusDto? systemStatus;
+    private InfrastructureHealthDto? infraHealth;
     private List<PnLSummaryDto>? pnlSummaries;
     private List<AccountBalanceDto>? accountBalances;
     private PortfolioExposureDto? portfolioExposure;
@@ -398,16 +424,17 @@ else
     protected override async Task OnInitializedAsync()
     {
         await LoadStatusAsync();
+        await LoadHealthAsync();
         await LoadPnLAsync();
         await LoadBalanceAsync();
         await LoadExposureAsync();
         await StartSignalRAsync();
 
-        // Refrescar P&L y status cada 15 segundos (antes 30)
         _refreshTimer = new System.Threading.Timer(
             async _ => await InvokeAsync(async () =>
             {
                 await LoadStatusAsync();
+                await LoadHealthAsync();
                 await LoadPnLAsync();
                 await LoadBalanceAsync();
                 await LoadExposureAsync();
@@ -452,7 +479,18 @@ else
         }
         catch
         {
-            // P&L es informativo; no bloquear la UI si falla
+        }
+    }
+
+    private async Task LoadHealthAsync()
+    {
+        try
+        {
+            if (!apiReachable) return;
+            infraHealth = await Api.GetHealthAsync();
+        }
+        catch
+        {
         }
     }
 
@@ -644,4 +682,12 @@ else
 
     private sealed record SignalDto(string Symbol, string Direction);
     private sealed record OrderExecutedDto(string Symbol, string Side, decimal Quantity, bool IsPaperTrade);
+
+    private static string ComponentDisplayName(string name) => name switch
+    {
+        "postgresql" => "🗄 PostgreSQL",
+        "redis"      => "⚡ Redis",
+        "binance"    => "📡 Binance",
+        _            => name
+    };
 }

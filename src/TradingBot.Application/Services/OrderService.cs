@@ -460,16 +460,7 @@ internal sealed class OrderService : IOrderService
 
     /// <summary>Extrae el quote asset del símbolo (BTCUSDT → USDT).</summary>
     private static string ExtractQuoteAsset(string symbol)
-    {
-        ReadOnlySpan<char> s = symbol;
-        string[] quoteAssets = ["USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"];
-        foreach (var qa in quoteAssets)
-        {
-            if (s.EndsWith(qa, StringComparison.OrdinalIgnoreCase))
-                return qa;
-        }
-        return "USDT"; // fallback conservador
-    }
+        => Core.ValueObjects.Symbol.ExtractQuoteAsset(symbol);
 
     /// <summary>
     /// CRIT-C fix: valida spread bid-ask usando <c>MaxSpreadPercent</c> de la estrategia.

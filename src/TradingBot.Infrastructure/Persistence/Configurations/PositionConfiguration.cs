@@ -47,6 +47,10 @@ internal sealed class PositionConfiguration : IEntityTypeConfiguration<Position>
         builder.Property(x => x.ExitFee).HasDefaultValue(0m);
         builder.Property(x => x.CloseReason).HasConversion<int>();
 
+        builder.Property(x => x.TakeProfit1Hit).HasDefaultValue(false);
+        builder.Property(x => x.TakeProfit2Hit).HasDefaultValue(false);
+        builder.Property(x => x.PartialRealizedPnL).HasDefaultValue(0m);
+
         builder.Property(x => x.Version).IsConcurrencyToken();
         builder.Property(x => x.OpenedAt).IsRequired();
 

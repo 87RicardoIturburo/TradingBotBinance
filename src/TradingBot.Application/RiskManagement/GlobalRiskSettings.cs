@@ -32,4 +32,22 @@ public sealed class GlobalRiskSettings
     /// Se calcula sobre el balance al inicio del día.
     /// </summary>
     public decimal MaxAccountDrawdownPercent { get; set; }
+
+    /// <summary>
+    /// Mínimo de trades cerrados necesarios para evaluar la esperanza matemática.
+    /// Un valor bajo puede bloquear la estrategia prematuramente por una mala racha inicial.
+    /// </summary>
+    public int MinTradesForExpectancy { get; set; } = 30;
+
+    /// <summary>Intervalo en segundos del watchdog de ticks. Default 60.</summary>
+    public int WatchdogIntervalSeconds { get; set; } = 60;
+
+    /// <summary>Intervalo en segundos del checker de drawdown. Default 30.</summary>
+    public int DrawdownCheckIntervalSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Balance virtual simulado para Paper Trading en USDT. 0 = ilimitado (comportamiento anterior).
+    /// Cuando es mayor que 0, las órdenes Paper se validan contra este balance menos las posiciones abiertas.
+    /// </summary>
+    public decimal PaperTradingBalanceUsdt { get; set; }
 }
