@@ -128,10 +128,7 @@ internal sealed class OptimizationEngine
 
             // Warm-up: alimentar indicadores SIN evaluar señales para no contaminar
             // _lastSignalAt ni _previousRsi con señales fantasma del warm-up
-            var maxPeriod = modifiedStrategy.Indicators
-                .Select(i => (int)i.GetParameter("period", 14))
-                .DefaultIfEmpty(0)
-                .Max();
+            var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(modifiedStrategy.Indicators);
 
             var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
             for (var i = 0; i < warmUpCount; i++)
@@ -482,10 +479,7 @@ internal sealed class OptimizationEngine
         var (testTradingStrategy, testRuleEngine) = await strategyFactory(testStrategy, cancellationToken);
 
         // Warm-up con datos de train para que los indicadores estén precalentados
-        var maxPeriod = testStrategy.Indicators
-            .Select(i => (int)i.GetParameter("period", 14))
-            .DefaultIfEmpty(0)
-            .Max();
+        var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(testStrategy.Indicators);
         var warmUpCount = Math.Min(maxPeriod + 10, trainKlines.Count);
         for (var i = Math.Max(0, trainKlines.Count - warmUpCount); i < trainKlines.Count; i++)
             testTradingStrategy.WarmUpPrice(trainKlines[i].Close);

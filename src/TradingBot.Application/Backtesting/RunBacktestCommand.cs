@@ -88,10 +88,7 @@ internal sealed class RunBacktestCommandHandler(
 
         // 4. Pre-calentar indicadores SIN evaluar señales (evita contaminar
         //    _lastSignalAt y _previousRsi con señales fantasma del warm-up)
-        var maxPeriod = strategy.Indicators
-            .Select(i => (int)i.GetParameter("period", 14))
-            .DefaultIfEmpty(0)
-            .Max();
+        var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(strategy.Indicators);
 
         var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
         for (var i = 0; i < warmUpCount; i++)

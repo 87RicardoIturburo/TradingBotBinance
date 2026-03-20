@@ -52,4 +52,10 @@ public sealed class RiskBudgetConfig
 
     /// <summary>Indica si el guardián está habilitado (capital > 0).</summary>
     public bool IsEnabled => TotalCapitalUsdt > 0;
+
+    /// <summary>
+    /// Fecha de inicio del presupuesto de riesgo. Solo se contabilizan posiciones
+    /// cerradas a partir de esta fecha. <c>null</c> = últimos 30 días.
+    /// </summary>
+    public DateTimeOffset? BudgetStartDate { get; set; }
 }

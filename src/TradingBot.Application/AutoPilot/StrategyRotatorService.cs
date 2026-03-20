@@ -1,9 +1,14 @@
+using System.Collections.Concurrent;
+using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TradingBot.Application.Backtesting;
 using TradingBot.Core.Common;
+using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
+using TradingBot.Core.Interfaces.Repositories;
 using TradingBot.Core.Interfaces.Services;
+using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Application.AutoPilot;
 
@@ -16,20 +21,29 @@ internal sealed class StrategyRotatorService : IStrategyRotator
 {
     private readonly IStrategyConfigService _configService;
     private readonly IStrategyEngine _engine;
+    private readonly IPositionRepository _positionRepository;
+    private readonly IOrderService _orderService;
+    private readonly ISender _mediator;
     private readonly AutoPilotConfig _config;
     private readonly ILogger<StrategyRotatorService> _logger;
 
-    private readonly Dictionary<string, DateTimeOffset> _lastRotationAt = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> _activeTemplateBySymbol = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRotationAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _activeTemplateBySymbol = new(StringComparer.OrdinalIgnoreCase);
 
     public StrategyRotatorService(
         IStrategyConfigService configService,
         IStrategyEngine engine,
+        IPositionRepository positionRepository,
+        IOrderService orderService,
+        ISender mediator,
         IOptions<AutoPilotConfig> config,
         ILogger<StrategyRotatorService> logger)
     {
         _configService = configService;
         _engine = engine;
+        _positionRepository = positionRepository;
+        _orderService = orderService;
+        _mediator = mediator;
         _config = config.Value;
         _logger = logger;
     }
@@ -121,8 +135,46 @@ internal sealed class StrategyRotatorService : IStrategyRotator
         if (current is null)
             return null;
 
+        if (_config.ClosePositionsOnRotation)
+            await CloseOpenPositionsAsync(current, ct);
+
         await _configService.DeactivateAsync(current.Id, ct);
         return current.Name;
+    }
+
+    private async Task CloseOpenPositionsAsync(TradingStrategy strategy, CancellationToken ct)
+    {
+        var openPositions = await _positionRepository.GetOpenByStrategyIdAsync(strategy.Id, ct);
+        if (openPositions.Count == 0)
+            return;
+
+        _logger.LogInformation(
+            "AutoPilot cerrando {Count} posiciones abiertas de '{Strategy}' antes de rotar",
+            openPositions.Count, strategy.Name);
+
+        foreach (var position in openPositions)
+        {
+            var closeSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+            var orderResult = Order.Create(
+                strategy.Id, position.Symbol, closeSide,
+                OrderType.Market, position.Quantity, strategy.Mode);
+
+            if (orderResult.IsFailure)
+            {
+                _logger.LogWarning(
+                    "No se pudo crear orden de cierre para posición {PositionId}: {Error}",
+                    position.Id, orderResult.Error.Message);
+                continue;
+            }
+
+            var placeResult = await _orderService.PlaceOrderAsync(orderResult.Value, ct);
+            if (placeResult.IsFailure)
+            {
+                _logger.LogWarning(
+                    "No se pudo cerrar posición {PositionId}: {Error}",
+                    position.Id, placeResult.Error.Message);
+            }
+        }
     }
 
     private async Task<string?> ActivateTemplateAsync(string symbol, string templateId, CancellationToken ct)
@@ -149,6 +201,9 @@ internal sealed class StrategyRotatorService : IStrategyRotator
             return strategyName;
         }
 
+        if (!await IsTemplateProfitableAsync(symbol, templateId, ct))
+            return null;
+
         var symbolResult = Core.ValueObjects.Symbol.Create(symbol);
         if (symbolResult.IsFailure) return null;
 
@@ -170,8 +225,11 @@ internal sealed class StrategyRotatorService : IStrategyRotator
 
         if (riskResult.IsFailure) return null;
 
+        var mode = Enum.TryParse<TradingMode>(_config.DefaultTradingMode, true, out var m)
+            ? m : TradingMode.PaperTrading;
+
         var strategyResult = Core.Entities.TradingStrategy.Create(
-            strategyName, symbolResult.Value, TradingMode.PaperTrading,
+            strategyName, symbolResult.Value, mode,
             riskResult.Value, $"Creada por AutoPilot desde template {template.Name}",
             timeframe, confirmationTf);
 
@@ -237,5 +295,51 @@ internal sealed class StrategyRotatorService : IStrategyRotator
             paused = true;
         }
         return paused;
+    }
+
+    private async Task<bool> IsTemplateProfitableAsync(string symbol, string templateId, CancellationToken ct)
+    {
+        try
+        {
+            var rankingResult = await _mediator.Send(
+                new RunTemplateRankingCommand(symbol, FromDays: 7), ct);
+
+            if (rankingResult.IsFailure)
+            {
+                _logger.LogWarning(
+                    "AutoPilot: no se pudo ejecutar backtest rápido para {Symbol}, permitiendo activación",
+                    symbol);
+                return true;
+            }
+
+            var entry = rankingResult.Value.Rankings
+                .FirstOrDefault(r => r.TemplateId.Equals(templateId, StringComparison.OrdinalIgnoreCase));
+
+            if (entry is null)
+            {
+                _logger.LogWarning(
+                    "AutoPilot: template '{TemplateId}' no encontrado en ranking de {Symbol}",
+                    templateId, symbol);
+                return false;
+            }
+
+            if (entry.TotalPnL <= 0 || entry.SharpeRatio < 0)
+            {
+                _logger.LogWarning(
+                    "AutoPilot: template '{TemplateId}' no rentable para {Symbol} " +
+                    "(PnL={PnL:F2}, Sharpe={Sharpe:F2}). Rotación cancelada.",
+                    templateId, symbol, entry.TotalPnL, entry.SharpeRatio);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "AutoPilot: error en backtest de validación para {Symbol}. Permitiendo activación.",
+                symbol);
+            return true;
+        }
     }
 }

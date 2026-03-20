@@ -28,6 +28,9 @@ public interface ITradingStrategy
     /// <summary>Régimen de mercado detectado en el último tick procesado.</summary>
     MarketRegime CurrentRegime { get; }
 
+    /// <summary>Dirección de la tendencia actual según ADX (+DI &gt; -DI). <c>true</c> si no hay ADX.</summary>
+    bool IsBullish { get; }
+
     /// <summary>Valor actual del ATR, o <c>null</c> si no está configurado o no está listo.</summary>
     decimal? CurrentAtrValue { get; }
 

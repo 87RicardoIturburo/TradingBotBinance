@@ -204,10 +204,7 @@ internal sealed class RunTemplateRankingCommandHandler(
         var tradingStrategy = serviceProvider.GetRequiredService<ITradingStrategy>();
         await tradingStrategy.InitializeAsync(strategy, cancellationToken);
 
-        var maxPeriod = strategy.Indicators
-            .Select(i => (int)i.GetParameter("period", 14))
-            .DefaultIfEmpty(0)
-            .Max();
+        var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(strategy.Indicators);
 
         var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
         for (var i = 0; i < warmUpCount; i++)

@@ -73,9 +73,18 @@ internal sealed class RunSetupWizardCommandHandler(
             return Result<SetupWizardResult, DomainError>.Failure(scanResult.Error);
 
         var topSymbols = scanResult.Value
-            .Where(s => s.TrafficLight != "🔴")
+            .Where(s => s.TrafficLight == "🟢")
             .Take(3)
             .ToList();
+
+        if (topSymbols.Count < 2)
+        {
+            var yellows = scanResult.Value
+                .Where(s => s.TrafficLight == "🟡" && s.Score >= 55)
+                .OrderByDescending(s => s.Score)
+                .Take(3 - topSymbols.Count);
+            topSymbols.AddRange(yellows);
+        }
 
         if (topSymbols.Count == 0)
             return Result<SetupWizardResult, DomainError>.Failure(
@@ -87,20 +96,32 @@ internal sealed class RunSetupWizardCommandHandler(
         foreach (var symbolScore in topSymbols)
         {
             var rankingResult = await mediator.Send(
-                new RunTemplateRankingCommand(symbolScore.Symbol, FromDays: 14),
+                new RunTemplateRankingCommand(symbolScore.Symbol, FromDays: 30),
                 cancellationToken);
 
             if (rankingResult.IsFailure || rankingResult.Value.Rankings.Count == 0)
                 continue;
 
             var bestTemplate = rankingResult.Value.Rankings[0];
+
+            if (bestTemplate.TotalPnL <= 0 || bestTemplate.SharpeRatio < 0.3m || bestTemplate.TotalTrades < 2)
+            {
+                logger.LogWarning(
+                    "Template '{Name}' descartado para {Symbol}: Sharpe={Sharpe:F2}, PnL={PnL:F2}, Trades={Trades}",
+                    bestTemplate.TemplateName, symbolScore.Symbol,
+                    bestTemplate.SharpeRatio, bestTemplate.TotalPnL, bestTemplate.TotalTrades);
+                continue;
+            }
+
             var template = StrategyTemplateStore.All
                 .FirstOrDefault(t => t.Id == bestTemplate.TemplateId);
 
             if (template is null) continue;
 
+            var profile = rankingResult.Value.Profile;
+
             var created = await CreateStrategyFromTemplateAsync(
-                template, symbolScore.Symbol, mode, capitalPerSymbol, cancellationToken);
+                template, symbolScore.Symbol, mode, capitalPerSymbol, profile, cancellationToken);
 
             if (created is not null)
                 createdStrategies.Add(created);
@@ -127,6 +148,7 @@ internal sealed class RunSetupWizardCommandHandler(
         string symbol,
         TradingMode mode,
         decimal capitalForSymbol,
+        Backtesting.SymbolProfile profile,
         CancellationToken ct)
     {
         var symbolResult = Core.ValueObjects.Symbol.Create(symbol);
@@ -148,7 +170,10 @@ internal sealed class RunSetupWizardCommandHandler(
             template.RiskConfig.MaxOpenPositions,
             template.RiskConfig.UseAtrSizing,
             template.RiskConfig.RiskPercentPerTrade,
-            template.RiskConfig.AtrMultiplier);
+            template.RiskConfig.AtrMultiplier,
+            highVolatilityBandWidthPercent: profile.AdjustedHighVolatilityBandWidthPercent,
+            highVolatilityAtrPercent: profile.AdjustedHighVolatilityAtrPercent,
+            maxSpreadPercent: profile.AdjustedMaxSpreadPercent);
 
         if (riskResult.IsFailure) return null;
 

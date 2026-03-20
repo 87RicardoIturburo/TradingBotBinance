@@ -112,8 +112,10 @@ internal sealed class RiskBudgetService : IRiskBudget
 
     private async Task<decimal> CalculateTotalPnLAsync(CancellationToken cancellationToken)
     {
+        var from = _config.BudgetStartDate ?? DateTimeOffset.UtcNow.AddDays(-30);
+
         var closedPositions = await _positionRepository.GetClosedByDateRangeAsync(
-            DateTimeOffset.MinValue, DateTimeOffset.UtcNow, cancellationToken);
+            from, DateTimeOffset.UtcNow, cancellationToken);
 
         var realizedPnL = closedPositions
             .Where(p => p.RealizedPnL.HasValue)

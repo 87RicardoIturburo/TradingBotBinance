@@ -69,6 +69,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     {
         _logger.LogInformation("StrategyEngine arrancando…");
 
+        await InitializeRiskBudgetAsync(stoppingToken);
+
         await LoadWithRetryAsync(stoppingToken);
 
         _logger.LogInformation(
@@ -84,6 +86,21 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private async Task InitializeRiskBudgetAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var riskBudget = scope.ServiceProvider.GetRequiredService<IRiskBudget>();
+            await riskBudget.RefreshAsync(stoppingToken);
+            _logger.LogInformation("RiskBudget inicializado: nivel={Level}", riskBudget.CurrentLevel);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "No se pudo inicializar el RiskBudget al arrancar. Se usará nivel Normal por defecto.");
         }
     }
 
@@ -1377,16 +1394,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
     /// <summary>
     /// Calcula el número de períodos de warm-up necesarios para un indicador según su tipo.
-    /// ADX requiere period × 2 (smoothed DM/TR + smoothed ADX).
-    /// MACD requiere slowPeriod + signalPeriod.
+    /// Delega a <see cref="IndicatorWarmUpHelper"/>.
     /// </summary>
-    private static int GetIndicatorWarmUpPeriod(IndicatorConfig config) => config.Type switch
-    {
-        IndicatorType.MACD => (int)config.GetParameter("slowPeriod", 26)
-                            + (int)config.GetParameter("signalPeriod", 9),
-        IndicatorType.ADX  => (int)config.GetParameter("period", 14) * 2,
-        _ => (int)config.GetParameter("period", 14)
-    };
+    private static int GetIndicatorWarmUpPeriod(IndicatorConfig config) =>
+        IndicatorWarmUpHelper.GetWarmUpPeriod(config);
 
     // ── Estado interno por estrategia ──────────────────────────────────────
 
@@ -1464,6 +1475,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             StrategyId, StrategyName, Symbol,
             IsProcessing, LastTickAt,
             TicksProcessed, SignalsGenerated, OrdersPlaced,
-            Strategy.CurrentRegime);
+            Strategy.CurrentRegime,
+            Strategy.IsBullish);
     }
 }

@@ -55,4 +55,5 @@ public sealed record StrategyEngineStatus(
     int            TicksProcessed,
     int            SignalsGenerated,
     int            OrdersPlaced,
-    MarketRegime   CurrentRegime = MarketRegime.Unknown);
+    MarketRegime   CurrentRegime = MarketRegime.Unknown,
+    bool           IsBullish = true);

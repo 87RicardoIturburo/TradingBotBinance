@@ -17,4 +17,10 @@ public sealed class AutoPilotConfig
     public string TrendingTemplateId { get; set; } = "trend-rider-alcista";
     public string RangingTemplateId { get; set; } = "range-scalper-lateral";
     public string BearishTemplateId { get; set; } = "defensive-bottom-catcher-bajista";
+
+    /// <summary>
+    /// Modo de trading para las estrategias creadas por AutoPilot.
+    /// Valores: PaperTrading, Testnet, Live. Default: PaperTrading.
+    /// </summary>
+    public string DefaultTradingMode { get; set; } = "PaperTrading";
 }

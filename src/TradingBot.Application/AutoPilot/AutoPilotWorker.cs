@@ -65,9 +65,8 @@ internal sealed class AutoPilotWorker : BackgroundService
 
                     foreach (var status in symbolRegimes)
                     {
-                        var isBullish = true;
                         var result = await rotator.EvaluateRotationAsync(
-                            status.Symbol.Value, status.CurrentRegime, isBullish, stoppingToken);
+                            status.Symbol.Value, status.CurrentRegime, status.IsBullish, stoppingToken);
 
                         if (result.IsSuccess && result.Value.Rotated && notifier is not null)
                         {

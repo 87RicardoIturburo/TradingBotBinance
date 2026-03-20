@@ -60,6 +60,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     public TradingMode Mode          { get; private set; }
     public bool        IsInitialized { get; private set; }
     public MarketRegime CurrentRegime => _lastRegime?.Regime ?? MarketRegime.Unknown;
+    public bool IsBullish =>
+        !_indicators.TryGetValue(IndicatorType.ADX, out var adx)
+        || adx is not AdxIndicator { IsReady: true, IsBearish: true };
     public decimal?    CurrentAtrValue =>
         _indicators.TryGetValue(IndicatorType.ATR, out var atrInd) && atrInd.IsReady
             ? atrInd.Calculate() : null;
