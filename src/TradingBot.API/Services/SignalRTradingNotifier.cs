@@ -91,4 +91,25 @@ internal sealed class SignalRTradingNotifier(
             },
             cancellationToken);
     }
+
+    public async Task NotifyScannerUpdateAsync(
+        IReadOnlyList<SymbolScore> scores, CancellationToken cancellationToken = default)
+    {
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnScannerUpdate,
+            scores.Select(s => new
+            {
+                s.Symbol,
+                s.Score,
+                s.TrafficLight,
+                s.Volume24hUsdt,
+                s.SpreadPercent,
+                s.AtrPercent,
+                s.Regime,
+                s.AdxValue,
+                s.PriceChangePercent24h,
+                s.ScannedAt
+            }),
+            cancellationToken);
+    }
 }

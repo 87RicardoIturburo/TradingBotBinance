@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TradingBot.Application.Diagnostics;
+using TradingBot.Application.Explainer;
 using TradingBot.Application.RiskManagement;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
@@ -337,7 +338,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var intervalMinutes = GetIntervalMinutes(config.Timeframe);
         var from = DateTimeOffset.UtcNow.AddMinutes(-(count * intervalMinutes));
         var to   = DateTimeOffset.UtcNow;
-        var klinesResult = await _marketDataService.GetKlinesAsync(config.Symbol, from, to, cancellationToken);
+        var klinesResult = await _marketDataService.GetKlinesAsync(
+            config.Symbol, from, to, config.Timeframe, cancellationToken);
 
         if (klinesResult.IsSuccess && klinesResult.Value.Count > 0)
         {
@@ -408,7 +410,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var htfFrom = DateTimeOffset.UtcNow.AddMinutes(-(htfCount * htfIntervalMinutes));
 
         var htfKlines = await _marketDataService.GetKlinesAsync(
-            config.Symbol, htfFrom, DateTimeOffset.UtcNow, cancellationToken, htfInterval);
+            config.Symbol, htfFrom, DateTimeOffset.UtcNow, htfInterval, cancellationToken);
 
         if (htfKlines.IsFailure || htfKlines.Value.Count == 0)
         {
@@ -455,7 +457,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var btcFrom = DateTimeOffset.UtcNow.AddMinutes(-(btcCount * btcIntervalMinutes));
 
         var btcKlines = await _marketDataService.GetKlinesAsync(
-            btcSymbolResult.Value, btcFrom, DateTimeOffset.UtcNow, cancellationToken, btcInterval);
+            btcSymbolResult.Value, btcFrom, DateTimeOffset.UtcNow, btcInterval, cancellationToken);
 
         if (btcKlines.IsFailure || btcKlines.Value.Count == 0)
         {
@@ -999,6 +1001,26 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var placeResult = await orderService.PlaceOrderAsync(order, cancellationToken);
         if (placeResult.IsSuccess)
         {
+            var explanation = TradeExplainerService.BuildEntryExplanation(
+                signalSource: signal.IndicatorSnapshot.Split(" | ").FirstOrDefault() ?? "Unknown",
+                direction: signal.Direction,
+                entryPrice: signal.CurrentPrice.Value,
+                marketRegime: runner.Strategy.CurrentRegime.ToString(),
+                adxValue: null,
+                adxBullish: null,
+                indicatorSnapshot: signal.IndicatorSnapshot,
+                confirmationsObtained: 0,
+                confirmationsTotal: 0,
+                confirmationDetails: TradeExplainerService.BuildConfirmationDetails(signal.IndicatorSnapshot, 0, 0),
+                filtersPassed: TradeExplainerService.BuildFiltersList(
+                    htfAligned: runner.Strategy.IsConfirmationAligned(signal.Direction),
+                    btcAligned: runner.Strategy.IsBtcAligned(signal.Direction),
+                    cooldownPassed: true),
+                riskCheckSummary: strategy.RiskConfig.UseAtrSizing && signal.AtrValue is > 0
+                    ? $"ATR sizing: ATR={signal.AtrValue:F4}, multiplier={strategy.RiskConfig.AtrMultiplier}"
+                    : $"Fixed: MaxOrder={strategy.RiskConfig.MaxOrderAmountUsdt} USDT");
+            order.SetExplanation(explanation);
+
             runner.OrdersPlaced++;
             runner.InvalidatePositionCache();
             _metrics.RecordTickToOrderLatency(sw.Elapsed.TotalMilliseconds, runner.Symbol.Value);
@@ -1354,13 +1376,15 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     private static int GetIntervalMinutes(CandleInterval interval) => interval.ToMinutes();
 
     /// <summary>
-    /// CRIT-B fix: calcula el número de períodos de warm-up necesarios para un indicador
-    /// según su tipo. MACD requiere slowPeriod + signalPeriod; otros indicadores usan "period".
+    /// Calcula el número de períodos de warm-up necesarios para un indicador según su tipo.
+    /// ADX requiere period × 2 (smoothed DM/TR + smoothed ADX).
+    /// MACD requiere slowPeriod + signalPeriod.
     /// </summary>
     private static int GetIndicatorWarmUpPeriod(IndicatorConfig config) => config.Type switch
     {
         IndicatorType.MACD => (int)config.GetParameter("slowPeriod", 26)
                             + (int)config.GetParameter("signalPeriod", 9),
+        IndicatorType.ADX  => (int)config.GetParameter("period", 14) * 2,
         _ => (int)config.GetParameter("period", 14)
     };
 

@@ -231,7 +231,12 @@ public sealed record TemplateRiskConfigDto(
     decimal MaxDailyLossUsdt,
     decimal StopLossPercent,
     decimal TakeProfitPercent,
-    int     MaxOpenPositions);
+    int     MaxOpenPositions,
+    bool    UseAtrSizing = false,
+    decimal RiskPercentPerTrade = 1m,
+    decimal AtrMultiplier = 2m,
+    string  Timeframe = "OneHour",
+    string? ConfirmationTimeframe = null);
 
 // ── Metrics ───────────────────────────────────────────────────────────────
 
@@ -373,3 +378,89 @@ public sealed record OptimizationRunSummaryDto(
     decimal                     MaxDrawdownPercent,
     decimal                     AveragePnLPerTrade,
     BacktestMetricsDto?         Metrics);
+
+// ── Setup Wizard ──────────────────────────────────────────────────────────
+
+public sealed record SetupWizardRequestDto(
+    decimal CapitalUsdt,
+    string  RiskProfile,
+    string  MonitoringFrequency,
+    string  TradingMode);
+
+public sealed record SetupWizardResultDto(
+    decimal                              ConfiguredCapital,
+    decimal                              MaxLossUsdt,
+    string                               RiskProfile,
+    string                               TradingMode,
+    bool                                 AutoPilotEnabled,
+    List<SetupWizardStrategyCreatedDto>? Strategies);
+
+public sealed record SetupWizardStrategyCreatedDto(
+    Guid   StrategyId,
+    string Name,
+    string Symbol,
+    string TemplateName);
+
+// ── Market Scanner ────────────────────────────────────────────────────────
+
+public sealed record SymbolScoreDto(
+    string         Symbol,
+    decimal        Score,
+    string         TrafficLight,
+    decimal        Volume24hUsdt,
+    decimal        SpreadPercent,
+    decimal        AtrPercent,
+    string         Regime,
+    decimal?       AdxValue,
+    decimal        PriceChangePercent24h,
+    DateTimeOffset ScannedAt);
+
+// ── Trade Explainer ───────────────────────────────────────────────────────
+
+public sealed record TradeExplanationDto(
+    string                SignalSource,
+    string                Direction,
+    decimal               EntryPrice,
+    string                MarketRegime,
+    decimal?              AdxValue,
+    bool?                 AdxBullish,
+    string                IndicatorSnapshot,
+    int                   ConfirmationsObtained,
+    int                   ConfirmationsTotal,
+    List<string>?         ConfirmationDetails,
+    List<string>?         FiltersPassed,
+    string?               RiskCheckSummary,
+    string?               ExitReason,
+    decimal?              ExitPrice,
+    decimal?              RealizedPnL,
+    decimal?              DurationMinutes,
+    DateTimeOffset        Timestamp);
+
+public sealed record OrderWithExplanationDto(
+    Guid                    Id,
+    Guid                    StrategyId,
+    string                  Symbol,
+    string                  Side,
+    string                  Type,
+    decimal                 Quantity,
+    decimal?                ExecutedPrice,
+    decimal                 Fee,
+    string                  Status,
+    string                  Mode,
+    DateTimeOffset          CreatedAt,
+    DateTimeOffset?         FilledAt,
+    TradeExplanationDto?    Explanation);
+
+// ── AutoPilot ─────────────────────────────────────────────────────────────
+
+public sealed record AutoPilotStatusDto(
+    string Symbol,
+    string Regime,
+    List<AutoPilotStrategyDto>? ActiveStrategies);
+
+public sealed record AutoPilotStrategyDto(
+    Guid   StrategyId,
+    string StrategyName,
+    bool   IsProcessing,
+    int    SignalsGenerated,
+    int    OrdersPlaced);

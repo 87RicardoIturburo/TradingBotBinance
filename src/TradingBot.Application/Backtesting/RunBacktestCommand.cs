@@ -50,7 +50,7 @@ internal sealed class RunBacktestCommandHandler(
             strategy.Symbol.Value, request.From, request.To, request.Interval);
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
+            strategy.Symbol, request.From, request.To, request.Interval, cancellationToken);
 
         if (klinesResult.IsFailure)
             return Result<BacktestResult, DomainError>.Failure(klinesResult.Error);

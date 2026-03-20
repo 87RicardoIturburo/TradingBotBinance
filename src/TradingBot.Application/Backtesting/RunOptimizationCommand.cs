@@ -63,7 +63,7 @@ internal sealed class RunOptimizationCommandHandler(
             strategy.Symbol.Value, request.From, request.To, request.Interval);
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
+            strategy.Symbol, request.From, request.To, request.Interval, cancellationToken);
 
         if (klinesResult.IsFailure)
             return Result<OptimizationResult, DomainError>.Failure(klinesResult.Error);
@@ -154,7 +154,7 @@ internal sealed class RunWalkForwardCommandHandler(
                 DomainError.Validation("Debe especificar al menos un rango de parámetros."));
 
         var klinesResult = await marketDataService.GetKlinesAsync(
-            strategy.Symbol, request.From, request.To, cancellationToken, request.Interval);
+            strategy.Symbol, request.From, request.To, request.Interval, cancellationToken);
 
         if (klinesResult.IsFailure)
             return Result<WalkForwardResult, DomainError>.Failure(klinesResult.Error);

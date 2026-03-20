@@ -1,0 +1,107 @@
+@page "/scanner"
+@using TradingBot.Frontend.Models
+@using TradingBot.Frontend.Services
+@inject TradingApiClient Api
+
+<PageTitle>Market Scanner</PageTitle>
+
+<h3 class="mb-4">🧭 Market Scanner</h3>
+<p class="text-muted">Ranking de símbolos por Tradability Score. Se actualiza cada 5 minutos.</p>
+
+<button class="btn btn-outline-primary mb-3" @onclick="LoadAsync" disabled="@_loading">
+    @if (_loading)
+    {
+        <span class="spinner-border spinner-border-sm me-1"></span>
+    }
+    🔄 Actualizar
+</button>
+
+@if (_scores is not null)
+{
+    <table class="table table-hover">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Symbol</th>
+                <th>Score</th>
+                <th>Volumen 24h</th>
+                <th>Spread</th>
+                <th>Volatilidad</th>
+                <th>Régimen</th>
+                <th>Cambio 24h</th>
+            </tr>
+        </thead>
+        <tbody>
+            @{ var rank = 1; }
+            @foreach (var s in _scores)
+            {
+                <tr>
+                    <td>@(rank++)</td>
+                    <td><strong>@s.Symbol</strong></td>
+                    <td>
+                        <span class="badge @ScoreBadgeClass(s.TrafficLight)">
+                            @s.TrafficLight @s.Score.ToString("F1")
+                        </span>
+                    </td>
+                    <td>$@FormatVolume(s.Volume24hUsdt)</td>
+                    <td>@s.SpreadPercent.ToString("F4")%</td>
+                    <td>@s.AtrPercent.ToString("F2")%</td>
+                    <td><span class="badge bg-secondary">@s.Regime</span></td>
+                    <td class="@(s.PriceChangePercent24h >= 0 ? "text-success" : "text-danger")">
+                        @s.PriceChangePercent24h.ToString("F2")%
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (!_loading && _error is null)
+{
+    <p class="text-muted">Cargando datos del scanner...</p>
+}
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@code {
+    private List<SymbolScoreDto>? _scores;
+    private bool _loading;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _scores = await Api.GetScannerResultsAsync(30);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string ScoreBadgeClass(string light) => light switch
+    {
+        "🟢" => "bg-success",
+        "🟡" => "bg-warning text-dark",
+        _    => "bg-danger"
+    };
+
+    private static string FormatVolume(decimal v) => v switch
+    {
+        >= 1_000_000_000 => $"{v / 1_000_000_000:F1}B",
+        >= 1_000_000     => $"{v / 1_000_000:F1}M",
+        >= 1_000         => $"{v / 1_000:F1}K",
+        _                => v.ToString("N0")
+    };
+}

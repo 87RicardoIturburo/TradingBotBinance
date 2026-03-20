@@ -400,3 +400,133 @@ public sealed record WalkForwardResultDto(
         r.DegradationPercent, r.IsOverfit,
         r.RankedBy.ToString());
 }
+
+// ── Template Ranking ──────────────────────────────────────────────────────
+
+public sealed record RankTemplatesRequest(
+    string  Symbol,
+    int     FromDays = 30,
+    string? Interval = null,
+    string? RankBy   = null);
+
+public sealed record TemplateRankingResultDto(
+    string                          Symbol,
+    DateTimeOffset                  From,
+    DateTimeOffset                  To,
+    int                             TotalKlines,
+    SymbolProfileDto                Profile,
+    List<TemplateRankEntryDto>      Rankings)
+{
+    public static TemplateRankingResultDto FromDomain(TemplateRankingResult r) => new(
+        r.Symbol, r.From, r.To, r.TotalKlines,
+        SymbolProfileDto.FromDomain(r.Profile),
+        r.Rankings.Select(TemplateRankEntryDto.FromDomain).ToList());
+}
+
+public sealed record SymbolProfileDto(
+    decimal MedianAtrPercent,
+    decimal MedianBandWidth,
+    decimal CurrentSpreadPercent,
+    decimal VolumeCV,
+    decimal AdjustedHighVolatilityAtrPercent,
+    decimal AdjustedHighVolatilityBandWidthPercent,
+    decimal AdjustedMaxSpreadPercent,
+    decimal AdjustedVolumeMinRatio)
+{
+    public static SymbolProfileDto FromDomain(SymbolProfile p) => new(
+        p.MedianAtrPercent, p.MedianBandWidth, p.CurrentSpreadPercent, p.VolumeCV,
+        p.AdjustedHighVolatilityAtrPercent, p.AdjustedHighVolatilityBandWidthPercent,
+        p.AdjustedMaxSpreadPercent, p.AdjustedVolumeMinRatio);
+}
+
+public sealed record TemplateRankEntryDto(
+    int     Rank,
+    string  TemplateId,
+    string  TemplateName,
+    int     TotalTrades,
+    int     WinningTrades,
+    decimal WinRate,
+    decimal TotalPnL,
+    decimal MaxDrawdownPercent,
+    decimal SharpeRatio,
+    decimal ProfitFactor,
+    decimal ReturnOnInvestment)
+{
+    public static TemplateRankEntryDto FromDomain(TemplateRankEntry e) => new(
+        e.Rank, e.TemplateId, e.TemplateName, e.TotalTrades, e.WinningTrades,
+        e.WinRate, e.TotalPnL, e.MaxDrawdownPercent, e.SharpeRatio,
+        e.ProfitFactor, e.ReturnOnInvestment);
+}
+
+// ── Market Scanner ────────────────────────────────────────────────────────
+
+public sealed record SymbolScoreDto(
+    string         Symbol,
+    decimal        Score,
+    string         TrafficLight,
+    decimal        Volume24hUsdt,
+    decimal        SpreadPercent,
+    decimal        AtrPercent,
+    string         Regime,
+    decimal?       AdxValue,
+    decimal        PriceChangePercent24h,
+    DateTimeOffset ScannedAt)
+{
+    public static SymbolScoreDto FromDomain(SymbolScore s) => new(
+        s.Symbol, s.Score, s.TrafficLight, s.Volume24hUsdt,
+        s.SpreadPercent, s.AtrPercent, s.Regime, s.AdxValue,
+        s.PriceChangePercent24h, s.ScannedAt);
+}
+
+// ── Trade Explainer ───────────────────────────────────────────────────────
+
+public sealed record TradeExplanationDto(
+    string                SignalSource,
+    string                Direction,
+    decimal               EntryPrice,
+    string                MarketRegime,
+    decimal?              AdxValue,
+    bool?                 AdxBullish,
+    string                IndicatorSnapshot,
+    int                   ConfirmationsObtained,
+    int                   ConfirmationsTotal,
+    IReadOnlyList<string> ConfirmationDetails,
+    IReadOnlyList<string> FiltersPassed,
+    string?               RiskCheckSummary,
+    string?               ExitReason,
+    decimal?              ExitPrice,
+    decimal?              RealizedPnL,
+    decimal?              DurationMinutes,
+    DateTimeOffset        Timestamp)
+{
+    public static TradeExplanationDto? FromDomain(TradeExplanation? e) => e is null ? null : new(
+        e.SignalSource, e.Direction, e.EntryPrice, e.MarketRegime,
+        e.AdxValue, e.AdxBullish, e.IndicatorSnapshot,
+        e.ConfirmationsObtained, e.ConfirmationsTotal,
+        e.ConfirmationDetails, e.FiltersPassed,
+        e.RiskCheckSummary, e.ExitReason, e.ExitPrice,
+        e.RealizedPnL, e.DurationMinutes, e.Timestamp);
+}
+
+public sealed record OrderWithExplanationDto(
+    Guid                    Id,
+    Guid                    StrategyId,
+    string                  Symbol,
+    OrderSide               Side,
+    OrderType               Type,
+    decimal                 Quantity,
+    decimal?                ExecutedPrice,
+    decimal                 Fee,
+    OrderStatus             Status,
+    TradingMode             Mode,
+    DateTimeOffset          CreatedAt,
+    DateTimeOffset?         FilledAt,
+    TradeExplanationDto?    Explanation)
+{
+    public static OrderWithExplanationDto FromDomain(Order o) => new(
+        o.Id, o.StrategyId, o.Symbol.Value,
+        o.Side, o.Type, o.Quantity.Value,
+        o.ExecutedPrice?.Value, o.Fee, o.Status, o.Mode,
+        o.CreatedAt, o.FilledAt,
+        TradeExplanationDto.FromDomain(o.Explanation));
+}

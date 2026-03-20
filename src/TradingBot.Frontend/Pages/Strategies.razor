@@ -298,12 +298,14 @@ else
         errorMessage = null;
         try
         {
-            // 1. Crear la estrategia base
+            var rc = tpl.RiskConfig;
             var createRequest = new CreateStrategyRequest(
                 tpl.Name, tpl.Symbol, "PaperTrading",
-                tpl.RiskConfig.MaxOrderAmountUsdt, tpl.RiskConfig.MaxDailyLossUsdt,
-                tpl.RiskConfig.StopLossPercent, tpl.RiskConfig.TakeProfitPercent,
-                tpl.RiskConfig.MaxOpenPositions, tpl.Description);
+                rc.MaxOrderAmountUsdt, rc.MaxDailyLossUsdt,
+                rc.StopLossPercent, rc.TakeProfitPercent,
+                rc.MaxOpenPositions, tpl.Description,
+                rc.UseAtrSizing, rc.RiskPercentPerTrade, rc.AtrMultiplier,
+                rc.Timeframe, rc.ConfirmationTimeframe);
 
             var created = await Api.CreateStrategyAsync(createRequest);
             if (created is null) return;

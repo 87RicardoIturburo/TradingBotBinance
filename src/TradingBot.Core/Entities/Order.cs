@@ -36,6 +36,9 @@ public sealed class Order : AggregateRoot<Guid>
     public DateTimeOffset UpdatedAt      { get; private set; }
     public DateTimeOffset? FilledAt      { get; private set; }
 
+    /// <summary>Explicación estructurada de por qué se tomó este trade.</summary>
+    public TradeExplanation? Explanation  { get; private set; }
+
     public bool IsPaperTrade => Mode == TradingMode.PaperTrading;
     /// <summary>Indica si la orden es de modo Dry-Run (solo logueo, sin ejecución ni simulación).</summary>
     public bool IsDryRun     => Mode == TradingMode.DryRun;
@@ -196,5 +199,11 @@ public sealed class Order : AggregateRoot<Guid>
         RaiseDomainEvent(new OrderCancelledEvent(Id, StrategyId, $"Rechazada por el exchange: {reason}"));
 
         return Result<Order, DomainError>.Success(this);
+    }
+
+    /// <summary>Asocia una explicación de trade a esta orden.</summary>
+    public void SetExplanation(TradeExplanation explanation)
+    {
+        Explanation = explanation;
     }
 }

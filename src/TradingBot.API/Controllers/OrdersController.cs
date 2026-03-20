@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using TradingBot.API.Dtos;
 using TradingBot.API.Middleware;
 using TradingBot.Application.Commands.Orders;
+using TradingBot.Application.Explainer;
 using TradingBot.Application.Queries.Orders;
 
 namespace TradingBot.API.Controllers;
@@ -36,6 +37,26 @@ public sealed class OrdersController(ISender mediator) : ControllerBase
             new GetOrdersByDateRangeQuery(fromDate, toDate), ct);
 
         return Results.Ok(orders.Select(OrderDto.FromDomain));
+    }
+
+    /// <summary>
+    /// Obtiene el historial de trades ejecutados con explicación de por qué se tomó cada decisión.
+    /// </summary>
+    [HttpGet("history")]
+    public async Task<IResult> GetTradeHistory(
+        [FromQuery] Guid? strategyId,
+        [FromQuery] DateTimeOffset? from,
+        [FromQuery] DateTimeOffset? to,
+        [FromQuery] int limit = 50,
+        CancellationToken ct = default)
+    {
+        var fromDate = from ?? DateTimeOffset.UtcNow.AddDays(-7);
+        var toDate   = to   ?? DateTimeOffset.UtcNow;
+
+        var orders = await mediator.Send(
+            new GetTradeHistoryQuery(strategyId, fromDate, toDate, limit), ct);
+
+        return Results.Ok(orders.Select(OrderWithExplanationDto.FromDomain));
     }
 
     /// <summary>Cancela una orden activa.</summary>

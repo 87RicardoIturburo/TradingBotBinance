@@ -28,6 +28,7 @@ internal sealed class RiskManager : IRiskManager
     private readonly GlobalRiskSettings             _globalRisk;
     private readonly PortfolioRiskManager           _portfolioRisk;
     private readonly TradingFeeConfig              _feeConfig;
+    private readonly IRiskBudget                   _riskBudget;
     private readonly ILogger<RiskManager>          _logger;
 
     public RiskManager(
@@ -37,6 +38,7 @@ internal sealed class RiskManager : IRiskManager
         IOptions<GlobalRiskSettings> globalRiskOptions,
         PortfolioRiskManager         portfolioRiskManager,
         IOptions<TradingFeeConfig>   feeConfig,
+        IRiskBudget                  riskBudget,
         ILogger<RiskManager>         logger)
     {
         _strategyRepository = strategyRepository;
@@ -45,6 +47,7 @@ internal sealed class RiskManager : IRiskManager
         _globalRisk         = globalRiskOptions.Value;
         _portfolioRisk      = portfolioRiskManager;
         _feeConfig          = feeConfig.Value;
+        _riskBudget         = riskBudget;
         _logger             = logger;
     }
 
@@ -152,6 +155,36 @@ internal sealed class RiskManager : IRiskManager
             return Result<bool, DomainError>.Success(true);
         }
 
+        // 1b. Risk Budget Guardian — protección de capital global
+        await _riskBudget.RefreshAsync(cancellationToken);
+        var budgetLevel = _riskBudget.CurrentLevel;
+
+        if (budgetLevel >= Core.Enums.RiskLevel.Exhausted)
+        {
+            _logger.LogCritical(
+                "🛡️ KILL SWITCH — Orden {OrderId} bloqueada: presupuesto de riesgo agotado " +
+                "(pérdida {Loss:F2} / {Max:F2} USDT, {Pct:F1}%)",
+                order.Id, _riskBudget.AccumulatedLoss, _riskBudget.MaxLossAllowed, _riskBudget.BudgetUsedPercent);
+
+            return Result<bool, DomainError>.Failure(
+                DomainError.RiskLimitExceeded(
+                    $"Presupuesto de riesgo agotado: pérdida acumulada {_riskBudget.AccumulatedLoss:F2} USDT " +
+                    $"alcanzó el máximo permitido de {_riskBudget.MaxLossAllowed:F2} USDT. Todas las órdenes bloqueadas."));
+        }
+
+        if (budgetLevel >= Core.Enums.RiskLevel.CloseOnly)
+        {
+            _logger.LogWarning(
+                "🛡️ Orden {OrderId} bloqueada: nivel CloseOnly — solo se permiten cierres " +
+                "(pérdida {Loss:F2} / {Max:F2} USDT, {Pct:F1}%)",
+                order.Id, _riskBudget.AccumulatedLoss, _riskBudget.MaxLossAllowed, _riskBudget.BudgetUsedPercent);
+
+            return Result<bool, DomainError>.Failure(
+                DomainError.RiskLimitExceeded(
+                    $"Nivel de riesgo CloseOnly: pérdida acumulada {_riskBudget.AccumulatedLoss:F2} USDT " +
+                    $"({_riskBudget.BudgetUsedPercent:F1}% del presupuesto). Solo se permiten cierres de posiciones."));
+        }
+
         // 2. Pérdida diaria acumulada
         var dailyLoss = await GetDailyLossAsync(order.StrategyId, cancellationToken);
         if (dailyLoss <= -risk.MaxDailyLossUsdt)
@@ -165,9 +198,10 @@ internal sealed class RiskManager : IRiskManager
                     $"La pérdida diaria acumulada ({dailyLoss:F2} USDT) alcanzó el límite ({risk.MaxDailyLossUsdt:F2} USDT)."));
         }
 
-        // 3. Número máximo de posiciones abiertas
+        // 3. Número máximo de posiciones abiertas (con override del Risk Budget)
         var openCount = await GetOpenPositionCountAsync(order.StrategyId, cancellationToken);
-        if (openCount >= risk.MaxOpenPositions)
+        var effectiveMaxPositions = _riskBudget.MaxOpenPositionsOverride ?? risk.MaxOpenPositions;
+        if (openCount >= effectiveMaxPositions)
         {
             _logger.LogWarning(
                 "Orden {OrderId} bloqueada: {Open} posiciones abiertas >= límite {Max}",
@@ -175,7 +209,10 @@ internal sealed class RiskManager : IRiskManager
 
             return Result<bool, DomainError>.Failure(
                 DomainError.RiskLimitExceeded(
-                    $"Número de posiciones abiertas ({openCount}) alcanzó el máximo ({risk.MaxOpenPositions})."));
+                    $"Número de posiciones abiertas ({openCount}) alcanzó el máximo ({effectiveMaxPositions})" +
+                    (_riskBudget.MaxOpenPositionsOverride.HasValue
+                        ? $" (reducido por Risk Budget nivel {budgetLevel})."
+                        : ".")));
         }
 
         // 4. Límite global de pérdida diaria (todas las estrategias, incluye unrealized — ALTA-NEW-3)
@@ -237,8 +274,8 @@ internal sealed class RiskManager : IRiskManager
         }
 
         _logger.LogDebug(
-            "Orden {OrderId} aprobada por RiskManager (monto: {Amount}, pérdida diaria: {Loss}, posiciones: {Open}, E: {Expectancy})",
-            order.Id, orderAmount, dailyLoss, openCount, expectancy?.ToString("F4") ?? "N/A");
+            "Orden {OrderId} aprobada por RiskManager (monto: {Amount}, pérdida diaria: {Loss}, posiciones: {Open}, E: {Expectancy}, budgetLevel: {BudgetLevel})",
+            order.Id, orderAmount, dailyLoss, openCount, expectancy?.ToString("F4") ?? "N/A", budgetLevel);
 
         return Result<bool, DomainError>.Success(true);
     }

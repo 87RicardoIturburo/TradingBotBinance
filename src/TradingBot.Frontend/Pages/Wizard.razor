@@ -1,0 +1,204 @@
+@page "/wizard"
+@using TradingBot.Frontend.Models
+@using TradingBot.Frontend.Services
+@inject TradingApiClient Api
+
+<PageTitle>Setup Wizard</PageTitle>
+
+<h3 class="mb-4">🧙 Setup Wizard — Configuración Rápida</h3>
+
+@if (_result is not null)
+{
+    <div class="alert alert-success">
+        <h5>✅ ¡Configuración completada!</h5>
+        <p>Capital: <strong>$@_result.ConfiguredCapital.ToString("N2")</strong> · Pérdida máxima: <strong>$@_result.MaxLossUsdt.ToString("N2")</strong></p>
+        <p>Perfil: <strong>@_result.RiskProfile</strong> · Modo: <strong>@_result.TradingMode</strong></p>
+        @if (_result.AutoPilotEnabled)
+        {
+            <p>🤖 <strong>Auto-Pilot activado</strong> — el bot rotará estrategias automáticamente.</p>
+        }
+    </div>
+
+    @if (_result.Strategies?.Count > 0)
+    {
+        <h5 class="mt-3">Estrategias creadas:</h5>
+        <div class="row">
+            @foreach (var s in _result.Strategies)
+            {
+                <div class="col-md-4 mb-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <h6 class="card-title">@s.TemplateName</h6>
+                            <p class="card-text mb-1"><span class="badge bg-primary">@s.Symbol</span></p>
+                            <p class="card-text text-muted small">@s.Name</p>
+                            <a href="strategies/@s.StrategyId" class="btn btn-sm btn-outline-primary">Ver detalle</a>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+        <a href="strategies" class="btn btn-primary mt-2">Ir a Estrategias →</a>
+    }
+}
+else
+{
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <p class="text-muted mb-4">
+                Responde 4 preguntas y el bot se configura solo: escanea el mercado, elige las mejores estrategias y las activa.
+            </p>
+
+            @* Paso 1: Capital *@
+            <div class="mb-4">
+                <h5>1️⃣ ¿Cuánto capital quieres usar?</h5>
+                <div class="btn-group" role="group">
+                    @foreach (var amount in new[] { 100m, 300m, 500m, 1000m })
+                    {
+                        var a = amount;
+                        <button type="button"
+                                class="btn @(_capital == a ? "btn-primary" : "btn-outline-primary")"
+                                @onclick="() => _capital = a">
+                            $@a.ToString("N0")
+                        </button>
+                    }
+                </div>
+                <div class="mt-2">
+                    <label class="form-label small text-muted">O ingresa manualmente:</label>
+                    <input type="number" class="form-control" style="max-width: 200px"
+                           @bind="_capital" min="50" step="50" />
+                </div>
+            </div>
+
+            @* Paso 2: Perfil de riesgo *@
+            <div class="mb-4">
+                <h5>2️⃣ ¿Cuánto estás dispuesto a perder?</h5>
+                <div class="btn-group" role="group">
+                    <button type="button"
+                            class="btn @(_riskProfile == "Conservador" ? "btn-success" : "btn-outline-success")"
+                            @onclick='() => _riskProfile = "Conservador"'>
+                        🟢 Conservador (5%)
+                    </button>
+                    <button type="button"
+                            class="btn @(_riskProfile == "Moderado" ? "btn-warning" : "btn-outline-warning")"
+                            @onclick='() => _riskProfile = "Moderado"'>
+                        🟡 Moderado (10%)
+                    </button>
+                    <button type="button"
+                            class="btn @(_riskProfile == "Agresivo" ? "btn-danger" : "btn-outline-danger")"
+                            @onclick='() => _riskProfile = "Agresivo"'>
+                        🔴 Agresivo (20%)
+                    </button>
+                </div>
+                @if (_capital > 0 && !string.IsNullOrEmpty(_riskProfile))
+                {
+                    var pct = _riskProfile switch { "Conservador" => 5m, "Agresivo" => 20m, _ => 10m };
+                    <p class="mt-2 text-muted">Pérdida máxima: <strong>$@((_capital * pct / 100m).ToString("N2"))</strong></p>
+                }
+            </div>
+
+            @* Paso 3: Frecuencia *@
+            <div class="mb-4">
+                <h5>3️⃣ ¿Qué tan seguido quieres revisar?</h5>
+                <div class="btn-group" role="group">
+                    <button type="button"
+                            class="btn @(_frequency == "Diario" ? "btn-primary" : "btn-outline-primary")"
+                            @onclick='() => _frequency = "Diario"'>
+                        📅 Diario
+                    </button>
+                    <button type="button"
+                            class="btn @(_frequency == "Semanal" ? "btn-primary" : "btn-outline-primary")"
+                            @onclick='() => _frequency = "Semanal"'>
+                        📆 Semanal
+                    </button>
+                    <button type="button"
+                            class="btn @(_frequency == "NoQuieroPensar" ? "btn-primary" : "btn-outline-primary")"
+                            @onclick='() => _frequency = "NoQuieroPensar"'>
+                        🤖 No quiero pensar en esto
+                    </button>
+                </div>
+                @if (_frequency == "NoQuieroPensar")
+                {
+                    <p class="mt-2 text-info">🤖 Se activará el <strong>Auto-Pilot</strong>: el bot rotará estrategias automáticamente.</p>
+                }
+            </div>
+
+            @* Paso 4: Modo trading *@
+            <div class="mb-4">
+                <h5>4️⃣ ¿Empezar con dinero real?</h5>
+                <div class="btn-group" role="group">
+                    <button type="button"
+                            class="btn @(_tradingMode == "Paper" ? "btn-success" : "btn-outline-success")"
+                            @onclick='() => _tradingMode = "Paper"'>
+                        📝 Paper Trading (recomendado)
+                    </button>
+                    <button type="button"
+                            class="btn @(_tradingMode == "Demo" ? "btn-warning" : "btn-outline-warning")"
+                            @onclick='() => _tradingMode = "Demo"'>
+                        🧪 Demo (Testnet)
+                    </button>
+                    <button type="button"
+                            class="btn @(_tradingMode == "Live" ? "btn-danger" : "btn-outline-danger")"
+                            @onclick='() => _tradingMode = "Live"'>
+                        💰 Producción
+                    </button>
+                </div>
+            </div>
+
+            @* Botón de ejecución *@
+            <hr />
+            <button class="btn btn-lg btn-primary" @onclick="RunWizardAsync"
+                    disabled="@(!IsFormValid || _loading)">
+                @if (_loading)
+                {
+                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                    <span>Configurando...</span>
+                }
+                else
+                {
+                    <span>🚀 Configurar y Empezar</span>
+                }
+            </button>
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-danger mt-3">@_error</div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private decimal _capital = 300m;
+    private string _riskProfile = "Moderado";
+    private string _frequency = "Semanal";
+    private string _tradingMode = "Paper";
+    private bool _loading;
+    private string? _error;
+    private SetupWizardResultDto? _result;
+
+    private bool IsFormValid =>
+        _capital >= 50
+        && !string.IsNullOrEmpty(_riskProfile)
+        && !string.IsNullOrEmpty(_frequency)
+        && !string.IsNullOrEmpty(_tradingMode);
+
+    private async Task RunWizardAsync()
+    {
+        _loading = true;
+        _error = null;
+
+        try
+        {
+            _result = await Api.RunWizardAsync(new SetupWizardRequestDto(
+                _capital, _riskProfile, _frequency, _tradingMode));
+        }
+        catch (HttpRequestException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+}

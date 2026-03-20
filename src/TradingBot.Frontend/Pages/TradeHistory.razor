@@ -1,0 +1,141 @@
+@page "/trade-history"
+@using TradingBot.Frontend.Models
+@using TradingBot.Frontend.Services
+@inject TradingApiClient Api
+
+<PageTitle>Trade History</PageTitle>
+
+<h3 class="mb-4">📈 Historial de Trades</h3>
+<p class="text-muted">Cada trade incluye la explicación de por qué se tomó la decisión.</p>
+
+<button class="btn btn-outline-primary mb-3" @onclick="LoadAsync" disabled="@_loading">
+    @if (_loading)
+    {
+        <span class="spinner-border spinner-border-sm me-1"></span>
+    }
+    🔄 Actualizar
+</button>
+
+@if (_trades is { Count: > 0 })
+{
+    @foreach (var trade in _trades)
+    {
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>
+                    <span class="badge @(trade.Side == "Buy" ? "bg-success" : "bg-danger")">@trade.Side</span>
+                    <strong>@trade.Symbol</strong>
+                    @if (trade.ExecutedPrice.HasValue)
+                    {
+                        <span class="text-muted ms-2">a $@(trade.ExecutedPrice.Value.ToString("N4"))</span>
+                    }
+                </span>
+                <span class="text-muted small">@trade.CreatedAt.LocalDateTime.ToString("dd/MM HH:mm")</span>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        <small class="text-muted">Cantidad</small>
+                        <p class="mb-1">@trade.Quantity.ToString("N6")</p>
+                    </div>
+                    <div class="col-md-3">
+                        <small class="text-muted">Fee</small>
+                        <p class="mb-1">$@trade.Fee.ToString("N4")</p>
+                    </div>
+                    <div class="col-md-3">
+                        <small class="text-muted">Modo</small>
+                        <p class="mb-1"><span class="badge bg-info">@trade.Mode</span></p>
+                    </div>
+                    <div class="col-md-3">
+                        <small class="text-muted">Estado</small>
+                        <p class="mb-1"><span class="badge bg-secondary">@trade.Status</span></p>
+                    </div>
+                </div>
+
+                @if (trade.Explanation is not null)
+                {
+                    var exp = trade.Explanation;
+                    <hr />
+                    <h6>🧠 ¿Por qué se tomó este trade?</h6>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p class="mb-1"><strong>Señal:</strong> @exp.SignalSource</p>
+                            <p class="mb-1"><strong>Régimen:</strong>
+                                <span class="badge bg-secondary">@exp.MarketRegime</span>
+                            </p>
+                            @if (exp.AdxValue.HasValue)
+                            {
+                                <p class="mb-1"><strong>ADX:</strong> @exp.AdxValue.Value.ToString("F1")
+                                    @(exp.AdxBullish == true ? "↑ Alcista" : exp.AdxBullish == false ? "↓ Bajista" : "")
+                                </p>
+                            }
+                        </div>
+                        <div class="col-md-6">
+                            <p class="mb-1"><strong>Confirmaciones:</strong> @exp.ConfirmationsObtained / @exp.ConfirmationsTotal</p>
+                            @if (!string.IsNullOrEmpty(exp.RiskCheckSummary))
+                            {
+                                <p class="mb-1"><strong>Riesgo:</strong> @exp.RiskCheckSummary</p>
+                            }
+                        </div>
+                    </div>
+
+                    @if (exp.FiltersPassed is { Count: > 0 })
+                    {
+                        <p class="mb-1"><strong>Filtros superados:</strong>
+                            @foreach (var f in exp.FiltersPassed)
+                            {
+                                <span class="badge bg-outline-success border border-success text-success me-1">✓ @f</span>
+                            }
+                        </p>
+                    }
+
+                    @if (exp.ConfirmationDetails is { Count: > 0 })
+                    {
+                        <p class="mb-0"><strong>Indicadores:</strong></p>
+                        <p class="text-muted small mb-0">@string.Join(" · ", exp.ConfirmationDetails)</p>
+                    }
+                }
+                else
+                {
+                    <p class="text-muted mt-2 mb-0"><em>Sin explicación disponible (trade anterior al módulo Explainer)</em></p>
+                }
+            </div>
+        </div>
+    }
+}
+else if (!_loading && _error is null)
+{
+    <div class="alert alert-info">No hay trades ejecutados en los últimos 7 días.</div>
+}
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@code {
+    private List<OrderWithExplanationDto>? _trades;
+    private bool _loading;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            _trades = await Api.GetTradeHistoryAsync(limit: 50);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+}

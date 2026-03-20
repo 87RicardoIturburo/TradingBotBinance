@@ -70,9 +70,9 @@ public interface IMarketDataService
     Task<Result<IReadOnlyList<Kline>, DomainError>> GetKlinesAsync(
         Symbol symbol,
         DateTimeOffset from,
-        DateTimeOffset to,
-        CancellationToken cancellationToken = default,
-        CandleInterval interval = CandleInterval.OneMinute);
+        DateTimeOffset to, 
+        CandleInterval interval = CandleInterval.OneMinute, 
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Obtiene los pares de trading disponibles en Binance, filtrados por quote asset.
@@ -80,7 +80,26 @@ public interface IMarketDataService
     Task<Result<IReadOnlyList<TradingSymbolInfo>, DomainError>> GetTradingSymbolsAsync(
         string quoteAsset = "USDT",
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Obtiene los tickers de 24h de todos los símbolos activos en Binance.
+    /// Usado por el Market Scanner para calcular el Tradability Score.
+    /// </summary>
+    Task<Result<IReadOnlyList<Ticker24h>, DomainError>> Get24hTickersAsync(
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>Ticker de 24 horas de Binance con métricas de volumen y precio.</summary>
+public sealed record Ticker24h(
+    string Symbol,
+    decimal LastPrice,
+    decimal BidPrice,
+    decimal AskPrice,
+    decimal Volume24h,
+    decimal QuoteVolume24h,
+    decimal PriceChangePercent24h,
+    decimal HighPrice24h,
+    decimal LowPrice24h);
 
 /// <summary>Vela histórica de Binance para backtesting.</summary>
 public sealed record Kline(

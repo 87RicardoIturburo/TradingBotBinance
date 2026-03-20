@@ -85,4 +85,24 @@ public sealed class BacktestController(ISender mediator) : ControllerBase
         var result = await mediator.Send(command, ct);
         return result.ToHttpResult(WalkForwardResultDto.FromDomain);
     }
+
+    /// <summary>
+    /// Ejecuta backtest de todos los templates contra un symbol y devuelve un ranking.
+    /// El SymbolProfiler adapta automáticamente los parámetros al symbol objetivo.
+    /// </summary>
+    [HttpPost("rank-templates")]
+    public async Task<IResult> RankTemplates(
+        [FromBody] RankTemplatesRequest request,
+        CancellationToken ct)
+    {
+        var interval = Enum.TryParse<CandleInterval>(request.Interval, true, out var parsedInterval)
+            ? parsedInterval
+            : CandleInterval.OneHour;
+
+        var command = new RunTemplateRankingCommand(
+            request.Symbol, request.FromDays, interval, request.RankBy ?? "SharpeRatio");
+
+        var result = await mediator.Send(command, ct);
+        return result.ToHttpResult(TemplateRankingResultDto.FromDomain);
+    }
 }

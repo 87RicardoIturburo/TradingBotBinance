@@ -18,6 +18,7 @@ public sealed class RiskManagerTests
     private readonly IStrategyRepository  _strategyRepo  = Substitute.For<IStrategyRepository>();
     private readonly IPositionRepository  _positionRepo  = Substitute.For<IPositionRepository>();
     private readonly IAccountService      _accountService = Substitute.For<IAccountService>();
+    private readonly IRiskBudget          _riskBudget    = Substitute.For<IRiskBudget>();
     private readonly PortfolioRiskManager _portfolioRisk;
     private readonly IOptions<TradingFeeConfig> _feeConfig = Options.Create(new TradingFeeConfig());
     private readonly RiskManager          _sut;
@@ -26,7 +27,8 @@ public sealed class RiskManagerTests
     {
         _portfolioRisk = new PortfolioRiskManager(_positionRepo);
         var globalRisk = Options.Create(new GlobalRiskSettings());
-        _sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, NullLogger<RiskManager>.Instance);
+        _riskBudget.CurrentLevel.Returns(Core.Enums.RiskLevel.Normal);
+        _sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, _riskBudget, NullLogger<RiskManager>.Instance);
     }
 
     [Fact]
@@ -355,7 +357,7 @@ public sealed class RiskManagerTests
             MaxDailyLossUsdt = 500,
             MaxGlobalOpenPositions = 0 // disabled
         });
-        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, NullLogger<RiskManager>.Instance);
+        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, _riskBudget, NullLogger<RiskManager>.Instance);
 
         var strategyId = Guid.NewGuid();
         var strategy   = CreateStrategy(strategyId);
@@ -390,7 +392,7 @@ public sealed class RiskManagerTests
             MaxDailyLossUsdt = 0, // disabled
             MaxGlobalOpenPositions = 2
         });
-        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, NullLogger<RiskManager>.Instance);
+        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, _riskBudget, NullLogger<RiskManager>.Instance);
 
         var strategyId = Guid.NewGuid();
         var strategy   = CreateStrategy(strategyId);
@@ -419,7 +421,7 @@ public sealed class RiskManagerTests
     public async Task ValidateOrder_WhenGlobalLimitsDisabled_Passes()
     {
         var globalRisk = Options.Create(new GlobalRiskSettings());
-        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, NullLogger<RiskManager>.Instance);
+        var sut = new RiskManager(_strategyRepo, _positionRepo, _accountService, globalRisk, _portfolioRisk, _feeConfig, _riskBudget, NullLogger<RiskManager>.Instance);
 
         var strategyId = Guid.NewGuid();
         var strategy   = CreateStrategy(strategyId);

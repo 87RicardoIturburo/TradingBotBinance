@@ -54,6 +54,12 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         // EstimatedPrice es transitorio — solo para validación de riesgo pre-ejecución
         builder.Ignore(x => x.EstimatedPrice);
 
+        // Trade Explainer — almacena la explicación como JSON
+        builder.OwnsOne(x => x.Explanation, eb =>
+        {
+            eb.ToJson();
+        });
+
         builder.Property(x => x.Version).IsConcurrencyToken();
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.UpdatedAt).IsRequired();

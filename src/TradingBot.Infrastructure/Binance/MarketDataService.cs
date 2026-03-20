@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Binance.Net.Clients;
 using Binance.Net.Enums;
 using Binance.Net.Interfaces.Clients;
 using CryptoExchange.Net.Objects.Sockets;
@@ -298,20 +299,21 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
     {
         try
         {
-            var closes = await _retryPipeline.ExecuteAsync(async ct =>
+            var closes = await FetchClosesFromClientAsync(_restClient, symbol, count, cancellationToken);
+
+            if (closes.Count == 0)
             {
-                var result = await _restClient.SpotApi.ExchangeData.GetKlinesAsync(
-                    symbol.Value,
-                    KlineInterval.OneMinute,
-                    limit: count,
-                    ct: ct);
+                _logger.LogWarning(
+                    "Entorno actual retornó 0 cierres para {Symbol}. Intentando fallback con producción…",
+                    symbol.Value);
 
-                if (!result.Success)
-                    throw new InvalidOperationException(
-                        result.Error?.Message ?? "Error obteniendo histórico de Binance.");
+                closes = await FetchClosesFromProductionAsync(symbol, count, cancellationToken);
 
-                return result.Data.Select(k => k.ClosePrice).ToList();
-            }, cancellationToken);
+                if (closes.Count > 0)
+                    _logger.LogInformation(
+                        "Fallback exitoso: {Count} cierres de producción para {Symbol}",
+                        closes.Count, symbol.Value);
+            }
 
             return Result<IReadOnlyList<decimal>, DomainError>.Success(closes.AsReadOnly());
         }
@@ -323,54 +325,75 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
         }
     }
 
+    private async Task<List<decimal>> FetchClosesFromClientAsync(
+        IBinanceRestClient client,
+        Symbol symbol,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        return await _retryPipeline.ExecuteAsync(async ct =>
+        {
+            var result = await client.SpotApi.ExchangeData.GetKlinesAsync(
+                symbol.Value,
+                KlineInterval.OneMinute,
+                limit: count,
+                ct: ct);
+
+            if (!result.Success)
+                throw new InvalidOperationException(
+                    result.Error?.Message ?? "Error obteniendo histórico de Binance.");
+
+            return result.Data.Select(k => k.ClosePrice).ToList();
+        }, cancellationToken);
+    }
+
+    private async Task<List<decimal>> FetchClosesFromProductionAsync(
+        Symbol symbol,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var productionClient = new BinanceRestClient();
+            return await FetchClosesFromClientAsync(
+                productionClient, symbol, count, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Fallback a producción también falló para cierres de {Symbol}.",
+                symbol.Value);
+            return [];
+        }
+    }
+
     // ── REST — klines para backtesting ────────────────────────────────────
 
     public async Task<Result<IReadOnlyList<Kline>, DomainError>> GetKlinesAsync(
         Symbol symbol,
         DateTimeOffset from,
         DateTimeOffset to,
-        CancellationToken cancellationToken = default,
-        CandleInterval interval = CandleInterval.OneMinute)
+        CandleInterval interval = CandleInterval.OneMinute,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var allKlines = new List<Kline>();
-            var currentFrom = from;
-            var binanceInterval = MapInterval(interval);
+            var allKlines = await FetchKlinesFromClientAsync(
+                _restClient, symbol, from, to, interval, cancellationToken);
 
-            // Binance devuelve máx. 1000 klines por request — paginar
-            while (currentFrom < to)
+            if (allKlines.Count == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                _logger.LogWarning(
+                    "Entorno actual retornó 0 klines para {Symbol}. Intentando fallback con producción Binance…",
+                    symbol.Value);
 
-                var batch = await _retryPipeline.ExecuteAsync(async ct =>
-                {
-                    var result = await _restClient.SpotApi.ExchangeData.GetKlinesAsync(
-                        symbol.Value,
-                        binanceInterval,
-                        startTime: currentFrom.UtcDateTime,
-                        endTime: to.UtcDateTime,
-                        limit: 1000,
-                        ct: ct);
+                allKlines = await FetchKlinesFromProductionAsync(
+                    symbol, from, to, interval, cancellationToken);
 
-                    if (!result.Success)
-                        throw new InvalidOperationException(
-                            result.Error?.Message ?? "Error obteniendo klines de Binance.");
-
-                    return result.Data
-                        .Select(k => new Kline(k.OpenTime, k.OpenPrice, k.HighPrice, k.LowPrice, k.ClosePrice, k.Volume))
-                        .ToList();
-                }, cancellationToken);
-
-                if (batch.Count == 0)
-                    break;
-
-                allKlines.AddRange(batch);
-                currentFrom = batch[^1].OpenTime.AddMinutes(1);
-
-                _logger.LogDebug(
-                    "Klines batch: {Count} velas para {Symbol} hasta {Until}",
-                    batch.Count, symbol.Value, currentFrom);
+                if (allKlines.Count > 0)
+                    _logger.LogInformation(
+                        "Fallback exitoso: {Count} klines de producción para {Symbol}",
+                        allKlines.Count, symbol.Value);
             }
 
             _logger.LogInformation(
@@ -388,6 +411,81 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
             _logger.LogError(ex, "Error al obtener klines de {Symbol}", symbol.Value);
             return Result<IReadOnlyList<Kline>, DomainError>.Failure(
                 DomainError.ExternalService(ex.Message));
+        }
+    }
+
+    private async Task<List<Kline>> FetchKlinesFromClientAsync(
+        IBinanceRestClient client,
+        Symbol symbol,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CandleInterval interval,
+        CancellationToken cancellationToken)
+    {
+        var allKlines = new List<Kline>();
+        var currentFrom = from;
+        var binanceInterval = MapInterval(interval);
+
+        while (currentFrom < to)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batch = await _retryPipeline.ExecuteAsync(async ct =>
+            {
+                var result = await client.SpotApi.ExchangeData.GetKlinesAsync(
+                    symbol.Value,
+                    binanceInterval,
+                    startTime: currentFrom.UtcDateTime,
+                    endTime: to.UtcDateTime,
+                    limit: 1000,
+                    ct: ct);
+
+                if (!result.Success)
+                    throw new InvalidOperationException(
+                        result.Error?.Message ?? "Error obteniendo klines de Binance.");
+
+                return result.Data
+                    .Select(k => new Kline(k.OpenTime, k.OpenPrice, k.HighPrice, k.LowPrice, k.ClosePrice, k.Volume))
+                    .ToList();
+            }, cancellationToken);
+
+            if (batch.Count == 0)
+                break;
+
+            allKlines.AddRange(batch);
+            currentFrom = batch[^1].OpenTime.AddMinutes(1);
+
+            _logger.LogDebug(
+                "Klines batch: {Count} velas para {Symbol} hasta {Until}",
+                batch.Count, symbol.Value, currentFrom);
+        }
+
+        return allKlines;
+    }
+
+    /// <summary>
+    /// Fallback: descarga klines desde producción Binance (datos públicos, sin auth).
+    /// Se usa cuando el entorno Demo/Testnet no retorna datos históricos.
+    /// </summary>
+    private async Task<List<Kline>> FetchKlinesFromProductionAsync(
+        Symbol symbol,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CandleInterval interval,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var productionClient = new BinanceRestClient();
+            return await FetchKlinesFromClientAsync(
+                productionClient, symbol, from, to, interval, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Fallback a producción también falló para {Symbol}. Los indicadores arrancarán sin warm-up.",
+                symbol.Value);
+            return [];
         }
     }
 
@@ -430,6 +528,43 @@ internal sealed class MarketDataService : IMarketDataService, IAsyncDisposable
     }
 
     // ── Helpers privados ──────────────────────────────────────────────────
+
+    public async Task<Result<IReadOnlyList<Ticker24h>, DomainError>> Get24hTickersAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var tickers = await _retryPipeline.ExecuteAsync(async ct =>
+            {
+                var result = await _restClient.SpotApi.ExchangeData.GetTickersAsync(ct: ct);
+
+                if (!result.Success)
+                    throw new InvalidOperationException(
+                        result.Error?.Message ?? "Error obteniendo tickers 24h de Binance.");
+
+                return result.Data
+                    .Select(t => new Ticker24h(
+                        t.Symbol,
+                        t.LastPrice,
+                        t.BestBidPrice,
+                        t.BestAskPrice,
+                        t.Volume,
+                        t.QuoteVolume,
+                        t.PriceChangePercent,
+                        t.HighPrice,
+                        t.LowPrice))
+                    .ToList();
+            }, cancellationToken);
+
+            return Result<IReadOnlyList<Ticker24h>, DomainError>.Success(tickers.AsReadOnly());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al obtener tickers 24h de Binance");
+            return Result<IReadOnlyList<Ticker24h>, DomainError>.Failure(
+                DomainError.ExternalService(ex.Message));
+        }
+    }
 
     private static MarketTickReceivedEvent? BuildTick(
         string symbolStr,

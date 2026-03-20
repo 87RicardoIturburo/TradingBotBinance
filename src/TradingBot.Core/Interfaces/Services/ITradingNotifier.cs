@@ -22,4 +22,7 @@ public interface ITradingNotifier
 
     /// <summary>Notifica que una estrategia fue actualizada (hot-reload).</summary>
     Task NotifyStrategyUpdatedAsync(StrategyUpdatedEvent update, CancellationToken cancellationToken = default);
+
+    /// <summary>Envía resultados actualizados del Market Scanner.</summary>
+    Task NotifyScannerUpdateAsync(IReadOnlyList<SymbolScore> scores, CancellationToken cancellationToken = default);
 }

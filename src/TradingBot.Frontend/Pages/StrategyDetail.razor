@@ -126,6 +126,11 @@ else
                             <option value="SMA">SMA</option>
                             <option value="MACD">MACD</option>
                             <option value="BollingerBands">Bollinger Bands</option>
+                            <option value="ADX">ADX</option>
+                            <option value="ATR">ATR</option>
+                            <option value="Volume">Volume SMA</option>
+                            <option value="Fibonacci">Fibonacci</option>
+                            <option value="LinearRegression">Linear Regression</option>
                         </select>
                     </div>
                     @if (newIndicator.Type is "RSI")
@@ -174,6 +179,24 @@ else
                         <div class="col-md-2">
                             <label class="form-label">StdDev</label>
                             <input type="number" class="form-control" step="0.1" @bind="bollingerStdDev" />
+                        </div>
+                    }
+                    else if (newIndicator.Type is "Volume")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Periodo</label>
+                            <input type="number" class="form-control" @bind="indicatorPeriod" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Min Ratio</label>
+                            <input type="number" class="form-control" step="0.1" @bind="volumeMinRatio" />
+                        </div>
+                    }
+                    else if (newIndicator.Type is "ADX" or "ATR" or "Fibonacci" or "LinearRegression")
+                    {
+                        <div class="col-md-2">
+                            <label class="form-label">Periodo</label>
+                            <input type="number" class="form-control" @bind="indicatorPeriod" />
                         </div>
                     }
                     <div class="col-md-3 d-flex align-items-end">
@@ -384,6 +407,7 @@ else
     private decimal indicatorOversold = 30;
     private int macdFast = 12, macdSlow = 26, macdSignal = 9;
     private decimal bollingerStdDev = 2m;
+    private decimal volumeMinRatio = 1.5m;
 
     // ── Rule form ────────────────────────────────────────────────────
     private bool showRuleForm;
@@ -497,6 +521,16 @@ else
                 indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 20);
                 bollingerStdDev = ind.Parameters.GetValueOrDefault("stdDev", 2m);
                 break;
+            case "Volume":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 20);
+                volumeMinRatio = ind.Parameters.GetValueOrDefault("minRatio", 1.5m);
+                break;
+            case "ADX" or "ATR":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 14);
+                break;
+            case "Fibonacci" or "LinearRegression":
+                indicatorPeriod = (int)ind.Parameters.GetValueOrDefault("period", 20);
+                break;
         }
     }
 
@@ -519,6 +553,11 @@ else
         {
             ["period"] = indicatorPeriod,
             ["stdDev"] = bollingerStdDev
+        },
+        "Volume" => new()
+        {
+            ["period"] = indicatorPeriod,
+            ["minRatio"] = volumeMinRatio
         },
         _ => new() { ["period"] = indicatorPeriod }
     };

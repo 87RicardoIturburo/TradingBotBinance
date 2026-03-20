@@ -233,6 +233,36 @@ public sealed class TradingApiClient(HttpClient http)
         }
     }
 
+    // ── Setup Wizard ─────────────────────────────────────────────────────
+
+    public async Task<SetupWizardResultDto?> RunWizardAsync(SetupWizardRequestDto request)
+    {
+        var response = await http.PostAsJsonAsync("api/wizard", request);
+        await EnsureSuccessAsync(response);
+        return await response.Content.ReadFromJsonAsync<SetupWizardResultDto>();
+    }
+
+    // ── Market Scanner ───────────────────────────────────────────────────
+
+    public Task<List<SymbolScoreDto>?> GetScannerResultsAsync(int top = 50) =>
+        http.GetFromJsonAsync<List<SymbolScoreDto>>($"api/scanner?top={top}");
+
+    // ── Trade History (con explicaciones) ────────────────────────────────
+
+    public Task<List<OrderWithExplanationDto>?> GetTradeHistoryAsync(
+        Guid? strategyId = null, int limit = 50)
+    {
+        var query = $"api/orders/history?limit={limit}";
+        if (strategyId.HasValue)
+            query += $"&strategyId={strategyId.Value}";
+        return http.GetFromJsonAsync<List<OrderWithExplanationDto>>(query);
+    }
+
+    // ── AutoPilot ────────────────────────────────────────────────────────
+
+    public Task<List<AutoPilotStatusDto>?> GetAutoPilotStatusAsync() =>
+        http.GetFromJsonAsync<List<AutoPilotStatusDto>>("api/autopilot/status");
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /// <summary>
