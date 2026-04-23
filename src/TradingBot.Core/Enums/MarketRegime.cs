@@ -14,6 +14,9 @@ public enum MarketRegime
     /// <summary>Tendencia alcista o bajista clara. Seguir la tendencia, no operar contra ella.</summary>
     Trending,
 
+    /// <summary>Tendencia bajista confirmada (ADX trending + DI- domina). Suprimir señales Buy en Spot.</summary>
+    Bearish,
+
     /// <summary>Volatilidad extrema. Reducir tamaño de posición o pausar.</summary>
     HighVolatility
 }

@@ -186,6 +186,9 @@ public static class ApplicationServiceExtensions
                 if (int.TryParse(scannerSection[nameof(MarketScannerConfig.AdxWeight)],
                         NumberStyles.Integer, CultureInfo.InvariantCulture, out var adw))
                     opts.AdxWeight = adw;
+                if (int.TryParse(scannerSection[nameof(MarketScannerConfig.FeeViabilityWeight)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var fvw))
+                    opts.FeeViabilityWeight = fvw;
             });
         }
         else

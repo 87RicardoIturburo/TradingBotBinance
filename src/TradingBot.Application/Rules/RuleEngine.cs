@@ -132,12 +132,13 @@ internal sealed class RuleEngine : IRuleEngine
 
         // Stop-loss porcentual: se evalúa siempre que el ATR no disparó (o cuando UseAtrSizing=false)
         // Actúa como red de seguridad ante ATR desproporcionados o volatilidad extrema.
+        // Usa GrossUnrealizedPnLPercent (sin fees) para que el SL se active al % exacto configurado.
         {
-            var pnlPercent = position.UnrealizedPnLPercent;
+            var pnlPercent = position.GrossUnrealizedPnLPercent;
             if (pnlPercent <= -(decimal)risk.StopLossPercent)
             {
                 _logger.LogWarning(
-                    "Stop-loss porcentual activado para posición {PositionId}: PnL {PnL:F2}% <= -{StopLoss:F2}%",
+                    "Stop-loss porcentual activado para posición {PositionId}: PnL bruto {PnL:F2}% <= -{StopLoss:F2}%",
                     position.Id, pnlPercent, risk.StopLossPercent.Value);
 
                 var exitSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
@@ -198,7 +199,8 @@ internal sealed class RuleEngine : IRuleEngine
         }
 
         // Take-profit: escalonado (EST-4) o simple según configuración
-        var takeProfitPnl = position.UnrealizedPnLPercent;
+        // Usa GrossUnrealizedPnLPercent (sin fees) para que el TP se active al % exacto configurado.
+        var takeProfitPnl = position.GrossUnrealizedPnLPercent;
 
         if (risk.UseScaledTakeProfit)
         {

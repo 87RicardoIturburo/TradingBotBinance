@@ -13,9 +13,10 @@ public sealed class MarketScannerConfig
     public string QuoteAsset { get; set; } = "USDT";
     public decimal MinVolume24hUsdt { get; set; } = 1_000_000m;
 
-    public int VolumeWeight { get; set; } = 30;
-    public int SpreadWeight { get; set; } = 20;
-    public int AtrWeight { get; set; } = 20;
-    public int RegimeWeight { get; set; } = 20;
+    public int VolumeWeight { get; set; } = 25;
+    public int SpreadWeight { get; set; } = 15;
+    public int AtrWeight { get; set; } = 15;
+    public int RegimeWeight { get; set; } = 15;
     public int AdxWeight { get; set; } = 10;
+    public int FeeViabilityWeight { get; set; } = 20;
 }

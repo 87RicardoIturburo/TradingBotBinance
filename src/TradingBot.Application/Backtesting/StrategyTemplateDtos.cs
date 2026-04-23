@@ -40,4 +40,16 @@ public sealed record StrategyTemplateRiskConfigDto(
     decimal RiskPercentPerTrade = 1m,
     decimal AtrMultiplier = 2m,
     string  Timeframe = "OneHour",
-    string? ConfirmationTimeframe = null);
+    string? ConfirmationTimeframe = null,
+    bool    UseTrailingStop = false,
+    decimal TrailingStopPercent = 1.5m,
+    decimal MinConfirmationPercent = 50m,
+    decimal SignalCooldownPercent = 50m,
+    decimal TakeProfit1Percent = 0m,
+    decimal TakeProfit1ClosePercent = 50m,
+    decimal TakeProfit2Percent = 0m,
+    decimal TakeProfit2ClosePercent = 60m,
+    bool    ExitOnRegimeChange = false,
+    int     MaxPositionDurationCandles = 0,
+    decimal TakeProfit1AtrMultiplier = 0m,
+    decimal TakeProfit2AtrMultiplier = 0m);

@@ -44,9 +44,10 @@ public sealed record TemplateRankEntry(
 /// </summary>
 public sealed record RunTemplateRankingCommand(
     string         SymbolValue,
-    int            FromDays     = 30,
-    CandleInterval Interval     = CandleInterval.OneHour,
-    string         RankBy       = "SharpeRatio") : IRequest<Result<TemplateRankingResult, DomainError>>;
+    int            FromDays            = 60,
+    CandleInterval Interval            = CandleInterval.OneHour,
+    string         RankBy              = "SharpeRatio",
+    decimal        InitialBalanceUsdt  = 0m) : IRequest<Result<TemplateRankingResult, DomainError>>;
 
 internal sealed class RunTemplateRankingCommandHandler(
     IMarketDataService marketDataService,
@@ -104,7 +105,7 @@ internal sealed class RunTemplateRankingCommandHandler(
             try
             {
                 var result = await RunSingleTemplateAsync(
-                    template, symbol, klines, profile, cancellationToken);
+                    template, symbol, klines, profile, request.InitialBalanceUsdt, cancellationToken);
 
                 if (result is not null)
                     entries.Add(result with { Rank = 0 });
@@ -136,6 +137,7 @@ internal sealed class RunTemplateRankingCommandHandler(
         Symbol symbol,
         IReadOnlyList<Kline> klines,
         SymbolProfile profile,
+        decimal initialBalanceUsdt,
         CancellationToken cancellationToken)
     {
         var riskResult = BuildAdaptedRiskConfig(template.RiskConfig, profile);
@@ -146,6 +148,19 @@ internal sealed class RunTemplateRankingCommandHandler(
         CandleInterval? confirmTf = template.RiskConfig.ConfirmationTimeframe is not null
             && Enum.TryParse<CandleInterval>(template.RiskConfig.ConfirmationTimeframe, true, out var ctf)
                 ? ctf : null;
+
+        var effectiveKlines = klines;
+        if (timeframe != CandleInterval.OneHour && klines.Count > 0)
+        {
+            var from = klines[0].OpenTime;
+            var to = klines[^1].OpenTime;
+            var templateKlines = await marketDataService.GetKlinesAsync(
+                symbol, from, to, timeframe, cancellationToken);
+            if (templateKlines.IsSuccess && templateKlines.Value.Count >= 50)
+                effectiveKlines = templateKlines.Value;
+            else
+                return null;
+        }
 
         var strategyResult = TradingStrategy.Create(
             $"{template.Name} — {symbol.Value}",
@@ -206,14 +221,14 @@ internal sealed class RunTemplateRankingCommandHandler(
 
         var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(strategy.Indicators);
 
-        var warmUpCount = Math.Min(maxPeriod + 10, klines.Count);
+        var warmUpCount = Math.Min(maxPeriod + 10, effectiveKlines.Count);
         for (var i = 0; i < warmUpCount; i++)
-            tradingStrategy.WarmUpOhlc(klines[i].High, klines[i].Low, klines[i].Close, klines[i].Volume);
+            tradingStrategy.WarmUpOhlc(effectiveKlines[i].High, effectiveKlines[i].Low, effectiveKlines[i].Close, effectiveKlines[i].Volume);
 
         if (tradingStrategy is Strategies.DefaultTradingStrategy dts)
             dts.SyncPreviousIndicatorState();
 
-        var backtestKlines = klines.Skip(warmUpCount).ToList();
+        var backtestKlines = effectiveKlines.Skip(warmUpCount).ToList();
         if (backtestKlines.Count == 0)
             return null;
 
@@ -221,7 +236,43 @@ internal sealed class RunTemplateRankingCommandHandler(
         var engine = serviceProvider.GetRequiredService<BacktestEngine>();
 
         var result = await engine.RunAsync(
-            strategy, tradingStrategy, ruleEngine, backtestKlines, cancellationToken);
+            strategy, tradingStrategy, ruleEngine, backtestKlines, cancellationToken,
+            initialBalance: initialBalanceUsdt);
+
+        if (result.TotalTrades == 0)
+            return null;
+
+        // Walk-forward: validar con el último 25% de klines (out-of-sample).
+        // Si el out-of-sample pierde, el template es overfitting.
+        var oosStartIndex = (int)(backtestKlines.Count * 0.75);
+        if (oosStartIndex > 0 && oosStartIndex < backtestKlines.Count - 10)
+        {
+            var oosKlines = backtestKlines.Skip(oosStartIndex).ToList();
+
+            var oosTradingStrategy = serviceProvider.GetRequiredService<ITradingStrategy>();
+            await oosTradingStrategy.InitializeAsync(strategy, cancellationToken);
+
+            var oosWarmUpSource = backtestKlines.Take(oosStartIndex).TakeLast(warmUpCount).ToList();
+            foreach (var k in oosWarmUpSource)
+                oosTradingStrategy.WarmUpOhlc(k.High, k.Low, k.Close, k.Volume);
+
+            if (oosTradingStrategy is Strategies.DefaultTradingStrategy oosDts)
+                oosDts.SyncPreviousIndicatorState();
+
+            var oosRuleEngine = serviceProvider.GetRequiredService<IRuleEngine>();
+            var oosResult = await engine.RunAsync(
+                strategy, oosTradingStrategy, oosRuleEngine, oosKlines, cancellationToken,
+                initialBalance: initialBalanceUsdt);
+
+            if (oosResult.TotalTrades > 0 && oosResult.TotalPnL < 0)
+            {
+                logger.LogInformation(
+                    "Walk-forward descartó template '{Name}' para {Symbol}: " +
+                    "in-sample PnL={InPnL:F2} pero out-of-sample PnL={OosPnL:F2}",
+                    template.Name, symbol.Value, result.TotalPnL, oosResult.TotalPnL);
+                return null;
+            }
+        }
 
         return new TemplateRankEntry(
             Rank: 0,
@@ -250,9 +301,21 @@ internal sealed class RunTemplateRankingCommandHandler(
             tplRisk.UseAtrSizing,
             tplRisk.RiskPercentPerTrade,
             tplRisk.AtrMultiplier,
+            useTrailingStop: tplRisk.UseTrailingStop,
+            trailingStopPercent: tplRisk.TrailingStopPercent,
+            signalCooldownPercent: tplRisk.SignalCooldownPercent,
+            minConfirmationPercent: tplRisk.MinConfirmationPercent,
             highVolatilityBandWidthPercent: profile.AdjustedHighVolatilityBandWidthPercent,
             highVolatilityAtrPercent: profile.AdjustedHighVolatilityAtrPercent,
-            maxSpreadPercent: profile.AdjustedMaxSpreadPercent);
+            maxSpreadPercent: profile.AdjustedMaxSpreadPercent,
+            takeProfit1Percent: tplRisk.TakeProfit1Percent,
+            takeProfit1ClosePercent: tplRisk.TakeProfit1ClosePercent,
+            takeProfit2Percent: tplRisk.TakeProfit2Percent,
+            takeProfit2ClosePercent: tplRisk.TakeProfit2ClosePercent,
+            exitOnRegimeChange: tplRisk.ExitOnRegimeChange,
+            maxPositionDurationCandles: tplRisk.MaxPositionDurationCandles,
+            takeProfit1AtrMultiplier: tplRisk.TakeProfit1AtrMultiplier,
+            takeProfit2AtrMultiplier: tplRisk.TakeProfit2AtrMultiplier);
     }
 
     private decimal GetCurrentSpread(Symbol symbol)

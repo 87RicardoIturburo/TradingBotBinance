@@ -9,11 +9,56 @@
 | Métrica | Valor |
 |---------|-------|
 | Build | ✅ 8 proyectos compilan |
-| Tests | ✅ 413 passing (325 Application + 80 Core + 8 Integration) |
+| Tests | ✅ 344 passing |
 | TFM | .NET 10 / C# 14 |
 | Migraciones EF Core | 14 aplicadas |
 | Etapas 1–7 | ✅ Completadas |
 | Auditorías | ✅ Todas corregidas |
+| Análisis rentabilidad | ✅ Julio 2025 — 6 hallazgos + backtest audit (5 hallazgos) + automatización (4 hallazgos) |
+
+---
+
+## 🔬 Análisis de Rentabilidad — Julio 2025
+
+> **Problema**: Con $150-200 USD las ganancias/pérdidas rondan -$4.0 a +$0.9 por semana.
+> **Causa raíz**: Arquitectura ultra-defensiva + templates sin parámetros avanzados + cierre proactivo prematuro.
+
+### Hallazgos y correcciones aplicadas
+
+| # | Hallazgo | Impacto | Estado |
+|---|----------|---------|--------|
+| R-1 | **EST-18 cierra posiciones con ganancia mínima** (+0.01%) que después de fees es pérdida neta | 🔴 ALTO | ✅ Corregido: umbral mínimo 0.5% o 25% del SL |
+| R-2 | **Templates NO propagaban parámetros avanzados** (trailing stop, TP escalonado, MinConfirmation, cooldown) — siempre usaban defaults deshabilitados | 🔴 ALTO | ✅ Corregido: `StrategyTemplateRiskConfigDto` extendido con 12 parámetros nuevos |
+| R-3 | **MinConfirmationPercent=50% por default** bloquea entradas válidas con 7 indicadores | 🟡 MEDIO | ✅ Corregido: templates actualizados con 30-40% según tipo |
+| R-4 | **SignalCooldownPercent=50% por default** reduce frecuencia de señales | 🟡 MEDIO | ✅ Corregido: templates con 10-30% según tipo |
+| R-5 | **Falta templates para capital bajo** ($100-300) con menos filtros y más operaciones | 🟡 MEDIO | ✅ 3 nuevos templates: Momentum Swing, Aggressive Trend, Quick Scalper 15m |
+| R-6 | **Templates existentes sin trailing stop ni TP escalonado** — defaults los dejaban deshabilitados | 🟡 MEDIO | ✅ Trend Rider, Bottom Catcher, Range Scalper actualizados |
+
+### Archivos modificados
+
+| Archivo | Cambios |
+|---------|---------|
+| `StrategyEngine.cs` | R-1: Umbral mínimo de profit para cierre proactivo EST-18 |
+| `StrategyTemplateDtos.cs` | R-2: 12 parámetros avanzados en `StrategyTemplateRiskConfigDto` |
+| `StrategyTemplateStore.cs` | R-5/R-6: 3 nuevos templates + 3 existentes actualizados (10 total) |
+| `RunTemplateRankingCommand.cs` | R-2: Propaga parámetros avanzados en `BuildAdaptedRiskConfig` |
+| `RunSetupWizardCommand.cs` | R-2: Propaga parámetros avanzados al crear estrategia |
+| `StrategyRotatorService.cs` | R-2: Propaga parámetros avanzados en AutoPilot |
+| `StrategyTemplates.cs` (API) | R-2: DTO y conversión para frontend |
+
+### Recomendaciones de configuración para $150-200 USD
+
+```
+Estrategia recomendada: "⚡ Momentum Swing Trader (Capital Bajo)"
+- MaxOrder: $150 USDT
+- Risk/trade: 2% ($3-4 por trade)
+- SL: 2.5% — TP: 5% con TP escalonado (1.5% → 3%)
+- MinConfirmation: 30% (más señales)
+- Cooldown: 20% (mayor frecuencia)
+- Trailing stop: 1.5% (protege ganancias)
+- Trades esperados: 4-8/semana
+- Profit semanal estimado: $3-15 (2-10% del capital)
+```
 
 ---
 
@@ -27,6 +72,14 @@
 - [ ] Backup de BD verificado
 - [ ] API Key de autenticación configurada (`TRADINGBOT_API_KEY`)
 - [ ] `appsettings.json` sin secrets hardcoded
+
+## 📋 Pendientes — Post-estabilización
+
+- [ ] **Módulo 7: Auto-Optimizer** — Optimización automática en background (ver `.github/Modalidades.md § 7`)
+  - Worker que detecta estrategias recién creadas y optimiza SL/TP/períodos
+  - Walk-forward obligatorio para evitar overfitting
+  - ~60-100 combinaciones por template, ~30s por estrategia
+  - Requiere datos reales de Paper Trading para validar
 
 ---
 

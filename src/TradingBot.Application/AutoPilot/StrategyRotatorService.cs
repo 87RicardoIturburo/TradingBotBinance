@@ -221,7 +221,19 @@ internal sealed class StrategyRotatorService : IStrategyRotator
             template.RiskConfig.MaxOpenPositions,
             template.RiskConfig.UseAtrSizing,
             template.RiskConfig.RiskPercentPerTrade,
-            template.RiskConfig.AtrMultiplier);
+            template.RiskConfig.AtrMultiplier,
+            useTrailingStop: template.RiskConfig.UseTrailingStop,
+            trailingStopPercent: template.RiskConfig.TrailingStopPercent,
+            signalCooldownPercent: template.RiskConfig.SignalCooldownPercent,
+            minConfirmationPercent: template.RiskConfig.MinConfirmationPercent,
+            takeProfit1Percent: template.RiskConfig.TakeProfit1Percent,
+            takeProfit1ClosePercent: template.RiskConfig.TakeProfit1ClosePercent,
+            takeProfit2Percent: template.RiskConfig.TakeProfit2Percent,
+            takeProfit2ClosePercent: template.RiskConfig.TakeProfit2ClosePercent,
+            exitOnRegimeChange: template.RiskConfig.ExitOnRegimeChange,
+            maxPositionDurationCandles: template.RiskConfig.MaxPositionDurationCandles,
+            takeProfit1AtrMultiplier: template.RiskConfig.TakeProfit1AtrMultiplier,
+            takeProfit2AtrMultiplier: template.RiskConfig.TakeProfit2AtrMultiplier);
 
         if (riskResult.IsFailure) return null;
 
@@ -302,7 +314,7 @@ internal sealed class StrategyRotatorService : IStrategyRotator
         try
         {
             var rankingResult = await _mediator.Send(
-                new RunTemplateRankingCommand(symbol, FromDays: 7), ct);
+                new RunTemplateRankingCommand(symbol, FromDays: 14), ct);
 
             if (rankingResult.IsFailure)
             {
@@ -323,12 +335,12 @@ internal sealed class StrategyRotatorService : IStrategyRotator
                 return false;
             }
 
-            if (entry.TotalPnL <= 0 || entry.SharpeRatio < 0)
+            if (entry.TotalPnL <= 0 || entry.SharpeRatio < 0.5m || entry.TotalTrades < 3)
             {
                 _logger.LogWarning(
                     "AutoPilot: template '{TemplateId}' no rentable para {Symbol} " +
-                    "(PnL={PnL:F2}, Sharpe={Sharpe:F2}). Rotación cancelada.",
-                    templateId, symbol, entry.TotalPnL, entry.SharpeRatio);
+                    "(PnL={PnL:F2}, Sharpe={Sharpe:F2}, Trades={Trades}). Rotación cancelada.",
+                    templateId, symbol, entry.TotalPnL, entry.SharpeRatio, entry.TotalTrades);
                 return false;
             }
 

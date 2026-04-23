@@ -55,7 +55,13 @@ internal sealed class MarketRegimeDetector
         if (adxValue.HasValue)
         {
             if (adxValue.Value >= adxTrendingThreshold)
+            {
+                // Bearish: tendencia fuerte + DI- domina con margen > 5 puntos
+                if (adx is { IsBearish: true } && adx.MinusDi - adx.PlusDi > 5m)
+                    return new MarketRegimeResult(MarketRegime.Bearish, adxValue, bandWidth, atrPercent);
+
                 return new MarketRegimeResult(MarketRegime.Trending, adxValue, bandWidth, atrPercent);
+            }
 
             if (adxValue.Value <= adxRangingThreshold)
                 return new MarketRegimeResult(MarketRegime.Ranging, adxValue, bandWidth, atrPercent);

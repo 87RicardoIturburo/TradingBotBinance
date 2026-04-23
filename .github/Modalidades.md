@@ -2,7 +2,7 @@
 
 > **Problema central**: El usuario no sabe de trading → el bot debe decidir **qué estrategia**, **en qué symbol**, **por cuánto tiempo** y **con cuánto capital** operar.
 >
-> **Última actualización**: Junio 2025
+> **Última actualización**: Julio 2025
 
 ---
 
@@ -16,13 +16,15 @@
 | 4 | **Risk Budget Guardian** | ⭐⭐⭐⭐⭐ | 🟢 Baja | Ninguna |
 | 5 | **Setup Wizard** | ⭐⭐⭐⭐⭐ | 🟡 Media | 1 + 2 + 4 |
 | 6 | **Trade Explainer** | ⭐⭐⭐⭐ | 🟢 Baja | Ninguna |
+| 7 | **Auto-Optimizer** (Background) | ⭐⭐⭐⭐ | 🟡 Media | 2 + 5 |
 
 ### Orden de implementación recomendado
 
-> **4 → 2 → 1 → 6 → 3 → 5**
+> **4 → 2 → 1 → 6 → 3 → 5 → 7**
 >
 > Primero proteger capital (4), luego saber qué funciona (2), después dónde mirar (1),
-> entender qué hace el bot (6), automatizar rotación (3), y finalmente el wizard que une todo (5).
+> entender qué hace el bot (6), automatizar rotación (3), el wizard que une todo (5),
+> y finalmente la optimización automática en background (7).
 
 ### Flujo de dependencias
 
@@ -629,6 +631,9 @@ y mostrarlos en el frontend. No requiere lógica nueva, solo plumbing.
 - [x] **Módulo 3**: Auto-Pilot / Strategy Rotator ✅
 - [x] **Módulo 5**: Setup Wizard ✅
 
+### Fase 4 — Optimización inteligente (post-estabilización)
+- [ ] **Módulo 7**: Auto-Optimizer (requiere datos reales de Paper Trading)
+
 ### Resultado final
 
 Un usuario novato podría:
@@ -638,5 +643,171 @@ Un usuario novato podría:
 4. El Auto-Pilot rota estrategias cuando el mercado cambia
 5. El Risk Budget protege su capital con kill switch automático
 6. El Explainer le dice qué pasó y por qué en lenguaje simple
+7. El Auto-Optimizer ajusta parámetros en background para mejorar rentabilidad
+
+**De "no sé nada de trading" → "el bot opera solo, se auto-optimiza, y yo solo reviso resultados".**
+
+---
+
+## 7. 🔬 Auto-Optimizer (Optimización Automática en Background)
+
+> *"El bot no solo elige la mejor estrategia — la mejora automáticamente."*
+
+### Problema que resuelve
+
+El Ranker (módulo 2) selecciona el **mejor template** para un symbol, pero usa los parámetros
+default del template (RSI period=14, SL=3%, TP=5%). Estos parámetros pueden no ser óptimos
+para el symbol específico. El Auto-Optimizer ajusta SL, TP, períodos de indicadores y umbrales
+para maximizar el Sharpe Ratio del symbol concreto.
+
+### Por qué no se integra directamente en el Wizard
+
+| Escenario | Combinaciones | Tiempo estimado |
+|-----------|:------------:|:---------------:|
+| **Ranker actual** (solo backtest) | 7 templates × 1 = **7** backtests | ~2-3s |
+| **Optimización ligera** (3 params × 3 valores) | 27 combos por template | ~30-50s |
+| **Optimización completa** (5 params × 5 valores) | 3125 combos por template | ~15-90 min |
+
+El usuario del Wizard espera ~5 segundos. Una optimización completa tomaría minutos.
+**La solución es ejecutarla en background después de crear la estrategia.**
+
+### Diseño: Optimización en 2 fases
+
+```
+Fase 1 — Wizard (inmediata, ~3-5s):
+  Scanner → Ranker → Selecciona mejor template
+  → Crea estrategia con params default + SymbolProfile
+  → Activa en PaperTrading
+  → Encola trabajo de optimización
+
+Fase 2 — Background Worker (asíncrona, ~30-60s):
+  AutoOptimizerWorker detecta estrategia recién creada
+  → Descarga klines (30 días, 1H)
+  → Ejecuta optimización LIGERA:
+      - SL: [1.5%, 2%, 2.5%, 3%]
+      - TP: [3%, 4%, 5%, 6%, 8%]
+      - RSI period: [10, 14, 21]
+      = 60 combinaciones (~15s)
+  → Walk-forward validation (70% train / 30% test)
+  → Si mejora Sharpe ≥ 20% vs original:
+      → Aplica parámetros vía hot-reload (IStrategyConfigService)
+      → Notifica al usuario vía SignalR
+  → Si no mejora → Mantiene configuración original
+```
+
+### Rangos de optimización por tipo de template
+
+| Template | Parámetros a optimizar | Combinaciones |
+|----------|----------------------|:------------:|
+| RSI Oversold/Overbought | RSI.period, RSI.oversold, RSI.overbought, SL%, TP% | ~80 |
+| MACD Crossover | MACD.fastPeriod, MACD.slowPeriod, SL%, TP% | ~60 |
+| Bollinger + RSI | BB.period, BB.stdDev, RSI.oversold, SL%, TP% | ~100 |
+| EMA Crossover | EMA.fastPeriod, EMA.slowPeriod, SL%, TP% | ~60 |
+| Trend Rider | ADX.period, SL%, TP%, trailingStop% | ~50 |
+| Range Scalper | BB.period, RSI.oversold, SL%, TP% | ~80 |
+| Bottom Catcher | RSI.oversold, ADX threshold, SL%, TP% | ~60 |
+
+**Máximo ~100 combinaciones por template** — dentro del límite de `MaxCombinations = 500`
+y ejecutable en ~30 segundos.
+
+### Protección contra overfitting
+
+1. **Walk-forward obligatorio**: 70% train / 30% test. Si el Sharpe en test degrada más
+   de 50% vs train, se descarta la optimización (señal de overfitting).
+2. **Umbral de mejora mínima**: Solo aplica si mejora ≥ 20% vs parámetros originales.
+   Cambios marginales no justifican el riesgo de overfitting.
+3. **Mínimo de trades**: La combinación optimizada debe tener ≥ 3 trades en test
+   para ser estadísticamente válida.
+4. **El `OptimizationEngine.RunWalkForwardAsync` ya existe** y calcula la degradación
+   automáticamente — se reutiliza sin cambios.
+
+### Arquitectura propuesta
+
+```
+Capa Application:
+  ├── AutoOptimizer/
+  │   ├── AutoOptimizerConfig.cs          — Config hot-reloadable
+  │   ├── AutoOptimizerWorker.cs          — BackgroundService
+  │   ├── TemplateParameterRanges.cs      — Rangos por template
+  │   └── OptimizeStrategyCommand.cs      — CQRS command + handler
+  │
+  Reutiliza:
+  ├── Backtesting/OptimizationEngine.cs   — Motor existente (sin cambios)
+  ├── Backtesting/SymbolProfilerService.cs — Profiler existente
+  └── Strategies/IStrategyConfigService.cs — Hot-reload existente
+
+Capa API:
+  ├── Controllers/OptimizerController.cs  — POST /api/optimizer/run
+  └── Hubs/TradingHub.cs                  — Evento OnOptimizationComplete
+
+Capa Frontend:
+  └── Componente en Strategies.razor      — Badge "Optimizado" + métricas antes/después
+```
+
+### Flujo del AutoOptimizerWorker
+
+```csharp
+protected override async Task ExecuteAsync(CancellationToken ct)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        if (!_config.Enabled)
+        {
+            await Task.Delay(TimeSpan.FromMinutes(1), ct);
+            continue;
+        }
+
+        var strategies = await _configService.GetAllActiveAsync(ct);
+        var pendientes = strategies
+            .Where(s => !_optimizedStrategies.Contains(s.Id)
+                     && s.CreatedAt > DateTimeOffset.UtcNow.AddHours(-1));
+
+        foreach (var strategy in pendientes)
+        {
+            var result = await _mediator.Send(
+                new OptimizeStrategyCommand(strategy.Id), ct);
+
+            if (result.IsSuccess && result.Value.Improved)
+                await _notifier.NotifyAlertAsync(
+                    $"🔬 Optimización aplicada a '{strategy.Name}': "
+                    + $"Sharpe {result.Value.OriginalSharpe:F2} → {result.Value.OptimizedSharpe:F2}",
+                    ct);
+
+            _optimizedStrategies.Add(strategy.Id);
+        }
+
+        await Task.Delay(TimeSpan.FromMinutes(_config.CheckIntervalMinutes), ct);
+    }
+}
+```
+
+### Config en appsettings.json
+
+```json
+"AutoOptimizer": {
+  "Enabled": false,
+  "CheckIntervalMinutes": 5,
+  "MinImprovementPercent": 20,
+  "MaxDegradationPercent": 50,
+  "MinTestTrades": 3,
+  "BacktestDays": 30,
+  "TrainRatio": 0.7
+}
+```
+
+### Complejidad: 🟡 Media
+
+El `OptimizationEngine` y `RunWalkForwardAsync` **ya existen y están testeados**.
+Los `ParameterRange` ya soportan cualquier combinación de parámetros.
+El hot-reload vía `IStrategyConfigService.UpdateAsync` **ya existe**.
+Lo único nuevo es el worker, el command handler, y los rangos predefinidos por template.
+
+### Prerequisitos
+
+- Módulos 1-6 completados ✅
+- Datos reales de Paper Trading (al menos 1-2 semanas) para validar que el flujo base funciona
+- `OptimizationEngine` verificado con walk-forward en datos reales
+
+### Estado: [ ] Pendiente — Fase 4 (post-estabilización)
 
 **De "no sé nada de trading" → "el bot opera solo y yo solo reviso resultados".**

@@ -37,7 +37,8 @@ public enum OptimizationRankBy
     SharpeRatio,
     SortinoRatio,
     CalmarRatio,
-    ProfitFactor
+    ProfitFactor,
+    Composite
 }
 
 /// <summary>Resultado resumido de una combinación de parámetros.</summary>
@@ -76,6 +77,7 @@ internal sealed class OptimizationEngine
     private readonly ILogger<OptimizationEngine> _logger;
 
     internal const int MaxCombinations = 500;
+    internal const int MinTradesForRanking = 10;
 
     public OptimizationEngine(
         BacktestEngine backtestEngine,
@@ -181,10 +183,24 @@ internal sealed class OptimizationEngine
         }
 
         // Ordenar por la métrica seleccionada y asignar ranking
+        // Excluir combinaciones con menos de MinTradesForRanking trades
         var ranked = results
+            .Where(r => r.TotalTrades >= MinTradesForRanking)
             .OrderByDescending(r => GetRankingValue(r, rankBy))
             .Select((r, i) => r with { Rank = i + 1 })
             .ToList();
+
+        if (ranked.Count == 0 && results.Count > 0)
+        {
+            _logger.LogWarning(
+                "Todas las {Count} combinaciones tienen < {Min} trades. "
+                + "Se incluyen todas sin filtro para no perder resultados.",
+                results.Count, MinTradesForRanking);
+            ranked = results
+                .OrderByDescending(r => GetRankingValue(r, rankBy))
+                .Select((r, i) => r with { Rank = i + 1 })
+                .ToList();
+        }
 
         // Diagnóstico final: alertar si la mayoría de combinaciones son negativas
         if (ranked.Count >= 5)
@@ -265,15 +281,26 @@ internal sealed class OptimizationEngine
             ranked);
     }
 
-    /// <summary>Obtiene el valor de ranking según la métrica seleccionada.</summary>
+    /// <summary>
+    /// Obtiene el valor de ranking según la métrica seleccionada.
+    /// <see cref="OptimizationRankBy.Composite"/>: score ponderado que favorece
+    /// consistencia sobre P&amp;L bruto.
+    /// </summary>
     private static decimal GetRankingValue(OptimizationRunSummary r, OptimizationRankBy rankBy) => rankBy switch
     {
         OptimizationRankBy.SharpeRatio  => r.Metrics.SharpeRatio,
         OptimizationRankBy.SortinoRatio => r.Metrics.SortinoRatio,
         OptimizationRankBy.CalmarRatio  => r.Metrics.CalmarRatio,
         OptimizationRankBy.ProfitFactor => r.Metrics.ProfitFactor,
+        OptimizationRankBy.Composite    => CalculateCompositeScore(r),
         _                              => r.TotalPnL
     };
+
+    private static decimal CalculateCompositeScore(OptimizationRunSummary r) =>
+        r.Metrics.SharpeRatio * 0.3m
+        + r.Metrics.ProfitFactor * 0.3m
+        + (1m - r.MaxDrawdownPercent / 100m) * 0.2m
+        + r.WinRate / 100m * 0.2m;
 
     /// <summary>
     /// Genera todas las combinaciones de parámetros como producto cartesiano.
@@ -482,7 +509,7 @@ internal sealed class OptimizationEngine
         var maxPeriod = Strategies.IndicatorWarmUpHelper.GetMaxWarmUpPeriod(testStrategy.Indicators);
         var warmUpCount = Math.Min(maxPeriod + 10, trainKlines.Count);
         for (var i = Math.Max(0, trainKlines.Count - warmUpCount); i < trainKlines.Count; i++)
-            testTradingStrategy.WarmUpPrice(trainKlines[i].Close);
+            testTradingStrategy.WarmUpOhlc(trainKlines[i].High, trainKlines[i].Low, trainKlines[i].Close, trainKlines[i].Volume);
 
         if (testTradingStrategy is Strategies.DefaultTradingStrategy dts)
             dts.SyncPreviousIndicatorState();
@@ -500,6 +527,11 @@ internal sealed class OptimizationEngine
             OptimizationRankBy.SortinoRatio => testMetrics.SortinoRatio,
             OptimizationRankBy.CalmarRatio  => testMetrics.CalmarRatio,
             OptimizationRankBy.ProfitFactor => testMetrics.ProfitFactor,
+            OptimizationRankBy.Composite    => CalculateCompositeScore(new OptimizationRunSummary(
+                0, [], testBacktest.TotalTrades, testBacktest.WinningTrades,
+                testBacktest.WinRate, testBacktest.TotalPnL, testBacktest.TotalInvested,
+                testBacktest.ReturnOnInvestment, testBacktest.MaxDrawdownPercent,
+                testBacktest.AveragePnLPerTrade, testMetrics)),
             _                              => testBacktest.TotalPnL
         };
 

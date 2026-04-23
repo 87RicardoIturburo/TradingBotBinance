@@ -60,6 +60,21 @@ public sealed class Position : AggregateRoot<Guid>
         EntryPrice.Value == 0m ? 0m
         : UnrealizedPnL / (EntryPrice.Value * Quantity.Value) * 100m;
 
+    /// <summary>
+    /// P&amp;L bruto no realizado SIN descontar fees. Usado para evaluar umbrales de SL/TP
+    /// de forma precisa, sin que las comisiones sesgen el momento de activación.
+    /// </summary>
+    public decimal GrossUnrealizedPnL => IsOpen
+        ? Side == OrderSide.Buy
+            ? (CurrentPrice.Value - EntryPrice.Value) * Quantity.Value
+            : (EntryPrice.Value - CurrentPrice.Value) * Quantity.Value
+        : 0m;
+
+    /// <summary>Porcentaje de retorno bruto (sin fees) sobre el capital invertido.</summary>
+    public decimal GrossUnrealizedPnLPercent =>
+        EntryPrice.Value == 0m ? 0m
+        : GrossUnrealizedPnL / (EntryPrice.Value * Quantity.Value) * 100m;
+
     private Position(Guid id) : base(id) { }
     private Position() : base(Guid.Empty) { } // EF Core
 

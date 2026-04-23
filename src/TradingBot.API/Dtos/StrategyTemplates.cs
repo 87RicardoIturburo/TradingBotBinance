@@ -22,7 +22,12 @@ public static class StrategyTemplates
                     t.RiskConfig.StopLossPercent, t.RiskConfig.TakeProfitPercent,
                     t.RiskConfig.MaxOpenPositions, t.RiskConfig.UseAtrSizing,
                     t.RiskConfig.RiskPercentPerTrade, t.RiskConfig.AtrMultiplier,
-                    t.RiskConfig.Timeframe, t.RiskConfig.ConfirmationTimeframe)))
+                    t.RiskConfig.Timeframe, t.RiskConfig.ConfirmationTimeframe,
+                    t.RiskConfig.UseTrailingStop, t.RiskConfig.TrailingStopPercent,
+                    t.RiskConfig.MinConfirmationPercent, t.RiskConfig.SignalCooldownPercent,
+                    t.RiskConfig.TakeProfit1Percent, t.RiskConfig.TakeProfit1ClosePercent,
+                    t.RiskConfig.TakeProfit2Percent, t.RiskConfig.TakeProfit2ClosePercent,
+                    t.RiskConfig.ExitOnRegimeChange, t.RiskConfig.MaxPositionDurationCandles)))
             .ToList();
 }
 
@@ -64,4 +69,14 @@ public sealed record TemplateRiskConfigDto(
     decimal RiskPercentPerTrade = 1m,
     decimal AtrMultiplier = 2m,
     string  Timeframe = "OneHour",
-    string? ConfirmationTimeframe = null);
+    string? ConfirmationTimeframe = null,
+    bool    UseTrailingStop = false,
+    decimal TrailingStopPercent = 1.5m,
+    decimal MinConfirmationPercent = 50m,
+    decimal SignalCooldownPercent = 50m,
+    decimal TakeProfit1Percent = 0m,
+    decimal TakeProfit1ClosePercent = 50m,
+    decimal TakeProfit2Percent = 0m,
+    decimal TakeProfit2ClosePercent = 60m,
+    bool    ExitOnRegimeChange = false,
+    int     MaxPositionDurationCandles = 0);

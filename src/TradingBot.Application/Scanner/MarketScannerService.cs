@@ -98,16 +98,19 @@ internal sealed class MarketScannerService : IMarketScanner
         var atrScore = ScoreAtr(atrPercent);
         var (regimeScore, regimeLabel) = ScoreRegime(atrPercent, spreadPercent);
         var adxScore = ScoreAdxProxy(atrPercent, Math.Abs(ticker.PriceChangePercent24h));
+        var feeViabilityScore = ScoreFeeViability(atrPercent);
 
         var totalWeight = _config.VolumeWeight + _config.SpreadWeight
-                        + _config.AtrWeight + _config.RegimeWeight + _config.AdxWeight;
+                        + _config.AtrWeight + _config.RegimeWeight + _config.AdxWeight
+                        + _config.FeeViabilityWeight;
 
         var weightedScore = totalWeight > 0
             ? (volumeScore * _config.VolumeWeight
              + spreadScore * _config.SpreadWeight
              + atrScore * _config.AtrWeight
              + regimeScore * _config.RegimeWeight
-             + adxScore * _config.AdxWeight) / totalWeight
+             + adxScore * _config.AdxWeight
+             + feeViabilityScore * _config.FeeViabilityWeight) / totalWeight
             : 0m;
 
         var trafficLight = weightedScore >= 70 ? "🟢" : weightedScore >= 40 ? "🟡" : "🔴";
@@ -175,6 +178,25 @@ internal sealed class MarketScannerService : IMarketScanner
             >= 50m => 100m,
             >= 25m => 50m + (directionalStrength - 25m) / 25m * 50m,
             _      => directionalStrength / 25m * 50m
+        };
+    }
+
+    /// <summary>
+    /// Penaliza symbols donde el ATR% es demasiado bajo respecto al costo de fees round-trip.
+    /// Un ratio ATR/fees menor a 3× hace el symbol prácticamente no-tradeable.
+    /// </summary>
+    private static decimal ScoreFeeViability(decimal atrPercent)
+    {
+        const decimal roundTripFeePercent = 0.15m;
+        var ratio = roundTripFeePercent > 0 ? atrPercent / roundTripFeePercent : 10m;
+
+        return ratio switch
+        {
+            >= 10m => 100m,
+            >= 5m  => 80m,
+            >= 3m  => 60m,
+            >= 2m  => 30m,
+            _      => 0m
         };
     }
 }

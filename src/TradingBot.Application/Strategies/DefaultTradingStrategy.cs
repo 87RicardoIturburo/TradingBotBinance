@@ -22,7 +22,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     private TradingStrategy? _config;
     private decimal? _previousRsi;
     private decimal? _previousMacdHistogram;
-    private int _previousEmaRelation; // -1 = price below EMA, 0 = unknown, 1 = price above EMA
+    private decimal? _previousPreviousRsi;
+    private decimal? _previousPreviousMacdHistogram;
+    private int _previousEmaRelation;
     private int _previousSmaRelation; // -1 = price below SMA, 0 = unknown, 1 = price above SMA
     private DateTimeOffset _lastSignalAt;
     private MarketRegimeResult? _lastRegime;
@@ -301,10 +303,12 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         foreach (var indicator in _indicators.Values)
             indicator.Reset();
 
-        _previousRsi           = null;
-        _previousMacdHistogram = null;
-        _previousEmaRelation   = 0;
-        _lastSignalAt          = default;
+        _previousRsi                    = null;
+        _previousPreviousRsi            = null;
+        _previousMacdHistogram          = null;
+        _previousPreviousMacdHistogram  = null;
+        _previousEmaRelation            = 0;
+        _lastSignalAt                   = default;
         _lastRegime            = null;
         _previousRegime        = MarketRegime.Unknown;
         _confirmationEma?.Reset();
@@ -409,9 +413,11 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     private void RebuildIndicators(TradingStrategy config)
     {
         _indicators.Clear();
-        _previousRsi           = null;
-        _previousMacdHistogram = null;
-        _previousEmaRelation   = 0;
+        _previousRsi                    = null;
+        _previousPreviousRsi            = null;
+        _previousMacdHistogram          = null;
+        _previousPreviousMacdHistogram  = null;
+        _previousEmaRelation            = 0;
         _previousSmaRelation   = 0;
         _lastSignalAt          = default;
         _lastRegime            = null;
@@ -478,17 +484,18 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         if (_lastRegime.Regime != MarketRegime.Unknown)
             _previousRegime = _lastRegime.Regime;
 
-        // Alta volatilidad → no generar señales (protección)
-        if (_lastRegime.Regime == MarketRegime.HighVolatility)
+        // Alta volatilidad o tendencia bajista → no generar señales Buy (protección)
+        if (_lastRegime.Regime is MarketRegime.HighVolatility or MarketRegime.Bearish)
         {
             UpdatePreviousIndicatorState(price);
-            _logger.LogDebug("Señal suprimida: régimen HighVolatility (ADX={Adx}, BW={BW})",
+            _logger.LogDebug("Señal suprimida: régimen {Regime} (ADX={Adx}, BW={BW})",
+                _lastRegime.Regime,
                 _lastRegime.AdxValue?.ToString("F1"), _lastRegime.BandWidth?.ToString("F4"));
             return null;
         }
 
         // Determinar señal candidata — el primer generador disponible decide, los demás confirman
-        var (candidateSide, signalSource) = DetermineSignalCandidate(price);
+        var (candidateSide, signalSource, signalNature) = DetermineSignalCandidate(price);
 
         if (candidateSide is null)
         {
@@ -528,7 +535,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             _reEntryMode = false;
 
         // Confirmación multi-indicador: indicadores que NO son el generador emiten un voto
-        var (confirms, total) = CountConfirmations(candidateSide.Value, price, signalSource);
+        var (confirms, total) = CountConfirmations(candidateSide.Value, price, signalSource, signalNature);
 
         if (total > 0)
         {
@@ -565,7 +572,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     ///   <item><b>Unknown</b>  → prioridad clásica RSI → MACD → BB → EMA → SMA</item>
     /// </list>
     /// </summary>
-    private (OrderSide? Side, IndicatorType Source) DetermineSignalCandidate(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) DetermineSignalCandidate(decimal price)
     {
         var regime = _lastRegime?.Regime ?? MarketRegime.Unknown;
 
@@ -577,7 +584,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         };
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryTrendingGenerators(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryTrendingGenerators(decimal price)
     {
         var result = TryMacdSignal();
         if (result.Side is not null) return result;
@@ -591,10 +598,10 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         result = TryRsiSignal();
         if (result.Side is not null) return result;
 
-        return (null, default);
+        return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryRangingGenerators(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRangingGenerators(decimal price)
     {
         var result = TryRsiSignal();
         if (result.Side is not null) return result;
@@ -611,10 +618,10 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         result = TrySmaSignal(price);
         if (result.Side is not null) return result;
 
-        return (null, default);
+        return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryDefaultGenerators(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryDefaultGenerators(decimal price)
     {
         var result = TryRsiSignal();
         if (result.Side is not null) return result;
@@ -631,20 +638,20 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         result = TrySmaSignal(price);
         if (result.Side is not null) return result;
 
-        return (null, default);
+        return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryRsiSignal()
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRsiSignal()
     {
         if (!_indicators.TryGetValue(IndicatorType.RSI, out var rsiIndicator) || !rsiIndicator.IsReady)
-            return (null, default);
+            return (null, default, default);
 
         var rsi = rsiIndicator.Calculate()!.Value;
         var config = _config!.Indicators.FirstOrDefault(i => i.Type == IndicatorType.RSI);
         if (config is null)
         {
             _previousRsi = rsiIndicator.Calculate();
-            return (null, default);
+            return (null, default, default);
         }
 
         var oversold   = config.GetParameter("oversold", 30);
@@ -703,62 +710,103 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
                 }
                 break;
             }
+
+            // Modo 3 (early reversal): señal cuando RSI forma pendiente positiva
+            // por 2 velas consecutivas mientras sigue en zona oversold.
+            // Reduce lag ~2-3 velas vs modo 0.
+            case 3:
+            {
+                if (_previousRsi is not null && _previousPreviousRsi is not null
+                    && rsi < oversold + 5m
+                    && rsi > _previousRsi.Value
+                    && _previousRsi.Value > _previousPreviousRsi.Value)
+                {
+                    rsiSide = OrderSide.Buy;
+                }
+                else if (_previousRsi is not null && _previousPreviousRsi is not null
+                    && rsi > overbought - 5m
+                    && rsi < _previousRsi.Value
+                    && _previousRsi.Value < _previousPreviousRsi.Value)
+                {
+                    rsiSide = OrderSide.Sell;
+                }
+                break;
+            }
         }
 
+        _previousPreviousRsi = _previousRsi;
         _previousRsi = rsi;
 
-        return rsiSide is not null ? (rsiSide, IndicatorType.RSI) : (null, default);
+        return rsiSide is not null ? (rsiSide, IndicatorType.RSI, SignalNature.MeanReversion) : (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryMacdSignal()
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryMacdSignal()
     {
         if (!_indicators.TryGetValue(IndicatorType.MACD, out var macdRaw)
             || macdRaw is not MacdIndicator macd || !macd.IsReady)
-            return (null, default);
+            return (null, default, default);
 
         var histogram = macd.Histogram ?? 0m;
+        var macdConfig = _config!.Indicators.FirstOrDefault(i => i.Type == IndicatorType.MACD);
+        var histogramSlopeMode = (int)(macdConfig?.GetParameter("histogramSlopeMode", 0) ?? 0);
+
         OrderSide? macdSide = null;
 
         if (_previousMacdHistogram is not null)
         {
+            // Modo clásico: cruce de cero del histograma
             if (histogram > 0m && _previousMacdHistogram.Value <= 0m)
                 macdSide = OrderSide.Buy;
             else if (histogram < 0m && _previousMacdHistogram.Value >= 0m)
                 macdSide = OrderSide.Sell;
+
+            // histogramSlopeMode=1: señal adicional en cambio de pendiente del histograma.
+            // Detecta cuando el momentum deja de empeorar (histograma gira)
+            // sin esperar cruce de cero. Reduce lag ~2-5 velas.
+            if (macdSide is null && histogramSlopeMode == 1 && _previousPreviousMacdHistogram is not null)
+            {
+                var prevSlope = _previousMacdHistogram.Value - _previousPreviousMacdHistogram.Value;
+                var currSlope = histogram - _previousMacdHistogram.Value;
+
+                if (histogram < 0m && prevSlope < 0m && currSlope > 0m)
+                    macdSide = OrderSide.Buy;
+                else if (histogram > 0m && prevSlope > 0m && currSlope < 0m)
+                    macdSide = OrderSide.Sell;
+            }
         }
 
+        _previousPreviousMacdHistogram = _previousMacdHistogram;
         _previousMacdHistogram = histogram;
 
         if (macdSide is null)
-            return (null, default);
+            return (null, default, default);
 
         // EST-5: filtro de fuerza del histograma — descartar cruces débiles
-        var macdConfig = _config!.Indicators.FirstOrDefault(i => i.Type == IndicatorType.MACD);
         var minHistogramStrength = macdConfig?.GetParameter("minHistogramStrength", 0m) ?? 0m;
         if (minHistogramStrength > 0 && Math.Abs(histogram) < minHistogramStrength)
         {
             _logger.LogDebug(
                 "MACD {Side} descartada: histograma {Hist:F6} < umbral mínimo {Min:F6}",
                 macdSide, histogram, minHistogramStrength);
-            return (null, default);
+            return (null, default, default);
         }
 
-        return (macdSide, IndicatorType.MACD);
+        return (macdSide, IndicatorType.MACD, SignalNature.TrendFollowing);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryBollingerSignal(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryBollingerSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.BollingerBands, out var bbIndicator)
             || bbIndicator is not BollingerBandsIndicator bbGen || !bbGen.IsReady)
-            return (null, default);
+            return (null, default, default);
 
         // BB mean-reversion: solo en mercado lateral (Ranging/Unknown)
         if (_lastRegime?.Regime is not MarketRegime.Trending)
         {
             if (price <= bbGen.LowerBand!.Value)
-                return (OrderSide.Buy, IndicatorType.BollingerBands);
+                return (OrderSide.Buy, IndicatorType.BollingerBands, SignalNature.MeanReversion);
             if (price >= bbGen.UpperBand!.Value)
-                return (OrderSide.Sell, IndicatorType.BollingerBands);
+                return (OrderSide.Sell, IndicatorType.BollingerBands, SignalNature.MeanReversion);
         }
 
         // EST-3/EST-14: Bollinger Squeeze → breakout alcista (Spot: solo Buy)
@@ -766,15 +814,15 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         // captura breakouts que tardan hasta 3 velas en desarrollarse.
         if ((bbGen.SqueezeReleased || bbGen.WasSqueezeReleasedRecently(3))
             && price > bbGen.UpperBand!.Value)
-            return (OrderSide.Buy, IndicatorType.BollingerBands);
+            return (OrderSide.Buy, IndicatorType.BollingerBands, SignalNature.TrendFollowing);
 
-        return (null, default);
+        return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TryEmaSignal(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryEmaSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.EMA, out var emaIndicator) || !emaIndicator.IsReady)
-            return (null, default);
+            return (null, default, default);
 
         var emaValue = emaIndicator.Calculate()!.Value;
 
@@ -787,52 +835,52 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             if (currentRelation == 1 && _previousEmaRelation == -1)
             {
                 _previousEmaRelation = 1;
-                return (OrderSide.Buy, IndicatorType.EMA);
+                return (OrderSide.Buy, IndicatorType.EMA, SignalNature.TrendFollowing);
             }
             if (currentRelation == -1 && _previousEmaRelation == 1)
             {
                 _previousEmaRelation = -1;
-                return (OrderSide.Sell, IndicatorType.EMA);
+                return (OrderSide.Sell, IndicatorType.EMA, SignalNature.TrendFollowing);
             }
             _previousEmaRelation = currentRelation;
-            return (null, default);
+            return (null, default, default);
         }
 
         // Fallback: cruce precio/EMA (comportamiento original)
         if (price > emaValue && _previousEmaRelation == -1)
         {
             _previousEmaRelation = 1;
-            return (OrderSide.Buy, IndicatorType.EMA);
+            return (OrderSide.Buy, IndicatorType.EMA, SignalNature.TrendFollowing);
         }
         if (price < emaValue && _previousEmaRelation == 1)
         {
             _previousEmaRelation = -1;
-            return (OrderSide.Sell, IndicatorType.EMA);
+            return (OrderSide.Sell, IndicatorType.EMA, SignalNature.TrendFollowing);
         }
         _previousEmaRelation = price >= emaValue ? 1 : -1;
 
-        return (null, default);
+        return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source) TrySmaSignal(decimal price)
+    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TrySmaSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.SMA, out var smaIndicator) || !smaIndicator.IsReady)
-            return (null, default);
+            return (null, default, default);
 
         var smaValue = smaIndicator.Calculate()!.Value;
         if (price > smaValue && _previousSmaRelation == -1)
         {
             _previousSmaRelation = 1;
-            return (OrderSide.Buy, IndicatorType.SMA);
+            return (OrderSide.Buy, IndicatorType.SMA, SignalNature.TrendFollowing);
         }
         if (price < smaValue && _previousSmaRelation == 1)
         {
             _previousSmaRelation = -1;
-            return (OrderSide.Sell, IndicatorType.SMA);
+            return (OrderSide.Sell, IndicatorType.SMA, SignalNature.TrendFollowing);
         }
         _previousSmaRelation = price >= smaValue ? 1 : -1;
 
-        return (null, default);
+        return (null, default, default);
     }
 
     /// <summary>Actualiza el estado previo de indicadores cuando no se genera señal.</summary>
@@ -871,12 +919,17 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     /// Devuelve (confirmaciones, total_votantes). El indicador que generó la señal se excluye.
     /// Indicadores no listos se excluyen.
     /// </summary>
-    internal (int Confirms, int Total) CountConfirmations(OrderSide side, decimal price, IndicatorType signalSource = default)
+    internal (int Confirms, int Total) CountConfirmations(
+        OrderSide side, decimal price,
+        IndicatorType signalSource = default,
+        SignalNature signalNature = SignalNature.TrendFollowing)
     {
         var confirms = 0;
         var total    = 0;
 
-        // MACD: histograma positivo = momentum alcista
+        // MACD como confirmador:
+        // TrendFollowing → histograma positivo/negativo (momentum claro)
+        // MeanReversion  → histograma girando (cambio de pendiente), no exigir cruce de cero
         if (signalSource != IndicatorType.MACD
             && _indicators.TryGetValue(IndicatorType.MACD, out var macdRaw)
             && macdRaw is MacdIndicator macd && macd.IsReady)
@@ -884,8 +937,16 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             total++;
             var histogram = macd.Histogram ?? 0m;
 
-            if (side == OrderSide.Buy && histogram > 0m) confirms++;
-            else if (side == OrderSide.Sell && histogram < 0m) confirms++;
+            if (signalNature == SignalNature.MeanReversion)
+            {
+                if (side == OrderSide.Buy && _previousMacdHistogram is not null && histogram > _previousMacdHistogram.Value) confirms++;
+                else if (side == OrderSide.Sell && _previousMacdHistogram is not null && histogram < _previousMacdHistogram.Value) confirms++;
+            }
+            else
+            {
+                if (side == OrderSide.Buy && histogram > 0m) confirms++;
+                else if (side == OrderSide.Sell && histogram < 0m) confirms++;
+            }
         }
 
         // Bollinger Bands: precio ≤ Lower = sobreventa, ≥ Upper = sobrecompra
@@ -898,24 +959,44 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
             else if (side == OrderSide.Sell && price >= bb2.UpperBand!.Value) confirms++;
         }
 
-        // EMA: precio > EMA = tendencia alcista
+        // EMA como confirmador:
+        // TrendFollowing → price > EMA = tendencia alcista
+        // MeanReversion  → price < EMA = precio en zona baja (consistente con oversold)
         if (signalSource != IndicatorType.EMA
             && _indicators.TryGetValue(IndicatorType.EMA, out var ema) && ema.IsReady)
         {
             total++;
             var emaValue = ema.Calculate()!.Value;
-            if (side == OrderSide.Buy && price > emaValue) confirms++;
-            else if (side == OrderSide.Sell && price < emaValue) confirms++;
+            if (signalNature == SignalNature.MeanReversion)
+            {
+                if (side == OrderSide.Buy && price < emaValue) confirms++;
+                else if (side == OrderSide.Sell && price > emaValue) confirms++;
+            }
+            else
+            {
+                if (side == OrderSide.Buy && price > emaValue) confirms++;
+                else if (side == OrderSide.Sell && price < emaValue) confirms++;
+            }
         }
 
-        // SMA: precio > SMA = tendencia alcista
+        // SMA como confirmador:
+        // TrendFollowing → price > SMA = tendencia alcista
+        // MeanReversion  → price < SMA = precio en zona baja (consistente con oversold)
         if (signalSource != IndicatorType.SMA
             && _indicators.TryGetValue(IndicatorType.SMA, out var sma) && sma.IsReady)
         {
             total++;
             var smaValue = sma.Calculate()!.Value;
-            if (side == OrderSide.Buy && price > smaValue) confirms++;
-            else if (side == OrderSide.Sell && price < smaValue) confirms++;
+            if (signalNature == SignalNature.MeanReversion)
+            {
+                if (side == OrderSide.Buy && price < smaValue) confirms++;
+                else if (side == OrderSide.Sell && price > smaValue) confirms++;
+            }
+            else
+            {
+                if (side == OrderSide.Buy && price > smaValue) confirms++;
+                else if (side == OrderSide.Sell && price < smaValue) confirms++;
+            }
         }
 
         // RSI como confirmador (cuando otro indicador generó la señal)
@@ -1014,6 +1095,21 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         if (detected.AdxValue is null
             || detected.Regime is MarketRegime.HighVolatility or MarketRegime.Unknown)
             return detected;
+
+        // Bearish → mantener hasta que ADX caiga debajo del trending threshold
+        if (previousRegime == MarketRegime.Bearish && detected.Regime != MarketRegime.Bearish)
+        {
+            if (detected.AdxValue.Value > risk.AdxTrendingThreshold - HysteresisPoints)
+                return detected with { Regime = MarketRegime.Bearish };
+        }
+
+        // Trending/Ranging → no cambiar a Bearish hasta que ADX suba sobre trending + histéresis
+        if (previousRegime is MarketRegime.Trending or MarketRegime.Ranging
+            && detected.Regime == MarketRegime.Bearish)
+        {
+            if (detected.AdxValue.Value < risk.AdxTrendingThreshold + HysteresisPoints)
+                return detected with { Regime = previousRegime };
+        }
 
         if (previousRegime == MarketRegime.Trending && detected.Regime == MarketRegime.Ranging)
         {

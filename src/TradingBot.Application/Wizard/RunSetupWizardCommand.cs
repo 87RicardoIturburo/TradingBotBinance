@@ -72,15 +72,17 @@ internal sealed class RunSetupWizardCommandHandler(
         if (scanResult.IsFailure)
             return Result<SetupWizardResult, DomainError>.Failure(scanResult.Error);
 
+        const decimal minAtrPercent = 0.5m;
+
         var topSymbols = scanResult.Value
-            .Where(s => s.TrafficLight == "🟢")
+            .Where(s => s.TrafficLight == "🟢" && s.AtrPercent >= minAtrPercent)
             .Take(3)
             .ToList();
 
         if (topSymbols.Count < 2)
         {
             var yellows = scanResult.Value
-                .Where(s => s.TrafficLight == "🟡" && s.Score >= 55)
+                .Where(s => s.TrafficLight == "🟡" && s.Score >= 55 && s.AtrPercent >= minAtrPercent)
                 .OrderByDescending(s => s.Score)
                 .Take(3 - topSymbols.Count);
             topSymbols.AddRange(yellows);
@@ -96,7 +98,8 @@ internal sealed class RunSetupWizardCommandHandler(
         foreach (var symbolScore in topSymbols)
         {
             var rankingResult = await mediator.Send(
-                new RunTemplateRankingCommand(symbolScore.Symbol, FromDays: 30),
+                new RunTemplateRankingCommand(
+                    symbolScore.Symbol, FromDays: 60, InitialBalanceUsdt: request.CapitalUsdt),
                 cancellationToken);
 
             if (rankingResult.IsFailure || rankingResult.Value.Rankings.Count == 0)
@@ -104,12 +107,16 @@ internal sealed class RunSetupWizardCommandHandler(
 
             var bestTemplate = rankingResult.Value.Rankings[0];
 
-            if (bestTemplate.TotalPnL <= 0 || bestTemplate.SharpeRatio < 0.3m || bestTemplate.TotalTrades < 2)
+            if (bestTemplate.TotalPnL <= 0
+                || bestTemplate.SharpeRatio < 0.3m
+                || bestTemplate.TotalTrades < 2
+                || bestTemplate.ProfitFactor < 1.1m)
             {
                 logger.LogWarning(
-                    "Template '{Name}' descartado para {Symbol}: Sharpe={Sharpe:F2}, PnL={PnL:F2}, Trades={Trades}",
+                    "Template '{Name}' descartado para {Symbol}: Sharpe={Sharpe:F2}, PnL={PnL:F2}, Trades={Trades}, PF={PF:F2}, WR={WR:F1}%",
                     bestTemplate.TemplateName, symbolScore.Symbol,
-                    bestTemplate.SharpeRatio, bestTemplate.TotalPnL, bestTemplate.TotalTrades);
+                    bestTemplate.SharpeRatio, bestTemplate.TotalPnL, bestTemplate.TotalTrades,
+                    bestTemplate.ProfitFactor, bestTemplate.WinRate);
                 continue;
             }
 
@@ -171,9 +178,21 @@ internal sealed class RunSetupWizardCommandHandler(
             template.RiskConfig.UseAtrSizing,
             template.RiskConfig.RiskPercentPerTrade,
             template.RiskConfig.AtrMultiplier,
+            useTrailingStop: template.RiskConfig.UseTrailingStop,
+            trailingStopPercent: template.RiskConfig.TrailingStopPercent,
+            signalCooldownPercent: template.RiskConfig.SignalCooldownPercent,
+            minConfirmationPercent: template.RiskConfig.MinConfirmationPercent,
             highVolatilityBandWidthPercent: profile.AdjustedHighVolatilityBandWidthPercent,
             highVolatilityAtrPercent: profile.AdjustedHighVolatilityAtrPercent,
-            maxSpreadPercent: profile.AdjustedMaxSpreadPercent);
+            maxSpreadPercent: profile.AdjustedMaxSpreadPercent,
+            takeProfit1Percent: template.RiskConfig.TakeProfit1Percent,
+            takeProfit1ClosePercent: template.RiskConfig.TakeProfit1ClosePercent,
+            takeProfit2Percent: template.RiskConfig.TakeProfit2Percent,
+            takeProfit2ClosePercent: template.RiskConfig.TakeProfit2ClosePercent,
+            exitOnRegimeChange: template.RiskConfig.ExitOnRegimeChange,
+            maxPositionDurationCandles: template.RiskConfig.MaxPositionDurationCandles,
+            takeProfit1AtrMultiplier: template.RiskConfig.TakeProfit1AtrMultiplier,
+            takeProfit2AtrMultiplier: template.RiskConfig.TakeProfit2AtrMultiplier);
 
         if (riskResult.IsFailure) return null;
 

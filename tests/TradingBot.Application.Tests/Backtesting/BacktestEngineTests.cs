@@ -22,6 +22,12 @@ public sealed class BacktestEngineTests
     private readonly ITradingStrategy _strategy = Substitute.For<ITradingStrategy>();
     private readonly IRuleEngine _ruleEngine = Substitute.For<IRuleEngine>();
 
+    public BacktestEngineTests()
+    {
+        _strategy.IsConfirmationAligned(Arg.Any<OrderSide>()).Returns(true);
+        _strategy.IsBtcAligned(Arg.Any<OrderSide>()).Returns(true);
+    }
+
     private static TradingStrategy CreateStrategy()
     {
         var symbol = Symbol.Create("BTCUSDT").Value;
@@ -434,6 +440,8 @@ public sealed class BacktestEngineTests
                 Price.Create(50000m).Value, "RSI(14)=28.0000");
 
             var mockTs = Substitute.For<ITradingStrategy>();
+            mockTs.IsConfirmationAligned(Arg.Any<OrderSide>()).Returns(true);
+            mockTs.IsBtcAligned(Arg.Any<OrderSide>()).Returns(true);
             mockTs.ProcessKlineAsync(
                 Arg.Is<KlineClosedEvent>(k => k.OpenTime == baseTime),
                 Arg.Any<CancellationToken>())

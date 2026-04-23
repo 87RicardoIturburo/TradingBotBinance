@@ -919,7 +919,10 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
             // EST-18: señal Sell con posición Long en ganancia → cierre proactivo.
             // Saltea filtros de confirmación/BTC (queremos cerrar antes de reversión).
-            if (longPosition.UnrealizedPnLPercent > 0)
+            // Umbral mínimo: al menos 0.5% de ganancia neta para evitar cierres
+            // que después de fees reales (taker + slippage) resultan en pérdida.
+            var minProactiveProfitPct = Math.Max(0.5m, strategy.RiskConfig.StopLossPercent.Value * 0.25m);
+            if (longPosition.UnrealizedPnLPercent >= minProactiveProfitPct)
             {
                 _logger.LogInformation(
                     "EST-18: cierre proactivo de posición {PosId} por señal Sell ({Source}). PnL={PnL:F2}%",

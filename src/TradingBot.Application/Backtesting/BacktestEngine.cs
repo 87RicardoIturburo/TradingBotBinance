@@ -118,7 +118,7 @@ internal sealed class BacktestEngine
                         "EvaluateExitRulesAsync falló para posición abierta: {Error}. Aplicando SL/TP directo.",
                         exitResult.Error.Message);
 
-                    var pnlPct = openPosition.UnrealizedPnLPercent;
+                    var pnlPct = openPosition.GrossUnrealizedPnLPercent;
                     shouldExit = pnlPct <= -(decimal)strategy.RiskConfig.StopLossPercent
                               || pnlPct >=  (decimal)strategy.RiskConfig.TakeProfitPercent;
                     exitReason = DetermineExitReason(openPosition, strategy);
@@ -159,9 +159,38 @@ internal sealed class BacktestEngine
                 }
             }
 
-            // 3. Si hay señal válida y no hay posición abierta → evaluar entrada
-            if (signalResult.IsSuccess && signalResult.Value is { } signal && openPosition is null)
+            // 3. Si hay señal válida → evaluar entrada o cierre proactivo
+            if (signalResult.IsSuccess && signalResult.Value is { } signal)
             {
+                // EST-18: señal Sell + posición Long en ganancia → cierre proactivo
+                if (signal.Direction == OrderSide.Sell && openPosition is not null
+                    && openPosition.Side == OrderSide.Buy)
+                {
+                    var minProactiveProfitPct = Math.Max(0.5m,
+                        (decimal)strategy.RiskConfig.StopLossPercent * 0.25m);
+                    if (openPosition.UnrealizedPnLPercent >= minProactiveProfitPct)
+                    {
+                        var trade = ClosePosition(openPosition, kline.Close, kline.OpenTime,
+                            "Proactive close (EST-18)", _feeConfig);
+                        trades.Add(trade);
+                        realizedPnL += trade.NetPnL;
+                        totalFees += trade.Fees;
+                        totalSlippage += trade.SlippageCost;
+                        openPosition = null;
+                    }
+                }
+
+                // Solo evaluar entrada Buy cuando no hay posición abierta
+                if (signal.Direction == OrderSide.Buy && openPosition is null)
+                {
+                // Filtro HTF: rechazar si el timeframe de confirmación no confirma la dirección
+                if (!tradingStrategy.IsConfirmationAligned(signal.Direction))
+                    goto SkipEntry;
+
+                // Filtro BTC: rechazar si BTC no confirma la dirección (altcoins)
+                if (!tradingStrategy.IsBtcAligned(signal.Direction))
+                    goto SkipEntry;
+
                 // Circuit breaker diario: no abrir nuevas posiciones si se
                 // alcanzó el límite de pérdida diaria de esta estrategia
                 var dailyPnL = GetDailyPnL(trades, kline.OpenTime);
@@ -223,10 +252,14 @@ internal sealed class BacktestEngine
                             var entryPrice = FeeAndSlippageCalculator.ApplySlippage(
                                 kline.Close, order.Side, _feeConfig.SlippagePercent);
                             totalInvested += entryPrice * qty;
+                            var estimatedEntryFee = FeeAndSlippageCalculator.CalculateFee(
+                                entryPrice, qty, _feeConfig.EffectiveTakerFee);
+                            var estimatedRoundTripFee = estimatedEntryFee * 2m;
                             openPosition = new BacktestPosition(
                                 order.Side, entryPrice, entryPrice, qty, kline.OpenTime,
                                 HighestPriceSinceEntry: entryPrice,
-                                LowestPriceSinceEntry:  entryPrice);
+                                LowestPriceSinceEntry:  entryPrice,
+                                EstimatedRoundTripFee: estimatedRoundTripFee);
 
                             var slPrice = order.Side == OrderSide.Buy
                                 ? entryPrice * (1m - strategy.RiskConfig.StopLossPercent.AsDecimalFactor)
@@ -243,6 +276,9 @@ internal sealed class BacktestEngine
                                 signal.IndicatorSnapshot);
                         }
                     }
+                }
+
+                SkipEntry: ;
                 }
             }
 
@@ -377,7 +413,7 @@ internal sealed class BacktestEngine
     /// </summary>
     private static string DetermineExitReason(BacktestPosition position, TradingStrategy strategy)
     {
-        var pnlPercent = position.UnrealizedPnLPercent;
+        var pnlPercent = position.GrossUnrealizedPnLPercent;
         // Solo etiquetar como stop-loss si se alcanzó el umbral configurado.
         // Un PnL negativo pequeño puede ser una salida por regla (RSI > 65) con precio
         // ligeramente por debajo del entry — eso es "Exit rule", no "Stop-loss".
@@ -419,15 +455,25 @@ internal sealed record BacktestPosition(
     decimal Quantity,
     DateTimeOffset OpenedAt,
     decimal HighestPriceSinceEntry,
-    decimal LowestPriceSinceEntry)
+    decimal LowestPriceSinceEntry,
+    decimal EstimatedRoundTripFee = 0m)
 {
-    public decimal UnrealizedPnL => Side == OrderSide.Buy
+    public decimal UnrealizedPnL => (Side == OrderSide.Buy
         ? (CurrentPrice - EntryPrice) * Quantity
-        : (EntryPrice - CurrentPrice) * Quantity;
+        : (EntryPrice - CurrentPrice) * Quantity)
+        - EstimatedRoundTripFee;
 
     public decimal UnrealizedPnLPercent =>
         EntryPrice == 0m ? 0m
         : UnrealizedPnL / (EntryPrice * Quantity) * 100m;
+
+    public decimal GrossUnrealizedPnL => Side == OrderSide.Buy
+        ? (CurrentPrice - EntryPrice) * Quantity
+        : (EntryPrice - CurrentPrice) * Quantity;
+
+    public decimal GrossUnrealizedPnLPercent =>
+        EntryPrice == 0m ? 0m
+        : GrossUnrealizedPnL / (EntryPrice * Quantity) * 100m;
 }
 
 /// <summary>Resultado completo de un backtest.</summary>
