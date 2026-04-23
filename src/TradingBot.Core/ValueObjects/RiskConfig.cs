@@ -135,6 +135,15 @@ public sealed record RiskConfig
     /// </summary>
     public bool ExitOnRegimeChange { get; }
 
+    /// <summary>Velas consecutivas requeridas para confirmar un cambio de régimen. Default: 3.</summary>
+    public int RegimeConfirmationCandles { get; }
+
+    /// <summary>Valor de ADX por debajo del cual se suma punto a Indefinite. Default: 15.</summary>
+    public decimal IndefiniteAdxThreshold { get; }
+
+    /// <summary>Si <c>true</c>, se aplica histéresis ADX tras la confirmación de régimen. Default: true.</summary>
+    public bool UseHysteresis { get; }
+
     private RiskConfig(
         decimal maxOrderAmountUsdt,
         decimal maxDailyLossUsdt,
@@ -162,7 +171,10 @@ public sealed record RiskConfig
         int maxPositionDurationCandles,
         bool exitOnRegimeChange,
         decimal takeProfit1AtrMultiplier,
-        decimal takeProfit2AtrMultiplier)
+        decimal takeProfit2AtrMultiplier,
+        int regimeConfirmationCandles,
+        decimal indefiniteAdxThreshold,
+        bool useHysteresis)
     {
         MaxOrderAmountUsdt              = maxOrderAmountUsdt;
         MaxDailyLossUsdt                = maxDailyLossUsdt;
@@ -191,6 +203,9 @@ public sealed record RiskConfig
         ExitOnRegimeChange              = exitOnRegimeChange;
         TakeProfit1AtrMultiplier        = takeProfit1AtrMultiplier;
         TakeProfit2AtrMultiplier        = takeProfit2AtrMultiplier;
+        RegimeConfirmationCandles       = regimeConfirmationCandles;
+        IndefiniteAdxThreshold          = indefiniteAdxThreshold;
+        UseHysteresis                   = useHysteresis;
     }
 
     public static Result<RiskConfig, DomainError> Create(
@@ -220,7 +235,10 @@ public sealed record RiskConfig
         int maxPositionDurationCandles = 0,
         bool exitOnRegimeChange = false,
         decimal takeProfit1AtrMultiplier = 0m,
-        decimal takeProfit2AtrMultiplier = 0m)
+        decimal takeProfit2AtrMultiplier = 0m,
+        int regimeConfirmationCandles = 3,
+        decimal indefiniteAdxThreshold = 15m,
+        bool useHysteresis = true)
     {
         if (maxOrderAmountUsdt <= 0)
             return Result<RiskConfig, DomainError>.Failure(
@@ -253,6 +271,14 @@ public sealed record RiskConfig
         if (minConfirmationPercent < 0 || minConfirmationPercent > 100)
             return Result<RiskConfig, DomainError>.Failure(
                 DomainError.Validation("El porcentaje mínimo de confirmación debe estar entre 0 y 100."));
+
+        if (regimeConfirmationCandles < 1)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("Las velas de confirmación de régimen deben ser al menos 1."));
+
+        if (indefiniteAdxThreshold <= 0)
+            return Result<RiskConfig, DomainError>.Failure(
+                DomainError.Validation("El umbral ADX de Indefinite debe ser mayor que cero."));
 
         var stopLossResult = Percentage.Create(stopLossPercent);
         if (stopLossResult.IsFailure)
@@ -299,7 +325,10 @@ public sealed record RiskConfig
             Math.Max(maxPositionDurationCandles, 0),
             exitOnRegimeChange,
             Math.Max(takeProfit1AtrMultiplier, 0m),
-            Math.Max(takeProfit2AtrMultiplier, 0m)));
+            Math.Max(takeProfit2AtrMultiplier, 0m),
+            Math.Max(regimeConfirmationCandles, 1),
+            indefiniteAdxThreshold,
+            useHysteresis));
     }
 
     /// <summary>Configuración conservadora por defecto: 100 USDT/orden, SL 2%, TP 4%.</summary>

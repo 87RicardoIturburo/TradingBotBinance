@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using TradingBot.Application.Diagnostics;
 using TradingBot.Application.Explainer;
 using TradingBot.Application.RiskManagement;
+using TradingBot.Application.Strategies.Indicators;
 using TradingBot.Core.Entities;
 using TradingBot.Core.Enums;
 using TradingBot.Core.Events;
@@ -31,6 +32,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     private readonly IMarketDataService                               _marketDataService;
     private readonly IGlobalCircuitBreaker                            _circuitBreaker;
     private readonly IIndicatorStateStore                             _indicatorStateStore;
+    private readonly StrategyResolver                                 _strategyResolver;
     private readonly GlobalRiskSettings                                _globalRisk;
     private readonly TradingMetrics                                   _metrics;
     private readonly ILogger<StrategyEngine>                          _logger;
@@ -47,6 +49,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         IMarketDataService     marketDataService,
         IGlobalCircuitBreaker  circuitBreaker,
         IIndicatorStateStore   indicatorStateStore,
+        StrategyResolver       strategyResolver,
         IOptions<GlobalRiskSettings> globalRiskOptions,
         TradingMetrics         metrics,
         ILogger<StrategyEngine> logger)
@@ -55,6 +58,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         _marketDataService   = marketDataService;
         _circuitBreaker      = circuitBreaker;
         _indicatorStateStore = indicatorStateStore;
+        _strategyResolver    = strategyResolver;
         _globalRisk          = globalRiskOptions.Value;
         _metrics             = metrics;
         _logger              = logger;
@@ -204,6 +208,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             {
                 removed.Cancel();
                 removed.Dispose();
+                _strategyResolver.Remove(strategyId);
                 if (_strategyLocks.TryRemove(strategyId, out var removedLock))
                     removedLock.Dispose();
                 _logger.LogInformation("Runner para estrategia {Id} detenido (desactivada)", strategyId);
@@ -213,13 +218,13 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         if (_runners.TryGetValue(strategyId, out var existing))
         {
-            // Hot-reload: recargar config en la instancia existente y actualizar cache
-            await existing.Strategy.ReloadConfigAsync(config, cancellationToken);
+            // Hot-reload: recargar config en TODAS las instancias y re-warm-up
+            await _strategyResolver.ReloadAllAsync(strategyId, config, cancellationToken);
             existing.CachedConfig = config;
 
-            // CRIT-NEW-4 fix: ReloadConfigAsync ejecuta RebuildIndicators que limpia
-            // todos los indicadores. Re-ejecutar warm-up para reconstruir el estado.
-            await WarmUpIndicatorsAsync(existing.Strategy, config, cancellationToken);
+            var allStrategies = _strategyResolver.GetAllStrategies(strategyId);
+            foreach (var s in allStrategies)
+                await WarmUpIndicatorsAsync(s, config, cancellationToken);
 
             _logger.LogInformation("Hot-reload completado para estrategia '{Name}' ({Id})", config.Name, strategyId);
         }
@@ -263,14 +268,16 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
     private async Task StartStrategyRunnerAsync(TradingStrategy config, CancellationToken cancellationToken)
     {
-        // Crear un scope de larga vida que acompaña al runner y se dispone cuando este se detiene.
-        // Esto evita que dependencias scoped se destruyan prematuramente.
-        var runnerScope     = _scopeFactory.CreateScope();
-        var tradingStrategy = runnerScope.ServiceProvider.GetRequiredService<ITradingStrategy>();
-        await tradingStrategy.InitializeAsync(config, cancellationToken);
+        // Inicializar todas las instancias de estrategia para este strategyId
+        await _strategyResolver.InitializeSetAsync(config.Id, config, cancellationToken);
 
-        // Precalentar indicadores con datos históricos
-        await WarmUpIndicatorsAsync(tradingStrategy, config, cancellationToken);
+        // La instancia Default es la referencia principal del runner (siempre alimentada, tiene confirmation/BTC EMAs)
+        var allStrategies = _strategyResolver.GetAllStrategies(config.Id);
+        var tradingStrategy = allStrategies[0]; // Default
+
+        // Precalentar indicadores de todas las instancias con datos históricos
+        foreach (var s in allStrategies)
+            await WarmUpIndicatorsAsync(s, config, cancellationToken);
 
         // Evaluar posiciones abiertas inmediatamente al arrancar
         await EvaluateOpenPositionsOnStartupAsync(config, cancellationToken);
@@ -301,7 +308,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         // Crear y arrancar el runner
         var cts    = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var runner = new StrategyRunnerState(config.Id, config.Name, config.Symbol, tradingStrategy, cts, runnerScope);
+        var runner = new StrategyRunnerState(config.Id, config.Name, config.Symbol, tradingStrategy, cts);
         runner.CachedConfig    = config;
         runner.ProcessingTask = Task.Run(async () =>
         {
@@ -811,6 +818,85 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         }
     }
 
+    private async Task ClosePositionsOnRegimeChangeAsync(
+        StrategyRunnerState runner, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var positionRepo = scope.ServiceProvider.GetRequiredService<IPositionRepository>();
+        var orderService = scope.ServiceProvider.GetRequiredService<IOrderService>();
+        var notifier = scope.ServiceProvider.GetService<ITradingNotifier>();
+        var config = runner.CachedConfig;
+        if (config is null) return;
+
+        var openPositions = await runner.GetOpenPositionsAsync(positionRepo, cancellationToken);
+        if (openPositions.Count == 0) return;
+
+        _logger.LogInformation(
+            "Cerrando {Count} posiciones de '{Name}' por transición a Indefinite",
+            openPositions.Count, runner.StrategyName);
+
+        foreach (var position in openPositions)
+        {
+            var closeSide = position.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy;
+            var orderResult = Order.Create(
+                config.Id, position.Symbol, closeSide, OrderType.Market,
+                position.Quantity, config.Mode);
+
+            if (orderResult.IsFailure) continue;
+
+            var placeResult = await orderService.PlaceOrderAsync(orderResult.Value, cancellationToken);
+            if (placeResult.IsSuccess)
+            {
+                runner.OrdersPlaced++;
+                runner.InvalidatePositionCache();
+
+                if (notifier is not null)
+                    await notifier.NotifyAlertAsync(
+                        $"Posición de '{config.Name}' cerrada por régimen Indefinite",
+                        cancellationToken);
+            }
+        }
+    }
+
+    private ITradingStrategy? ResolveActiveStrategy(StrategyRunnerState runner, KlineClosedEvent kline)
+    {
+        var config = runner.CachedConfig;
+        if (config is null)
+            return runner.Strategy;
+
+        var resolved = _strategyResolver.Resolve(runner.StrategyId, runner.Strategy.CurrentRegime, config);
+        if (resolved is null)
+            return null;
+
+        resolved.CurrentRegime = runner.Strategy.CurrentRegime;
+        return resolved;
+    }
+
+    private void FeedKlineToAllStrategies(StrategyRunnerState runner, KlineClosedEvent kline)
+    {
+        var allStrategies = _strategyResolver.GetAllStrategies(runner.StrategyId);
+        foreach (var s in allStrategies)
+        {
+            if (s is DefaultTradingStrategy dts)
+            {
+                dts.WarmUpOhlc(kline.High, kline.Low, kline.Close, kline.Volume);
+            }
+        }
+    }
+
+    private void FeedKlineToOtherStrategies(StrategyRunnerState runner, KlineClosedEvent kline, ITradingStrategy active)
+    {
+        var allStrategies = _strategyResolver.GetAllStrategies(runner.StrategyId);
+        foreach (var s in allStrategies)
+        {
+            if (ReferenceEquals(s, active)) continue;
+            if (s is DefaultTradingStrategy dts)
+            {
+                dts.WarmUpOhlc(kline.High, kline.Low, kline.Close, kline.Volume);
+            }
+        }
+    }
+
     private async Task ProcessSingleKlineAsync(
         StrategyRunnerState runner,
         KlineClosedEvent kline,
@@ -818,8 +904,80 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     {
         var sw = Stopwatch.StartNew();
 
-        // Procesar vela cerrada → indicadores + señal
-        var signalResult = await runner.Strategy.ProcessKlineAsync(kline, cancellationToken);
+        runner.EmaAlignment.Update(kline.Close);
+        runner.HhLlDetector.Update(kline.High, kline.Low);
+
+        var config = runner.CachedConfig;
+        if (config is not null)
+        {
+            var adx = runner.Strategy is DefaultTradingStrategy dts
+                ? dts.GetAdxIndicator() : null;
+            var bb = runner.Strategy is DefaultTradingStrategy dts2
+                ? dts2.GetBollingerIndicator() : null;
+            var atr = runner.Strategy is DefaultTradingStrategy dts3
+                ? dts3.GetAtrIndicator() : null;
+            var volRatio = runner.Strategy is DefaultTradingStrategy dts4
+                ? dts4.GetVolumeRatio() : null;
+
+            var raw = runner.RegimeDetector.Detect(
+                adx, bb, atr, kline.Close,
+                config.RiskConfig.AdxTrendingThreshold,
+                config.RiskConfig.AdxRangingThreshold,
+                config.RiskConfig.HighVolatilityBandWidthPercent,
+                config.RiskConfig.HighVolatilityAtrPercent,
+                runner.EmaAlignment,
+                runner.HhLlDetector,
+                volRatio,
+                config.RiskConfig.IndefiniteAdxThreshold);
+
+            var confirmed = runner.RegimeDetector.GetConfirmedRegime(
+                raw.Regime, config.RiskConfig.RegimeConfirmationCandles);
+
+            var finalResult = config.RiskConfig.UseHysteresis
+                ? MarketRegimeDetector.ApplyHysteresis(
+                    raw with { Regime = confirmed }, runner.PreviousRegime,
+                    config.RiskConfig.AdxTrendingThreshold, config.RiskConfig.AdxRangingThreshold)
+                : raw with { Regime = confirmed };
+
+            if (finalResult.Regime != MarketRegime.Unknown)
+            {
+                if (runner.PreviousRegime != finalResult.Regime)
+                    runner.TrackingState.OnRegimeChange();
+                runner.PreviousRegime = finalResult.Regime;
+            }
+
+            runner.Strategy.CurrentRegime = finalResult.Regime;
+
+            if (finalResult.Regime == MarketRegime.Indefinite)
+            {
+                _logger.LogDebug(
+                    "Régimen Indefinite para '{Name}' — bloqueo total de señales",
+                    runner.StrategyName);
+
+                if (config.RiskConfig.ExitOnRegimeChange
+                    && runner.PreviousRegime is not MarketRegime.Indefinite and not MarketRegime.Unknown)
+                {
+                    await ClosePositionsOnRegimeChangeAsync(runner, cancellationToken);
+                }
+
+                // Alimentar indicadores de todas las instancias aunque no haya señal
+                FeedKlineToAllStrategies(runner, kline);
+                return;
+            }
+        }
+
+        // Resolver la estrategia activa según el régimen detectado
+        var activeStrategy = ResolveActiveStrategy(runner, kline);
+        if (activeStrategy is null)
+        {
+            FeedKlineToAllStrategies(runner, kline);
+            return;
+        }
+
+        var signalResult = await activeStrategy.ProcessKlineAsync(kline, cancellationToken);
+
+        // Alimentar indicadores del resto de instancias (la activa ya se alimentó via ProcessKlineAsync)
+        FeedKlineToOtherStrategies(runner, kline, activeStrategy);
 
         var strategy = runner.CachedConfig;
         if (strategy is null || !strategy.IsActive) return;
@@ -832,8 +990,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         // TRADE-2 fix: evaluar reglas de salida basadas en indicadores al cierre de vela.
         // Esto complementa el tick loop que solo evalúa SL/TP/trailing (precio puro).
-        var currentAtr = runner.Strategy.CurrentAtrValue;
-        var currentSnapshot = runner.Strategy.GetCurrentSnapshot();
+        var currentAtr = activeStrategy.CurrentAtrValue;
+        var currentSnapshot = activeStrategy.GetCurrentSnapshot();
         var lastPrice = Price.Create(kline.Close);
 
         if (lastPrice.IsSuccess)
@@ -975,6 +1133,24 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             return;
         }
 
+        if (runner.HtfHhLlDetector.IsReady())
+        {
+            if (runner.HtfHhLlDetector.HasHigherHighs() && signal.Direction != OrderSide.Buy)
+            {
+                _logger.LogDebug(
+                    "Señal {Direction} en '{Name}' rechazada: HTF muestra HH (solo Buy permitido)",
+                    signal.Direction, runner.StrategyName);
+                return;
+            }
+            if (runner.HtfHhLlDetector.HasLowerLows() && signal.Direction != OrderSide.Sell)
+            {
+                _logger.LogDebug(
+                    "Señal {Direction} en '{Name}' rechazada: HTF muestra LL (solo Sell permitido)",
+                    signal.Direction, runner.StrategyName);
+                return;
+            }
+        }
+
         // EST-15: verificar que BTC confirma la dirección (solo altcoins)
         if (!runner.Strategy.IsBtcAligned(signal.Direction))
         {
@@ -1084,7 +1260,9 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
                 try
                 {
-                    runner.Strategy.ProcessConfirmationKline(kline);
+                    foreach (var s in _strategyResolver.GetAllStrategies(runner.StrategyId))
+                        s.ProcessConfirmationKline(kline);
+                    runner.HtfHhLlDetector.Update(kline.High, kline.Low);
                 }
                 catch (Exception ex)
                 {
@@ -1125,7 +1303,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
                 try
                 {
-                    runner.Strategy.ProcessBtcKline(kline);
+                    foreach (var s in _strategyResolver.GetAllStrategies(runner.StrategyId))
+                        s.ProcessBtcKline(kline);
                 }
                 catch (Exception ex)
                 {
@@ -1420,6 +1599,13 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         /// <summary>Config de estrategia cacheada. Se recarga solo en <see cref="ReloadStrategyAsync"/>.</summary>
         public TradingStrategy?           CachedConfig           { get; set; }
+
+        public EmaAlignmentDetector       EmaAlignment           { get; } = new();
+        public HigherHighLowDetector      HhLlDetector           { get; } = new();
+        public MarketRegimeDetector       RegimeDetector         { get; } = new();
+        public IndicatorTrackingState     TrackingState          { get; } = new();
+        public MarketRegime               PreviousRegime         { get; set; } = MarketRegime.Unknown;
+        public HigherHighLowDetector      HtfHhLlDetector        { get; } = new();
 
         // ── DESIGN-2: Caché de posiciones abiertas en memoria ────────────
         /// <summary>Posiciones abiertas cacheadas. Se invalida al abrir/cerrar posiciones.</summary>

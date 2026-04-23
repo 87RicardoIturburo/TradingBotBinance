@@ -14,10 +14,10 @@ namespace TradingBot.Application.Strategies;
 /// Implementación por defecto de <see cref="ITradingStrategy"/>.
 /// Alimenta indicadores con cada tick y genera señales cuando se cruzan umbrales.
 /// </summary>
-internal sealed class DefaultTradingStrategy : ITradingStrategy
+internal class DefaultTradingStrategy : ITradingStrategy
 {
     private readonly ILogger<DefaultTradingStrategy> _logger;
-    private readonly Dictionary<IndicatorType, ITechnicalIndicator> _indicators = [];
+    private protected readonly Dictionary<IndicatorType, ITechnicalIndicator> _indicators = [];
 
     private TradingStrategy? _config;
     private decimal? _previousRsi;
@@ -27,8 +27,6 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     private int _previousEmaRelation;
     private int _previousSmaRelation; // -1 = price below SMA, 0 = unknown, 1 = price above SMA
     private DateTimeOffset _lastSignalAt;
-    private MarketRegimeResult? _lastRegime;
-    private MarketRegime _previousRegime = MarketRegime.Unknown;
 
     // EST-7: EMA crossover rápida (si está configurada, se usa cruce EMA/EMA en vez de precio/EMA)
     private EmaIndicator? _emaCrossoverFast;
@@ -61,7 +59,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     public Symbol      Symbol        { get; private set; } = null!;
     public TradingMode Mode          { get; private set; }
     public bool        IsInitialized { get; private set; }
-    public MarketRegime CurrentRegime => _lastRegime?.Regime ?? MarketRegime.Unknown;
+    public MarketRegime CurrentRegime { get; set; } = MarketRegime.Unknown;
     public bool IsBullish =>
         !_indicators.TryGetValue(IndicatorType.ADX, out var adx)
         || adx is not AdxIndicator { IsReady: true, IsBearish: true };
@@ -73,6 +71,20 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     {
         _logger = logger;
     }
+
+    internal AdxIndicator? GetAdxIndicator() =>
+        _indicators.TryGetValue(IndicatorType.ADX, out var raw) ? raw as AdxIndicator : null;
+
+    internal BollingerBandsIndicator? GetBollingerIndicator() =>
+        _indicators.TryGetValue(IndicatorType.BollingerBands, out var raw) ? raw as BollingerBandsIndicator : null;
+
+    internal AtrIndicator? GetAtrIndicator() =>
+        _indicators.TryGetValue(IndicatorType.ATR, out var raw) ? raw as AtrIndicator : null;
+
+    internal decimal? GetVolumeRatio() =>
+        _indicators.TryGetValue(IndicatorType.Volume, out var raw)
+        && raw is VolumeSmaIndicator { IsReady: true } vol
+            ? vol.VolumeRatio : null;
 
     public Task InitializeAsync(TradingStrategy config, CancellationToken cancellationToken = default)
     {
@@ -309,8 +321,6 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         _previousPreviousMacdHistogram  = null;
         _previousEmaRelation            = 0;
         _lastSignalAt                   = default;
-        _lastRegime            = null;
-        _previousRegime        = MarketRegime.Unknown;
         _confirmationEma?.Reset();
         _lastConfirmationClose = null;
         _btcEma?.Reset();
@@ -420,7 +430,6 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         _previousEmaRelation            = 0;
         _previousSmaRelation   = 0;
         _lastSignalAt          = default;
-        _lastRegime            = null;
         _emaCrossoverFast      = null;
         _signalCooldown        = CalculateSignalCooldown(config.Timeframe, config.RiskConfig.SignalCooldownPercent);
 
@@ -465,32 +474,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     {
         var price = tick.LastPrice.Value;
 
-        // Detectar régimen de mercado
-        var adx = _indicators.TryGetValue(IndicatorType.ADX, out var adxRaw) ? adxRaw as AdxIndicator : null;
-        var bb = _indicators.TryGetValue(IndicatorType.BollingerBands, out var bbRaw) ? bbRaw as BollingerBandsIndicator : null;
-        var atr = _indicators.TryGetValue(IndicatorType.ATR, out var atrRaw) ? atrRaw as AtrIndicator : null;
-        _lastRegime = MarketRegimeDetector.Detect(adx, bb, atr, price,
-            _config!.RiskConfig.AdxTrendingThreshold,
-            _config.RiskConfig.AdxRangingThreshold,
-            _config.RiskConfig.HighVolatilityBandWidthPercent,
-            _config.RiskConfig.HighVolatilityAtrPercent);
-
-        // EST-19: Histéresis de régimen — evitar ping-pong Trending↔Ranging en zona ambigua.
-        // Si el régimen anterior era Trending, mantenerlo hasta que ADX caiga 2 puntos debajo
-        // del umbral de Ranging. Si era Ranging, mantenerlo hasta que ADX suba 2 puntos sobre
-        // el umbral de Trending. HighVolatility y Unknown no tienen histéresis.
-        _lastRegime = ApplyRegimeHysteresis(_lastRegime, _previousRegime, _config.RiskConfig);
-
-        if (_lastRegime.Regime != MarketRegime.Unknown)
-            _previousRegime = _lastRegime.Regime;
-
-        // Alta volatilidad o tendencia bajista → no generar señales Buy (protección)
-        if (_lastRegime.Regime is MarketRegime.HighVolatility or MarketRegime.Bearish)
+        if (CurrentRegime is MarketRegime.HighVolatility or MarketRegime.Bearish or MarketRegime.Indefinite)
         {
             UpdatePreviousIndicatorState(price);
-            _logger.LogDebug("Señal suprimida: régimen {Regime} (ADX={Adx}, BW={BW})",
-                _lastRegime.Regime,
-                _lastRegime.AdxValue?.ToString("F1"), _lastRegime.BandWidth?.ToString("F4"));
             return null;
         }
 
@@ -504,7 +490,8 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         }
 
         // Trending → solo operar en la dirección de la tendencia (ADX + DI)
-        if (_lastRegime.Regime == MarketRegime.Trending && adx is { IsReady: true })
+        var adx = GetAdxIndicator();
+        if (CurrentRegime == MarketRegime.Trending && adx is { IsReady: true })
         {
             if (candidateSide == OrderSide.Buy && adx.IsBearish)
             {
@@ -572,11 +559,9 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
     ///   <item><b>Unknown</b>  → prioridad clásica RSI → MACD → BB → EMA → SMA</item>
     /// </list>
     /// </summary>
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) DetermineSignalCandidate(decimal price)
+    private protected virtual (OrderSide? Side, IndicatorType Source, SignalNature Nature) DetermineSignalCandidate(decimal price)
     {
-        var regime = _lastRegime?.Regime ?? MarketRegime.Unknown;
-
-        return regime switch
+        return CurrentRegime switch
         {
             MarketRegime.Trending => TryTrendingGenerators(price),
             MarketRegime.Ranging  => TryRangingGenerators(price),
@@ -584,7 +569,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         };
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryTrendingGenerators(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryTrendingGenerators(decimal price)
     {
         var result = TryMacdSignal();
         if (result.Side is not null) return result;
@@ -601,7 +586,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRangingGenerators(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRangingGenerators(decimal price)
     {
         var result = TryRsiSignal();
         if (result.Side is not null) return result;
@@ -621,7 +606,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryDefaultGenerators(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryDefaultGenerators(decimal price)
     {
         var result = TryRsiSignal();
         if (result.Side is not null) return result;
@@ -641,7 +626,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRsiSignal()
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryRsiSignal()
     {
         if (!_indicators.TryGetValue(IndicatorType.RSI, out var rsiIndicator) || !rsiIndicator.IsReady)
             return (null, default, default);
@@ -740,7 +725,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return rsiSide is not null ? (rsiSide, IndicatorType.RSI, SignalNature.MeanReversion) : (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryMacdSignal()
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryMacdSignal()
     {
         if (!_indicators.TryGetValue(IndicatorType.MACD, out var macdRaw)
             || macdRaw is not MacdIndicator macd || !macd.IsReady)
@@ -794,14 +779,14 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (macdSide, IndicatorType.MACD, SignalNature.TrendFollowing);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryBollingerSignal(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryBollingerSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.BollingerBands, out var bbIndicator)
             || bbIndicator is not BollingerBandsIndicator bbGen || !bbGen.IsReady)
             return (null, default, default);
 
         // BB mean-reversion: solo en mercado lateral (Ranging/Unknown)
-        if (_lastRegime?.Regime is not MarketRegime.Trending)
+        if (CurrentRegime is not MarketRegime.Trending)
         {
             if (price <= bbGen.LowerBand!.Value)
                 return (OrderSide.Buy, IndicatorType.BollingerBands, SignalNature.MeanReversion);
@@ -819,7 +804,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryEmaSignal(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TryEmaSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.EMA, out var emaIndicator) || !emaIndicator.IsReady)
             return (null, default, default);
@@ -862,7 +847,7 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         return (null, default, default);
     }
 
-    private (OrderSide? Side, IndicatorType Source, SignalNature Nature) TrySmaSignal(decimal price)
+    private protected (OrderSide? Side, IndicatorType Source, SignalNature Nature) TrySmaSignal(decimal price)
     {
         if (!_indicators.TryGetValue(IndicatorType.SMA, out var smaIndicator) || !smaIndicator.IsReady)
             return (null, default, default);
@@ -1039,20 +1024,18 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
 
             if (nearLevel is not null)
             {
-                var regime = _lastRegime?.Regime ?? MarketRegime.Unknown;
-
                 if (side == OrderSide.Buy)
                 {
                     // Trending: pullback superficial (0.382-0.5) indica tendencia fuerte
                     // Ranging: retroceso profundo (0.618-0.786) indica soporte fuerte
-                    if (regime == MarketRegime.Trending && nearLevel >= 0.382m && nearLevel <= 0.5m)
+                    if (CurrentRegime == MarketRegime.Trending && nearLevel >= 0.382m && nearLevel <= 0.5m)
                         confirms++;
                     else if (nearLevel >= 0.618m)
                         confirms++;
                 }
                 else if (side == OrderSide.Sell)
                 {
-                    if (regime == MarketRegime.Trending && nearLevel <= 0.5m && nearLevel >= 0.382m)
+                    if (CurrentRegime == MarketRegime.Trending && nearLevel <= 0.5m && nearLevel >= 0.382m)
                         confirms++;
                     else if (nearLevel <= 0.382m)
                         confirms++;
@@ -1073,56 +1056,6 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         }
 
         return (confirms, total);
-    }
-
-    /// <summary>
-    /// EST-19: Aplica histéresis al régimen detectado para evitar oscilaciones rápidas
-    /// Trending↔Ranging cuando el ADX está en la zona ambigua (entre los dos umbrales).
-    /// <para>
-    /// Si el régimen anterior era <see cref="MarketRegime.Trending"/>, se mantiene hasta que
-    /// ADX caiga <c>HysteresisPoints</c> por debajo del umbral de Ranging.
-    /// Si era <see cref="MarketRegime.Ranging"/>, se mantiene hasta que ADX suba
-    /// <c>HysteresisPoints</c> por encima del umbral de Trending.
-    /// </para>
-    /// </summary>
-    private static MarketRegimeResult ApplyRegimeHysteresis(
-        MarketRegimeResult detected,
-        MarketRegime previousRegime,
-        RiskConfig risk)
-    {
-        const decimal HysteresisPoints = 2m;
-
-        if (detected.AdxValue is null
-            || detected.Regime is MarketRegime.HighVolatility or MarketRegime.Unknown)
-            return detected;
-
-        // Bearish → mantener hasta que ADX caiga debajo del trending threshold
-        if (previousRegime == MarketRegime.Bearish && detected.Regime != MarketRegime.Bearish)
-        {
-            if (detected.AdxValue.Value > risk.AdxTrendingThreshold - HysteresisPoints)
-                return detected with { Regime = MarketRegime.Bearish };
-        }
-
-        // Trending/Ranging → no cambiar a Bearish hasta que ADX suba sobre trending + histéresis
-        if (previousRegime is MarketRegime.Trending or MarketRegime.Ranging
-            && detected.Regime == MarketRegime.Bearish)
-        {
-            if (detected.AdxValue.Value < risk.AdxTrendingThreshold + HysteresisPoints)
-                return detected with { Regime = previousRegime };
-        }
-
-        if (previousRegime == MarketRegime.Trending && detected.Regime == MarketRegime.Ranging)
-        {
-            if (detected.AdxValue.Value > risk.AdxRangingThreshold - HysteresisPoints)
-                return detected with { Regime = MarketRegime.Trending };
-        }
-        else if (previousRegime == MarketRegime.Ranging && detected.Regime == MarketRegime.Trending)
-        {
-            if (detected.AdxValue.Value < risk.AdxTrendingThreshold + HysteresisPoints)
-                return detected with { Regime = MarketRegime.Ranging };
-        }
-
-        return detected;
     }
 
     /// <summary>
@@ -1174,8 +1107,8 @@ internal sealed class DefaultTradingStrategy : ITradingStrategy
         if (side is not null && total > 0)
             snapshot += $" | Confirm={confirms}/{total}";
 
-        if (_lastRegime is not null && _lastRegime.Regime != MarketRegime.Unknown)
-            snapshot += $" | Regime={_lastRegime.Regime}";
+        if (CurrentRegime != MarketRegime.Unknown)
+            snapshot += $" | Regime={CurrentRegime}";
 
         return snapshot;
     }

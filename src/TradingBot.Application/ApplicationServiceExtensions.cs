@@ -132,6 +132,13 @@ public static class ApplicationServiceExtensions
 
         // Estrategia por defecto (transient para que cada instancia tenga su estado)
         services.AddTransient<ITradingStrategy, DefaultTradingStrategy>();
+        services.AddTransient<DefaultTradingStrategy>();
+        services.AddTransient<TrendingTradingStrategy>();
+        services.AddTransient<RangingTradingStrategy>();
+        services.AddTransient<BearishTradingStrategy>();
+
+        // Resolver de estrategia por régimen — singleton (cachea instancias por strategyId)
+        services.AddSingleton<StrategyResolver>();
 
         // Backtesting — transient (sin estado entre ejecuciones)
         services.AddTransient<BacktestEngine>();

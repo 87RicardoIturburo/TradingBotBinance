@@ -18,5 +18,11 @@ public enum MarketRegime
     Bearish,
 
     /// <summary>Volatilidad extrema. Reducir tamaño de posición o pausar.</summary>
-    HighVolatility
+    HighVolatility,
+
+    /// <summary>
+    /// Mercado con señales contradictorias, bajo volumen o EMAs cruzadas.
+    /// Bloqueo total de señales — no operar.
+    /// </summary>
+    Indefinite
 }

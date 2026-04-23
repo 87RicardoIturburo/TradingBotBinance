@@ -250,3 +250,46 @@ graph TD
 - [ ] SignalR Hub
 - [ ] Blazor Frontend — Dashboard
 
+---
+
+## 🧠 Sistema de Detección de Régimen de Mercado (v4.1)
+
+### Scoring Híbrido
+El régimen se determina mediante scoring multi-factor:
+- **Trending**: +1 ADX > threshold, +1 EMA alignment (9>21>50 o inverso), +1 HH/HL consecutivos, +1 volumen > promedio
+- **Ranging**: +1 ADX < threshold, +1 EMA50 flat, +1 BandWidth < 4%
+- **Indefinite**: +1 EMAs desordenadas, +1 ADX < 15, +1 volumen bajo
+- **Convicción mínima**: si ningún score ≥ 2 → Indefinite (bloqueo total)
+- **Desempate**: ADX decide entre Trending/Ranging
+- **HighVolatility**: prioridad máxima (BandWidth/ATR)
+
+### Pipeline de Detección (orden estricto en StrategyEngine)
+1. Alimentar indicadores con kline cerrada
+2. Alimentar EmaAlignmentDetector + HigherHighLowDetector
+3. Obtener volumeRatio (null si no ready → 0 puntos)
+4. Detect regime (scoring híbrido)
+5. Confirm regime (N velas bidireccional)
+6. Apply hysteresis (si UseHysteresis == true)
+7. IF Indefinite → bloqueo total + cierre posiciones si ExitOnRegimeChange
+8. Aplicar filtro HTF HH/HL (si ready)
+9. Generar señal
+10. Risk management
+
+### Estado Indefinite
+- Bloqueo 100% de señales (igual que HighVolatility/Bearish)
+- Si `ExitOnRegimeChange == true` → cierra posiciones abiertas
+- Salir de Indefinite requiere N velas consecutivas del nuevo régimen
+
+### Estrategias por Régimen
+- `TrendingTradingStrategy`: MACD → Pullback EMA21 → EMA crossover → SMA
+- `RangingTradingStrategy`: RSI → Bollinger soporte/resistencia (NO Fibonacci)
+- `BearishTradingStrategy`: Solo Sell en Spot
+- `DefaultTradingStrategy`: Fallback para Unknown
+- `StrategyResolver`: Cache por strategyId, Indefinite/HighVol → null
+
+### Parámetros Nuevos (congelar en optimizer)
+- `RegimeConfirmationCandles` (default: 3)
+- `IndefiniteAdxThreshold` (default: 15)
+- `UseHysteresis` (default: true)
+- EMA slope threshold para IsFlat (default: 0.05%)
+

@@ -86,6 +86,15 @@ TradingBot/
     - Solo si es necesario realizar pruebas unitarias para validar que los cambios no rompen funcionalidades existentes
 - **Cuando se agreguen nuevas propiedades a entidades de dominio que se persisten en la base de datos (EF Core + PostgreSQL), siempre crear una migración de EF Core para mantener el esquema sincronizado. Ejecutar:** `dotnet ef migrations add <NombreMigración> --project src\TradingBot.Infrastructure --startup-project src\TradingBot.API`
 
+### Integridad de planes y seguimiento de progreso — CRÍTICO
+- **Nunca marcar un paso como ✅ si no está 100% implementado, integrado y verificado en el código.** "Implementado" significa que el artefacto (clase, método, integración) existe Y se ejecuta en el flujo real — no solo que el archivo fue creado.
+- Si un paso se implementó parcialmente → marcarlo como ⚠️ con descripción precisa de lo que falta.
+- Si un paso no se implementó → marcarlo como ❌.
+- Si un paso creó archivos o clases que no se integran en el flujo de ejecución real (código muerto) → **NO marcarlo como ✅**. Marcarlo como ⚠️ indicando "código creado pero no integrado".
+- **Antes de marcar un plan como completado**, verificar mediante búsqueda en el código (`Select-String`, `find_symbol`, `code_search`) que cada artefacto creado se referencia y usa realmente en el runtime — no solo que existe como archivo.
+- El porcentaje de progreso del plan debe reflejar solo los pasos realmente completados al 100%, no los intentados o parciales.
+- Si durante la ejecución se descubre que un paso previo marcado como ✅ tiene deuda técnica o quedó incompleto, **corregir inmediatamente su estado** en el plan antes de continuar.
+
 ## ⚡ Reglas para el Motor de Trading
 
 - Todo indicador técnico (RSI, MACD, EMA, etc.) debe implementar `ITechnicalIndicator`
@@ -182,3 +191,4 @@ TradingBot/
 - No modificar estrategias activas sin pasar por `IStrategyConfigService`
 - No commitear archivos `appsettings.Development.json` con keys reales
 - No coloques comentarios de código, ejemplo `// CRIT-NEW-4 fix: ReloadConfigAsync ejecuta RebuildIndicators que limpia` 
+- **No marcar pasos de un plan como ✅ (completados) sin verificar que el código existe, compila, se integra en el flujo real y no es código muerto. No marcar un plan como 100% completado si tiene pasos parciales (⚠️) o fallidos (❌).**

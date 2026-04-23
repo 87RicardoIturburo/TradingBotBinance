@@ -60,7 +60,16 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
                     rc.StopLossPercent.Value, rc.TakeProfitPercent.Value,
                     rc.MaxOpenPositions,
                     rc.UseAtrSizing, rc.RiskPercentPerTrade, rc.AtrMultiplier,
-                    rc.MaxSpreadPercent), JsonOptions),
+                    rc.MaxSpreadPercent, rc.UseTrailingStop, rc.TrailingStopPercent,
+                    rc.LimitOrderTimeoutSeconds, rc.ConfirmationEmaPeriod,
+                    rc.SignalCooldownPercent, rc.AdxTrendingThreshold, rc.AdxRangingThreshold,
+                    rc.HighVolatilityBandWidthPercent, rc.HighVolatilityAtrPercent,
+                    rc.MinConfirmationPercent, rc.TakeProfit1Percent, rc.TakeProfit1ClosePercent,
+                    rc.TakeProfit2Percent, rc.TakeProfit2ClosePercent,
+                    rc.MaxPositionDurationCandles, rc.ExitOnRegimeChange,
+                    rc.TakeProfit1AtrMultiplier, rc.TakeProfit2AtrMultiplier,
+                    rc.RegimeConfirmationCandles, rc.IndefiniteAdxThreshold,
+                    rc.UseHysteresis), JsonOptions),
                 json => DeserializeRiskConfig(json));
 
         // ── Indicators → columna jsonb via campo _indicators ────────────────
@@ -160,7 +169,10 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
             maxPositionDurationCandles: d.MaxPositionDurationCandles,
             exitOnRegimeChange: d.ExitOnRegimeChange,
             takeProfit1AtrMultiplier: d.TakeProfit1AtrMultiplier,
-            takeProfit2AtrMultiplier: d.TakeProfit2AtrMultiplier).Value;
+            takeProfit2AtrMultiplier: d.TakeProfit2AtrMultiplier,
+            regimeConfirmationCandles: d.RegimeConfirmationCandles,
+            indefiniteAdxThreshold: d.IndefiniteAdxThreshold,
+            useHysteresis: d.UseHysteresis).Value;
     }
 
     private static List<IndicatorConfig> DeserializeIndicators(string json)
@@ -197,7 +209,10 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
         int     MaxPositionDurationCandles = 0,
         bool    ExitOnRegimeChange = false,
         decimal TakeProfit1AtrMultiplier = 0m,
-        decimal TakeProfit2AtrMultiplier = 0m);
+        decimal TakeProfit2AtrMultiplier = 0m,
+        int     RegimeConfirmationCandles = 3,
+        decimal IndefiniteAdxThreshold = 15m,
+        bool    UseHysteresis = true);
 
     private sealed record IndicatorConfigDto(
         IndicatorType                  Type,

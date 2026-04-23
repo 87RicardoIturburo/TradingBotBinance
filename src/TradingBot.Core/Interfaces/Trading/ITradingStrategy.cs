@@ -25,8 +25,8 @@ public interface ITradingStrategy
     /// <summary>Indica si la estrategia está lista para procesar ticks.</summary>
     bool IsInitialized { get; }
 
-    /// <summary>Régimen de mercado detectado en el último tick procesado.</summary>
-    MarketRegime CurrentRegime { get; }
+    /// <summary>Régimen de mercado detectado. Seteado externamente por el StrategyEngine.</summary>
+    MarketRegime CurrentRegime { get; set; }
 
     /// <summary>Dirección de la tendencia actual según ADX (+DI &gt; -DI). <c>true</c> si no hay ADX.</summary>
     bool IsBullish { get; }
