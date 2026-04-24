@@ -1,4 +1,5 @@
 using TradingBot.Core.Entities;
+using TradingBot.Core.Enums;
 using TradingBot.Core.ValueObjects;
 
 namespace TradingBot.Core.Interfaces.Repositories;
@@ -24,5 +25,15 @@ public interface IStrategyRepository : IRepository<TradingStrategy, Guid>
     /// </summary>
     Task<TradingStrategy?> GetWithRulesAsync(
         Guid id,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Devuelve todas las estrategias con un origen específico.</summary>
+    Task<IReadOnlyList<TradingStrategy>> GetByOriginAsync(
+        StrategyOrigin origin,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Busca la estrategia Pool para un symbol dado (Origin == Pool).</summary>
+    Task<TradingStrategy?> GetPoolStrategyBySymbolAsync(
+        string symbol,
         CancellationToken cancellationToken = default);
 }

@@ -117,4 +117,21 @@ public interface ITradingStrategy
     /// Usado por el RuleEngine para evaluar condiciones de reglas de salida.
     /// </summary>
     string GetCurrentSnapshot();
+
+    /// <summary>
+    /// Proximidad a una señal de trading, régimen-aware. Read-only, sin side effects.
+    /// Valor normalizado 0-1 usado por el <c>TradabilityScorer</c>.
+    /// </summary>
+    SignalProximityInfo GetSignalProximity();
+
+    /// <summary>
+    /// Estabilidad del régimen de mercado en las últimas N velas (0-1).
+    /// 1.0 = sin cambios, 0.2 = 3+ cambios. Sin side effects.
+    /// </summary>
+    decimal GetRegimeStability();
 }
+
+/// <summary>Snapshot de proximidad a una señal de trading.</summary>
+public sealed record SignalProximityInfo(
+    decimal Value,
+    string Regime);

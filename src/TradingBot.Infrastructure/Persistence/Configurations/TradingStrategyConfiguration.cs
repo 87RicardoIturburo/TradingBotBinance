@@ -39,6 +39,11 @@ internal sealed class TradingStrategyConfiguration : IEntityTypeConfiguration<Tr
             .HasConversion<int>()
             .IsRequired();
 
+        builder.Property(x => x.Origin)
+            .HasConversion<int>()
+            .HasDefaultValue(StrategyOrigin.Manual)
+            .IsRequired();
+
         builder.Property(x => x.Timeframe)
             .HasConversion<int>()
             .HasDefaultValue(CandleInterval.OneMinute)

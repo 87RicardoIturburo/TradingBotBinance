@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TradingBot.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using TradingBot.Infrastructure.Persistence;
 namespace TradingBot.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(TradingBotDbContext))]
-    partial class TradingBotDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260424015353_AddStrategyOrigin")]
+    partial class AddStrategyOrigin
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

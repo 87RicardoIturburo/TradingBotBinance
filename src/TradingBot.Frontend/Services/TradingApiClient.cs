@@ -263,6 +263,11 @@ public sealed class TradingApiClient(HttpClient http)
     public Task<List<AutoPilotStatusDto>?> GetAutoPilotStatusAsync() =>
         http.GetFromJsonAsync<List<AutoPilotStatusDto>>("api/autopilot/status");
 
+    public async Task ExcludePoolSymbolAsync(string symbol)
+    {
+        await http.PostAsJsonAsync("api/symbol-pool/exclude", new { symbol });
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /// <summary>
@@ -297,4 +302,41 @@ public sealed class TradingApiClient(HttpClient http)
 
         return $"Error {(int)response.StatusCode}: {response.ReasonPhrase}";
     }
+
+    // ── Symbol Pool v2 ────────────────────────────────────────────────────
+
+    public Task<SymbolPoolStatusDto?> GetSymbolPoolStatusAsync() =>
+        http.GetFromJsonAsync<SymbolPoolStatusDto>("api/symbolpool/status");
+
+    public Task<List<SymbolPoolItemDto>?> GetSymbolPoolScoresAsync() =>
+        http.GetFromJsonAsync<List<SymbolPoolItemDto>>("api/symbolpool/scores");
+
+    public Task<List<SymbolPoolItemDto>?> GetSymbolPoolActiveAsync() =>
+        http.GetFromJsonAsync<List<SymbolPoolItemDto>>("api/symbolpool/active");
+
+    public async Task EnableSymbolPoolAsync()
+    {
+        var response = await http.PostAsync("api/symbolpool/enable", null);
+        await EnsureSuccessAsync(response);
+    }
+
+    public async Task DisableSymbolPoolAsync()
+    {
+        var response = await http.PostAsync("api/symbolpool/disable", null);
+        await EnsureSuccessAsync(response);
+    }
+
+    public async Task ForceRefreshSymbolPoolAsync()
+    {
+        var response = await http.PostAsync("api/symbolpool/force-refresh", null);
+        await EnsureSuccessAsync(response);
+    }
+
+    // ── Market Data (klines para gráficas) ────────────────────────────────
+
+    public Task<List<KlineDto>?> GetKlinesAsync(string symbol, string timeframe = "15m", int limit = 200) =>
+        http.GetFromJsonAsync<List<KlineDto>>($"api/marketdata/klines?symbol={symbol}&timeframe={timeframe}&limit={limit}");
+
+    public Task<List<TradeMarkerDto>?> GetOrdersBySymbolAsync(string symbol) =>
+        http.GetFromJsonAsync<List<TradeMarkerDto>>($"api/orders/by-symbol/{symbol}");
 }

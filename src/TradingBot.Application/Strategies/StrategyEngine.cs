@@ -35,6 +35,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
     private readonly StrategyResolver                                 _strategyResolver;
     private readonly GlobalRiskSettings                                _globalRisk;
     private readonly TradingMetrics                                   _metrics;
+    private readonly IDefaultPoolTemplateFactory                       _poolTemplateFactory;
     private readonly ILogger<StrategyEngine>                          _logger;
     private readonly ConcurrentDictionary<Guid, StrategyRunnerState>  _runners = new();
     /// <summary>Semáforo por estrategia para serializar el procesamiento de ticks y evitar órdenes duplicadas.</summary>
@@ -52,6 +53,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         StrategyResolver       strategyResolver,
         IOptions<GlobalRiskSettings> globalRiskOptions,
         TradingMetrics         metrics,
+        IDefaultPoolTemplateFactory poolTemplateFactory,
         ILogger<StrategyEngine> logger)
     {
         _scopeFactory        = scopeFactory;
@@ -61,6 +63,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         _strategyResolver    = strategyResolver;
         _globalRisk          = globalRiskOptions.Value;
         _metrics             = metrics;
+        _poolTemplateFactory = poolTemplateFactory;
         _logger              = logger;
     }
 
@@ -245,6 +248,232 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         return Task.FromResult<IReadOnlyDictionary<Guid, StrategyEngineStatus>>(statuses);
     }
 
+    // ── Pool v2: métodos de gestión de runners de pool ─────────────────────
+
+    public async Task<Core.Common.Result<Guid, Core.Common.DomainError>> StartPoolRunnerAsync(
+        string symbol, Guid templateId, string timeframe, string tradingMode,
+        CancellationToken ct = default)
+    {
+        var existing = _runners.Values.FirstOrDefault(
+            r => r.IsPoolRunner && r.Symbol.Value.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+            return Core.Common.Result<Guid, Core.Common.DomainError>.Success(existing.StrategyId);
+
+        using var scope = _scopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IStrategyRepository>();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<Core.Interfaces.IUnitOfWork>();
+
+        // Anti-duplicación: buscar estrategia Pool existente en DB para este symbol
+        var existingPool = await repo.GetPoolStrategyBySymbolAsync(symbol, ct);
+        if (existingPool is not null)
+        {
+            if (!existingPool.IsActive)
+            {
+                existingPool.Activate();
+                await repo.UpdateAsync(existingPool, ct);
+                await unitOfWork.SaveChangesAsync(ct);
+            }
+
+            await StartStrategyRunnerAsync(existingPool, ct);
+
+            if (_runners.TryGetValue(existingPool.Id, out var reusedRunner))
+            {
+                reusedRunner.IsPoolRunner = true;
+                reusedRunner.AllowNewEntries = false;
+                reusedRunner.BlockReason = "Cooldown";
+            }
+
+            _logger.LogInformation(
+                "Pool runner reutilizado para {Symbol} (Id={Id})", symbol, existingPool.Id);
+            return Core.Common.Result<Guid, Core.Common.DomainError>.Success(existingPool.Id);
+        }
+
+        var template = await repo.GetWithRulesAsync(templateId, ct);
+
+        if (!Enum.TryParse<TradingMode>(tradingMode, true, out var mode))
+            mode = TradingMode.PaperTrading;
+        if (!Enum.TryParse<CandleInterval>(timeframe, true, out var interval))
+            interval = template?.Timeframe ?? CandleInterval.FifteenMinutes;
+
+        TradingStrategy poolConfig;
+
+        if (template is not null)
+        {
+            var symbolVo = Symbol.Create(symbol);
+            if (symbolVo.IsFailure)
+                return Core.Common.Result<Guid, Core.Common.DomainError>.Failure(symbolVo.Error);
+
+            var createResult = TradingStrategy.Create(
+                $"Pool-{symbol}", symbolVo.Value, mode,
+                template.RiskConfig, $"AutoPilot v2 pool runner para {symbol}",
+                interval, template.ConfirmationTimeframe,
+                origin: StrategyOrigin.Pool);
+
+            if (createResult.IsFailure)
+                return Core.Common.Result<Guid, Core.Common.DomainError>.Failure(createResult.Error);
+
+            poolConfig = createResult.Value;
+
+            foreach (var ind in template.Indicators)
+                poolConfig.AddIndicator(ind);
+            foreach (var rule in template.Rules)
+                poolConfig.AddRule(rule);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Template {TemplateId} no encontrado en DB, usando DefaultPoolTemplateFactory para {Symbol}",
+                templateId, symbol);
+            poolConfig = _poolTemplateFactory.CreateForSymbol(symbol, mode, interval);
+        }
+
+        poolConfig.Activate();
+
+        await repo.AddAsync(poolConfig, ct);
+        await unitOfWork.SaveChangesAsync(ct);
+
+        await StartStrategyRunnerAsync(poolConfig, ct);
+
+        if (_runners.TryGetValue(poolConfig.Id, out var runner))
+        {
+            runner.IsPoolRunner = true;
+            runner.AllowNewEntries = false;
+            runner.BlockReason = "Cooldown";
+        }
+
+        _logger.LogInformation("Pool runner iniciado para {Symbol} (Id={Id})", symbol, poolConfig.Id);
+        return Core.Common.Result<Guid, Core.Common.DomainError>.Success(poolConfig.Id);
+    }
+
+    public async Task StopPoolRunnerAsync(string symbol, CancellationToken ct = default)
+    {
+        var runner = _runners.Values.FirstOrDefault(
+            r => r.IsPoolRunner && r.Symbol.Value.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+        if (runner is null) return;
+
+        var strategyId = runner.StrategyId;
+
+        lock (runner.PoolLock)
+        {
+            runner.AllowNewEntries = false;
+        }
+
+        runner.Cancel();
+        _runners.TryRemove(strategyId, out _);
+        if (_strategyLocks.TryRemove(strategyId, out var semaphore))
+            semaphore.Dispose();
+        runner.Dispose();
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IStrategyRepository>();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<Core.Interfaces.IUnitOfWork>();
+            var strategy = await repo.GetByIdAsync(strategyId, ct);
+
+            if (strategy is not null && strategy.IsActive)
+            {
+                strategy.Deactivate();
+                await repo.UpdateAsync(strategy, ct);
+                await unitOfWork.SaveChangesAsync(ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "No se pudo desactivar en DB la estrategia Pool {Id} para {Symbol}",
+                strategyId, symbol);
+        }
+
+        _logger.LogInformation("Pool runner detenido para {Symbol} (Id={Id})", symbol, strategyId);
+    }
+
+    public Task SetAllowNewEntriesAsync(string symbol, bool allow, string? blockReason, CancellationToken ct = default)
+    {
+        var runner = _runners.Values.FirstOrDefault(
+            r => r.IsPoolRunner && r.Symbol.Value.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+        if (runner is null) return Task.CompletedTask;
+
+        lock (runner.PoolLock)
+        {
+            var wasActive = runner.AllowNewEntries;
+            runner.AllowNewEntries = allow;
+            runner.BlockReason = allow ? null : blockReason;
+            if (!wasActive && allow)
+                runner.EnteredTopKAt = DateTimeOffset.UtcNow;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<PoolRunnerInfo?> GetPoolRunnerInfoAsync(string symbol, CancellationToken ct = default)
+    {
+        var runner = _runners.Values.FirstOrDefault(
+            r => r.IsPoolRunner && r.Symbol.Value.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+        if (runner is null) return Task.FromResult<PoolRunnerInfo?>(null);
+
+        return Task.FromResult<PoolRunnerInfo?>(BuildPoolRunnerInfo(runner));
+    }
+
+    public Task<IReadOnlyList<PoolRunnerInfo>> GetAllPoolRunnerInfosAsync(CancellationToken ct = default)
+    {
+        var infos = _runners.Values
+            .Where(r => r.IsPoolRunner)
+            .Select(BuildPoolRunnerInfo)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<PoolRunnerInfo>>(infos);
+    }
+
+    private PoolRunnerInfo BuildPoolRunnerInfo(StrategyRunnerState runner)
+    {
+        lock (runner.PoolLock)
+        {
+            var strategy = runner.Strategy;
+            decimal? adxValue = null;
+            decimal? volumeRatio = null;
+            decimal? atrPercent = null;
+            decimal? bandWidth = null;
+            decimal signalProximity = 0m;
+            decimal regimeStability = 1.0m;
+
+            if (strategy is DefaultTradingStrategy dts)
+            {
+                adxValue = dts.GetAdxIndicator() is { IsReady: true } adx ? adx.Calculate() : null;
+                volumeRatio = dts.GetVolumeRatio();
+                var atrInd = dts.GetAtrIndicator();
+                if (atrInd is { IsReady: true } && atrInd.Calculate() is { } atrVal && runner.LastTickAt != default)
+                {
+                    var price = dts.CurrentAtrValue is not null ? atrVal : 0m;
+                    atrPercent = price > 0 ? (atrVal / price) * 100m : null;
+                }
+                bandWidth = dts.GetBollingerIndicator()?.BandWidth;
+                signalProximity = dts.GetSignalProximity().Value;
+                regimeStability = dts.GetRegimeStability();
+            }
+
+            var hasOpenPosition = runner.HasCachedOpenPositions;
+
+            return new PoolRunnerInfo(
+                runner.Symbol.Value,
+                runner.StrategyId,
+                strategy.CurrentRegime,
+                strategy.IsBullish,
+                adxValue,
+                volumeRatio,
+                atrPercent,
+                bandWidth,
+                signalProximity,
+                regimeStability,
+                runner.AllowNewEntries,
+                runner.IsPoolRunner,
+                runner.EnteredTopKAt,
+                runner.BlockReason,
+                hasOpenPosition,
+                runner.LastTickAt);
+        }
+    }
+
     // ── Carga inicial ──────────────────────────────────────────────────────
 
     private async Task LoadAndStartActiveStrategiesAsync(CancellationToken cancellationToken)
@@ -253,7 +482,7 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         var strategyRepo = scope.ServiceProvider.GetRequiredService<IStrategyRepository>();
         var strategies   = await strategyRepo.GetActiveStrategiesAsync(cancellationToken);
 
-        foreach (var strategy in strategies)
+        foreach (var strategy in strategies.Where(s => s.Origin != StrategyOrigin.Pool))
         {
             try
             {
@@ -1034,6 +1263,13 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
             }
         }
 
+        // ── Pool v2: guard — no abrir nuevas entradas si el runner lo tiene bloqueado ──
+        if (!runner.AllowNewEntries)
+            return;
+        if (runner.IsPoolRunner && runner.EnteredTopKAt is not null
+            && DateTimeOffset.UtcNow - runner.EnteredTopKAt < runner.MinTimeInTopKBeforeEntry)
+            return;
+
         // Evaluar señal de entrada
         if (signalResult.IsFailure || signalResult.Value is null) return;
 
@@ -1607,6 +1843,14 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
         public MarketRegime               PreviousRegime         { get; set; } = MarketRegime.Unknown;
         public HigherHighLowDetector      HtfHhLlDetector        { get; } = new();
 
+        // ── Pool v2 ──────────────────────────────────────────────────────
+        public volatile bool              AllowNewEntries = true;
+        public bool                       IsPoolRunner           { get; set; }
+        public DateTimeOffset?            EnteredTopKAt          { get; set; }
+        public TimeSpan                   MinTimeInTopKBeforeEntry { get; set; } = TimeSpan.FromSeconds(120);
+        public string?                    BlockReason            { get; set; }
+        public readonly object            PoolLock = new();
+
         // ── DESIGN-2: Caché de posiciones abiertas en memoria ────────────
         /// <summary>Posiciones abiertas cacheadas. Se invalida al abrir/cerrar posiciones.</summary>
         private IReadOnlyList<Position>? _cachedPositions;
@@ -1632,6 +1876,8 @@ internal sealed class StrategyEngine : BackgroundService, IStrategyEngine
 
         /// <summary>Invalida la caché de posiciones (llamar tras abrir/cerrar posición).</summary>
         public void InvalidatePositionCache() => _cachedPositions = null;
+
+        public bool HasCachedOpenPositions => _cachedPositions?.Count > 0;
 
         /// <summary>Scope de larga vida que acompaña al runner. Se dispone con el runner.</summary>
         private readonly IServiceScope?   _scope;

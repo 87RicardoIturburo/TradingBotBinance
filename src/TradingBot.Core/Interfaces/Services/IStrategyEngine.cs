@@ -43,6 +43,25 @@ public interface IStrategyEngine
     /// </summary>
     Task<IReadOnlyDictionary<Guid, StrategyEngineStatus>> GetStatusAsync(
         CancellationToken cancellationToken = default);
+
+    // ── Pool v2: gestión de runners de pool dinámico ─────────────────────
+
+    /// <summary>Arranca un runner de pool para el símbolo dado usando el template base.</summary>
+    Task<Result<Guid, DomainError>> StartPoolRunnerAsync(
+        string symbol, Guid templateId, string timeframe, string tradingMode,
+        CancellationToken ct = default);
+
+    /// <summary>Detiene y elimina un runner de pool.</summary>
+    Task StopPoolRunnerAsync(string symbol, CancellationToken ct = default);
+
+    /// <summary>Controla si un runner de pool puede abrir nuevas entradas.</summary>
+    Task SetAllowNewEntriesAsync(string symbol, bool allow, string? blockReason, CancellationToken ct = default);
+
+    /// <summary>Obtiene un snapshot atómico de los datos de scoring de un runner de pool.</summary>
+    Task<PoolRunnerInfo?> GetPoolRunnerInfoAsync(string symbol, CancellationToken ct = default);
+
+    /// <summary>Obtiene snapshots de todos los runners de pool activos.</summary>
+    Task<IReadOnlyList<PoolRunnerInfo>> GetAllPoolRunnerInfosAsync(CancellationToken ct = default);
 }
 
 /// <summary>Snapshot del estado de una estrategia dentro del motor.</summary>
@@ -57,3 +76,25 @@ public sealed record StrategyEngineStatus(
     int            OrdersPlaced,
     MarketRegime   CurrentRegime = MarketRegime.Unknown,
     bool           IsBullish = true);
+
+/// <summary>
+/// Snapshot atómico de un runner de pool para scoring.
+/// Incluye todos los datos necesarios para calcular el TradabilityScore.
+/// </summary>
+public sealed record PoolRunnerInfo(
+    string Symbol,
+    Guid StrategyId,
+    MarketRegime Regime,
+    bool IsBullish,
+    decimal? AdxValue,
+    decimal? VolumeRatio,
+    decimal? AtrPercent,
+    decimal? BandWidth,
+    decimal SignalProximity,
+    decimal RegimeStability,
+    bool AllowNewEntries,
+    bool IsPoolRunner,
+    DateTimeOffset? EnteredTopKAt,
+    string? BlockReason,
+    bool HasOpenPosition,
+    DateTimeOffset LastActivityAt);

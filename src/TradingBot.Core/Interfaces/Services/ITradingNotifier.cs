@@ -25,4 +25,7 @@ public interface ITradingNotifier
 
     /// <summary>Envía resultados actualizados del Market Scanner.</summary>
     Task NotifyScannerUpdateAsync(IReadOnlyList<SymbolScore> scores, CancellationToken cancellationToken = default);
+
+    /// <summary>Envía snapshot del pool dinámico de símbolos (AutoPilot v2).</summary>
+    Task NotifySymbolPoolUpdateAsync(SymbolPoolSnapshot snapshot, CancellationToken cancellationToken = default);
 }

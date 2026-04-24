@@ -32,6 +32,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
     public DateTimeOffset  CreatedAt        { get; private set; }
     public DateTimeOffset  UpdatedAt        { get; private set; }
     public DateTimeOffset? LastActivatedAt  { get; private set; }
+    public StrategyOrigin  Origin           { get; private set; } = StrategyOrigin.Manual;
 
     public IReadOnlyList<IndicatorConfig> Indicators => _indicators.AsReadOnly();
     public IReadOnlyList<TradingRule>     Rules      => _rules.AsReadOnly();
@@ -51,7 +52,8 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
         RiskConfig  riskConfig,
         string?     description = null,
         CandleInterval timeframe = CandleInterval.OneMinute,
-        CandleInterval? confirmationTimeframe = null)
+        CandleInterval? confirmationTimeframe = null,
+        StrategyOrigin origin = StrategyOrigin.Manual)
     {
         if (string.IsNullOrWhiteSpace(name))
             return Result<TradingStrategy, DomainError>.Failure(
@@ -76,6 +78,7 @@ public sealed class TradingStrategy : AggregateRoot<Guid>
             Timeframe             = timeframe,
             ConfirmationTimeframe = confirmationTimeframe,
             RiskConfig            = riskConfig,
+            Origin                = origin,
             CreatedAt             = now,
             UpdatedAt             = now
         });

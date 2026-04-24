@@ -48,6 +48,11 @@ internal class DefaultTradingStrategy : ITradingStrategy
     private decimal? _lastBtcClose;
     private bool _isBtcPair;
 
+    // ── Pool v2: tracking de estabilidad de régimen ──────────────────────
+    private readonly Queue<MarketRegime> _regimeHistory = new();
+    private const int RegimeHistoryCapacity = 5;
+    private MarketRegime _lastTrackedRegime = MarketRegime.Unknown;
+
     // ── EST-17: Re-entrada inteligente tras stop-loss ────────────────────
     private DateTimeOffset _lastStopLossAt;
     private bool _reEntryMode;
@@ -59,7 +64,21 @@ internal class DefaultTradingStrategy : ITradingStrategy
     public Symbol      Symbol        { get; private set; } = null!;
     public TradingMode Mode          { get; private set; }
     public bool        IsInitialized { get; private set; }
-    public MarketRegime CurrentRegime { get; set; } = MarketRegime.Unknown;
+    public MarketRegime CurrentRegime
+    {
+        get => _currentRegime;
+        set
+        {
+            if (_currentRegime != value)
+            {
+                _regimeHistory.Enqueue(value);
+                if (_regimeHistory.Count > RegimeHistoryCapacity)
+                    _regimeHistory.Dequeue();
+            }
+            _currentRegime = value;
+        }
+    }
+    private MarketRegime _currentRegime = MarketRegime.Unknown;
     public bool IsBullish =>
         !_indicators.TryGetValue(IndicatorType.ADX, out var adx)
         || adx is not AdxIndicator { IsReady: true, IsBearish: true };
@@ -1111,5 +1130,82 @@ internal class DefaultTradingStrategy : ITradingStrategy
             snapshot += $" | Regime={CurrentRegime}";
 
         return snapshot;
+    }
+
+    public SignalProximityInfo GetSignalProximity()
+    {
+        var regime = CurrentRegime;
+
+        if (regime is MarketRegime.Indefinite or MarketRegime.Unknown)
+            return new SignalProximityInfo(0m, regime.ToString());
+
+        var rsi = _indicators.TryGetValue(IndicatorType.RSI, out var rsiInd) && rsiInd.IsReady
+            ? rsiInd.Calculate() : null;
+        var macdHist = _indicators.TryGetValue(IndicatorType.MACD, out var macdRaw)
+            && macdRaw is MacdIndicator { IsReady: true } macd ? macd.Histogram : null;
+        var bb = GetBollingerIndicator();
+
+        decimal proximity;
+
+        if (regime is MarketRegime.Trending or MarketRegime.Bearish)
+        {
+            proximity = 0m;
+            if (rsi is not null)
+            {
+                var rsiDist = Math.Abs(rsi.Value - 50m);
+                proximity += rsiDist <= 10m ? 1.0m : Math.Max(0m, 1.0m - (rsiDist - 10m) / 20m);
+            }
+            if (_previousRsi is not null && rsi is not null && rsi > _previousRsi)
+                proximity += 0.3m;
+            if (_previousMacdHistogram is not null && macdHist is not null && macdHist > _previousMacdHistogram)
+                proximity += 0.3m;
+            proximity = Math.Clamp(proximity, 0m, 1m);
+        }
+        else
+        {
+            proximity = 0m;
+            if (rsi is not null && (rsi.Value < 35m || rsi.Value > 65m))
+                proximity += 1.0m;
+            if (bb is { IsReady: true } && bb.LowerBand is not null && bb.UpperBand is not null)
+            {
+                var price = _lastClosePrice;
+                var range = bb.UpperBand.Value - bb.LowerBand.Value;
+                if (range > 0)
+                {
+                    var distLower = Math.Abs(price - bb.LowerBand.Value) / range;
+                    var distUpper = Math.Abs(price - bb.UpperBand.Value) / range;
+                    if (distLower < 0.1m || distUpper < 0.1m)
+                        proximity += 0.5m;
+                }
+            }
+            proximity = Math.Clamp(proximity, 0m, 1m);
+        }
+
+        return new SignalProximityInfo(proximity, regime.ToString());
+    }
+
+    public decimal GetRegimeStability()
+    {
+        if (_regimeHistory.Count < 2)
+            return 1.0m;
+
+        var changes = 0;
+        var prev = MarketRegime.Unknown;
+        var first = true;
+        foreach (var r in _regimeHistory)
+        {
+            if (!first && r != prev)
+                changes++;
+            prev = r;
+            first = false;
+        }
+
+        return changes switch
+        {
+            0 => 1.0m,
+            1 => 0.8m,
+            2 => 0.5m,
+            _ => 0.2m
+        };
     }
 }

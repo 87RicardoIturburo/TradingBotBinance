@@ -293,3 +293,61 @@ El régimen se determina mediante scoring multi-factor:
 - `UseHysteresis` (default: true)
 - EMA slope threshold para IsFlat (default: 0.05%)
 
+---
+
+## 🎯 AutoPilot v2 — Pool Dinámico de Símbolos
+
+### Concepto
+`SymbolPoolManager` observa 30-50 símbolos del scanner, calcula un **TradabilityScore** en tiempo real (0-100) y solo permite operar en el **Top K** (3-5) que superen un umbral mínimo (40). Coexiste con modo manual y AutoPilot v1.
+
+### Flujo
+```
+MarketScanner (REST cada 5min) → candidatos → SymbolPoolManager (ciclo 90s)
+  1. Actualizar universo  2. Reconciliar runners  3. TradabilityScore
+  4. Histéresis (2 ciclos in/out)  5. Top K + umbral  6. SetAllowNewEntries + BlockReason
+  7. Transiciones EnteredTopKAt  8. Zombie cleanup  9. Métricas vía SignalR
+```
+
+### TradabilityScore (normalización 0-1 por factor)
+| Factor | Peso |
+|--------|------|
+| Claridad régimen | 25% |
+| Fuerza ADX | 20% |
+| Volumen relativo | 15% |
+| ATR% saludable | 12.5% |
+| BandWidth | 12.5% |
+| Signal Proximity (régimen-aware) | 15% |
+
+`finalScore = rawScore × (0.7 + 0.3 × regimeStability)`
+
+### API Endpoints
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/api/symbolpool/status` | Estado general (enabled, counts) |
+| GET | `/api/symbolpool/scores` | Todos los items con score + BlockReason |
+| GET | `/api/symbolpool/active` | Solo Top K activos |
+| POST | `/api/symbolpool/enable` | Activar pool desde UI |
+| POST | `/api/symbolpool/disable` | Desactivar pool desde UI |
+| POST | `/api/symbolpool/force-refresh` | Forzar ciclo inmediato |
+| GET | `/api/marketdata/klines` | Klines para gráficas de velas |
+| GET | `/api/orders/by-symbol/{symbol}` | Órdenes por símbolo (marcadores) |
+
+### Frontend
+- **Página**: `/symbol-pool` — Panel operativo con toggle, cards resumen, tabla de scores, gráfica de velas
+- **Gráficas**: lightweight-charts v4.2.1 (TradingView) vía JS interop con marcadores compra/venta
+- **SignalR**: `OnSymbolPoolUpdate` para actualizaciones en tiempo real
+
+### Archivos principales
+| Archivo | Capa |
+|---------|------|
+| `ISymbolPool.cs` | Core |
+| `SymbolPoolConfig.cs` | Application |
+| `TradabilityScorer.cs` | Application |
+| `SymbolPoolManager.cs` | Application |
+| `SymbolPoolSnapshot.cs` | Core/Events |
+| `SymbolPoolController.cs` | API |
+| `MarketDataController.cs` | API |
+| `SymbolPool.razor` | Frontend |
+| `TradabilityChart.razor` | Frontend |
+
+

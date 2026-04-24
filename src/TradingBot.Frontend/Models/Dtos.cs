@@ -63,7 +63,8 @@ public sealed record StrategyDto(
     List<SavedParameterRangeDto>?       SavedOptimizationRanges,
     DateTimeOffset                      CreatedAt,
     DateTimeOffset                      UpdatedAt,
-    DateTimeOffset?                     LastActivatedAt);
+    DateTimeOffset?                     LastActivatedAt,
+    string?                             Origin);
 
 public sealed record SavedParameterRangeDto(
     string  Name,
@@ -464,3 +465,49 @@ public sealed record AutoPilotStrategyDto(
     bool   IsProcessing,
     int    SignalsGenerated,
     int    OrdersPlaced);
+
+// ── Symbol Pool v2 ────────────────────────────────────────────────────
+
+public sealed record SymbolPoolStatusDto(
+    bool Enabled,
+    int  Evaluated,
+    int  Active,
+    int  Blocked);
+
+public sealed record SymbolPoolItemDto(
+    string   Symbol,
+    decimal  Score,
+    string   Regime,
+    bool     IsActive,
+    bool     AllowNewEntries,
+    string?  BlockReason,
+    decimal  RegimeStability);
+
+public sealed record SymbolPoolSnapshotDto(
+    bool                     Enabled,
+    int                      EvaluatedCount,
+    int                      BlockedByRegime,
+    int                      BlockedByScore,
+    int                      BlockedByCooldown,
+    int                      ActiveCount,
+    int                      ZombiesRemoved,
+    List<SymbolPoolItemDto>  Items,
+    DateTimeOffset           Timestamp);
+
+public sealed record KlineDto(
+    DateTimeOffset OpenTime,
+    decimal        Open,
+    decimal        High,
+    decimal        Low,
+    decimal        Close,
+    decimal        Volume);
+
+public sealed record TradeMarkerDto(
+    Guid           Id,
+    Guid           StrategyId,
+    string         Symbol,
+    string         Side,
+    string         Type,
+    decimal        Quantity,
+    bool           IsPaperTrade,
+    DateTimeOffset CreatedAt);

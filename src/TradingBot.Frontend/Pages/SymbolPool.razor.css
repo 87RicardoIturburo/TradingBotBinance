@@ -1,0 +1,44 @@
+::deep .card {
+    transition: transform 0.15s ease;
+}
+
+::deep .card:hover {
+    transform: translateY(-2px);
+}
+
+::deep .table-dark {
+    --bs-table-bg: #16213e;
+    --bs-table-hover-bg: #1a1a2e;
+}
+
+::deep .table-dark thead th {
+    background: #0f3460;
+    border-bottom: 2px solid #533483;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+::deep .progress {
+    border-radius: 4px;
+}
+
+::deep .progress-bar {
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+::deep .table-active {
+    --bs-table-active-bg: rgba(38, 166, 154, 0.1);
+}
+
+::deep .tradability-chart-container {
+    background: #1a1a2e;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+::deep .form-check-input:checked {
+    background-color: #26a69a;
+    border-color: #26a69a;
+}

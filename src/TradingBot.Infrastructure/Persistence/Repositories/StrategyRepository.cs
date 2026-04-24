@@ -49,4 +49,26 @@ internal sealed class StrategyRepository(TradingBotDbContext context)
         => await DbSet
             .Include(s => s.Rules)
             .FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
+
+    public async Task<IReadOnlyList<TradingStrategy>> GetByOriginAsync(
+        StrategyOrigin origin,
+        CancellationToken cancellationToken = default)
+        => await DbSet
+            .Include(s => s.Rules)
+            .Where(s => s.Origin == origin)
+            .ToListAsync(cancellationToken);
+
+    public async Task<TradingStrategy?> GetPoolStrategyBySymbolAsync(
+        string symbol,
+        CancellationToken cancellationToken = default)
+    {
+        var symbolVo = Symbol.Create(symbol);
+        if (symbolVo.IsFailure) return null;
+
+        return await DbSet
+            .Include(s => s.Rules)
+            .FirstOrDefaultAsync(
+                s => s.Origin == StrategyOrigin.Pool && s.Symbol == symbolVo.Value,
+                cancellationToken);
+    }
 }

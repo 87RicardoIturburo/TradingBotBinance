@@ -1,0 +1,100 @@
+@inject TradingApiClient Api
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="tradability-chart-container">
+    <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0 me-3 text-light">📈 @Symbol</h6>
+        <div class="btn-group btn-group-sm">
+            @foreach (var tf in _timeframes)
+            {
+                <button class="btn @(tf == _selectedTimeframe ? "btn-primary" : "btn-outline-secondary")"
+                        @onclick="() => ChangeTimeframeAsync(tf)">
+                    @tf
+                </button>
+            }
+        </div>
+        <button class="btn btn-sm btn-outline-secondary ms-2" @onclick="ReloadAsync" disabled="@_loading">
+            @(_loading ? "⏳" : "🔄")
+        </button>
+    </div>
+    <div id="@_chartElementId" style="width:100%; min-height:420px; border-radius:8px; overflow:hidden;"></div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Symbol { get; set; } = "";
+
+    [Parameter]
+    public string InitialTimeframe { get; set; } = "15m";
+
+    private readonly string[] _timeframes = ["5m", "15m", "1h", "4h", "1d"];
+    private string _selectedTimeframe = "15m";
+    private string _chartElementId = "";
+    private bool _loading;
+    private bool _chartCreated;
+
+    protected override void OnInitialized()
+    {
+        _selectedTimeframe = InitialTimeframe;
+        _chartElementId = $"chart-{Symbol.ToLowerInvariant()}-{Guid.NewGuid():N[..8]}";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !string.IsNullOrEmpty(Symbol))
+        {
+            await JS.InvokeVoidAsync("TradingChart.createChart", _chartElementId);
+            _chartCreated = true;
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task ChangeTimeframeAsync(string tf)
+    {
+        _selectedTimeframe = tf;
+        await LoadDataAsync();
+    }
+
+    private async Task ReloadAsync() => await LoadDataAsync();
+
+    private async Task LoadDataAsync()
+    {
+        if (!_chartCreated || string.IsNullOrEmpty(Symbol)) return;
+
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var klines = await Api.GetKlinesAsync(Symbol, _selectedTimeframe);
+            if (klines is { Count: > 0 })
+                await JS.InvokeVoidAsync("TradingChart.setKlineData", _chartElementId, klines);
+
+            var orders = await Api.GetOrdersBySymbolAsync(Symbol);
+            if (orders is { Count: > 0 })
+                await JS.InvokeVoidAsync("TradingChart.addMarkers", _chartElementId, orders);
+        }
+        catch
+        {
+            // Silently handle — chart will be empty
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_chartCreated)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("TradingChart.destroyChart", _chartElementId);
+            }
+            catch (JSDisconnectedException) { }
+        }
+    }
+}

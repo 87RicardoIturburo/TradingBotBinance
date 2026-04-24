@@ -36,6 +36,7 @@ TradingBot/
 │   │   ├── Strategies/
 │   │   ├── Rules/
 │   │   ├── RiskManagement/
+│   │   ├── AutoPilot/              # AutoPilot v1 (rotador) + v2 (SymbolPool)
 │   │   └── Commands|Queries/        # CQRS con MediatR
 │   ├── TradingBot.Infrastructure/   # Binance.Net, EF Core, Redis, Serilog
 │   └── TradingBot.Frontend/         # Blazor WebAssembly

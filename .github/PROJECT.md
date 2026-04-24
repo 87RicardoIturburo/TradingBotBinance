@@ -204,6 +204,103 @@ Pending → Submitted → Filled ✓
 
 ---
 
+## 🤖 AutoPilot v2 — Pool Dinámico de Símbolos
+
+Sistema de selección dinámica de símbolos que coexiste con el modo manual y AutoPilot v1.
+Observa 30-50 símbolos, calcula un **TradabilityScore en tiempo real** desde WebSocket,
+y solo permite operar en los **Top 3-5** que superen un umbral mínimo.
+
+> **Filosofía**: El bot no elige símbolos ganadores, elige **momentos operables** dentro de cada símbolo.
+
+### Flujo del ciclo (cada 90 segundos)
+
+```
+MarketScannerWorker (REST cada 5min)
+  → candidatos por liquidez/spread/volumen
+  → SymbolPoolManager consume
+
+SymbolPoolManager (BackgroundService, ciclo cada 90s)
+  1. Actualizar universo (consumir scanner)
+  2. Reconciliar runners (start/stop, respetar MaxConcurrentRunners)
+  3. TradabilityScore (snapshot atómico + normalización 0-1 + regime stability)
+  4. Histéresis ranking (contadores ciclos consecutivos)
+  5. Top K = score > MinTradabilityScore + histéresis (vacío = no operar)
+  6. SetAllowNewEntries (true Top K, false resto)
+  7. EnteredTopKAt solo en transiciones (!wasActive && isActive)
+  8. Cleanup zombies (fuera pool + sin posición + idle + score bajo)
+  9. Publicar métricas de bloqueo vía ITradingNotifier
+```
+
+### TradabilityScore (normalizado 0-100)
+
+| Factor | Normalización | Peso |
+|--------|---------------|------|
+| Claridad régimen | Trending/Ranging/Bearish=1.0, Unknown=0.1, Indefinite=0 | 25% |
+| Fuerza ADX | 0→ADX≤15, 1→ADX≥30, lineal | 20% |
+| Volumen relativo | 0→ratio≤0.5, 1→ratio≥1.5, lineal | 15% |
+| ATR% saludable | Lineal por tramos: 0→<0.5%, 1→~2%, 0→>5% | 12.5% |
+| BandWidth | 0→>0.08 o <0.01, 1→0.03-0.05 | 12.5% |
+| Signal Proximity | Régimen-aware (Trending: RSI+MACD; Ranging: RSI+BB) | 15% |
+
+**Fórmula**: `finalScore = rawScore × (0.7 + 0.3 × regimeStability)`
+
+### Protecciones
+
+| Mecanismo | Descripción |
+|-----------|-------------|
+| **Histéresis ranking** | 2 ciclos consecutivos para entrar/salir del Top K |
+| **Cooldown entrada** | 120s mínimo en Top K antes de generar señales |
+| **`EnteredTopKAt` en transición** | Solo se setea al entrar, no si ya estaba |
+| **Top K vacío** | Si ningún símbolo supera umbral → no operar |
+| **Posiciones al salir** | No se cierran; SL/TP sigue activo, solo `AllowNewEntries=false` |
+| **Zombie cleanup** | Runners idle + score bajo + sin posición → se detienen |
+| **Cap runners** | `MaxConcurrentRunners` (default 40) |
+| **Thread safety** | `volatile AllowNewEntries`, lock por runner en snapshots/transiciones |
+
+### Configuración (`appsettings.json` → sección `SymbolPool`)
+
+```json
+{
+  "SymbolPool": {
+    "Enabled": false,
+    "ObservedPoolSize": 30,
+    "ActiveTopK": 5,
+    "MaxConcurrentRunners": 40,
+    "EvaluationIntervalSeconds": 90,
+    "BaseTemplateId": "trend-rider-alcista",
+    "DefaultTimeframe": "OneHour",
+    "DefaultTradingMode": "PaperTrading",
+    "MinCyclesInTopK": 2,
+    "MinCyclesOutOfTopK": 2,
+    "MinTimeInTopKBeforeEntrySeconds": 120,
+    "IdleTimeoutMinutes": 15,
+    "ZombieScoreThreshold": 20,
+    "MinTradabilityScore": 40
+  }
+}
+```
+
+### Métricas de diagnóstico
+
+Cada ciclo publica vía SignalR:
+```
+"{Evaluated} evaluados, {BlockedByRegime} bloqueados régimen,
+ {BlockedByScore} por score < {Min}, {Active} activos Top K, {Zombies} eliminados"
+```
+
+### Archivos principales
+
+| Archivo | Rol |
+|---------|-----|
+| `ISymbolPool.cs` | Interfaz consulta estado pool |
+| `SymbolPoolConfig.cs` | Configuración hot-reloadable |
+| `TradabilityScorer.cs` | Score normalizado 0-100 |
+| `SymbolPoolManager.cs` | BackgroundService orquestador |
+| `StrategyEngine.cs` | Guard `AllowNewEntries` + métodos pool |
+| `DefaultTradingStrategy.cs` | `GetSignalProximity()` + `GetRegimeStability()` |
+
+---
+
 ## 🔧 Comandos
 
 ```powershell
@@ -220,6 +317,7 @@ docker compose up -d
 | 2 — Core Trading: Órdenes reales, Risk Manager, Backtesting | ✅ |
 | 3 — Hardening: Auditorías CRIT/TRADE, correcciones pre-Testnet | ✅ |
 | 4 — Producción: Validación Testnet, Reconciliación, Alertas | ⏳ |
+| 5 — AutoPilot v2: Pool Dinámico, TradabilityScore, selección dinámica de símbolos | 🔜 |
 
 ---
 

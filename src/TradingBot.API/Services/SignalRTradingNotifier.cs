@@ -112,4 +112,33 @@ internal sealed class SignalRTradingNotifier(
             }),
             cancellationToken);
     }
+
+    public async Task NotifySymbolPoolUpdateAsync(
+        SymbolPoolSnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        await hubContext.Clients.All.SendAsync(
+            TradingHub.Events.OnSymbolPoolUpdate,
+            new
+            {
+                snapshot.Enabled,
+                snapshot.EvaluatedCount,
+                snapshot.BlockedByRegime,
+                snapshot.BlockedByScore,
+                snapshot.BlockedByCooldown,
+                snapshot.ActiveCount,
+                snapshot.ZombiesRemoved,
+                Items = snapshot.Items.Select(i => new
+                {
+                    i.Symbol,
+                    i.Score,
+                    i.Regime,
+                    i.IsActive,
+                    i.AllowNewEntries,
+                    i.BlockReason,
+                    i.RegimeStability
+                }),
+                snapshot.Timestamp
+            },
+            cancellationToken);
+    }
 }

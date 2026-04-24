@@ -1,5 +1,5 @@
 using Binance.Net;
-using CryptoExchange.Net.Authentication;
+using Binance.Net.Objects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -136,7 +136,7 @@ public static class InfrastructureServiceExtensions
         services.AddBinance(opts =>
         {
             if (hasCredentials)
-                opts.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
+                opts.ApiCredentials = new BinanceCredentials(apiKey, apiSecret);
 
             // Demo tiene prioridad sobre Testnet (keys de demo.binance.com)
             if (useDemo)

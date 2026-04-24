@@ -238,6 +238,86 @@ public static class ApplicationServiceExtensions
         }
         services.AddHostedService<AutoPilotWorker>();
 
+        // ── SymbolPool v2: Pool Dinámico de Símbolos ────────────────────────
+        services.AddSingleton<TradabilityScorer>();
+
+        if (configuration is not null)
+        {
+            var poolSection = configuration.GetSection(SymbolPoolConfig.SectionName);
+            services.Configure<SymbolPoolConfig>(opts =>
+            {
+                if (bool.TryParse(poolSection[nameof(SymbolPoolConfig.Enabled)], out var en))
+                    opts.Enabled = en;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.ObservedPoolSize)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var ops))
+                    opts.ObservedPoolSize = ops;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.ActiveTopK)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var atk))
+                    opts.ActiveTopK = atk;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.MaxConcurrentRunners)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var mcr))
+                    opts.MaxConcurrentRunners = mcr;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.EvaluationIntervalSeconds)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var eis))
+                    opts.EvaluationIntervalSeconds = eis;
+                var bti = poolSection[nameof(SymbolPoolConfig.BaseTemplateId)];
+                if (!string.IsNullOrWhiteSpace(bti))
+                    opts.BaseTemplateId = bti;
+                var dtf = poolSection[nameof(SymbolPoolConfig.DefaultTimeframe)];
+                if (!string.IsNullOrWhiteSpace(dtf))
+                    opts.DefaultTimeframe = dtf;
+                var dtm = poolSection[nameof(SymbolPoolConfig.DefaultTradingMode)];
+                if (!string.IsNullOrWhiteSpace(dtm))
+                    opts.DefaultTradingMode = dtm;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.RegimeClarityWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var rcw))
+                    opts.RegimeClarityWeight = rcw;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.AdxStrengthWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var asw))
+                    opts.AdxStrengthWeight = asw;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.RelativeVolumeWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var rvw))
+                    opts.RelativeVolumeWeight = rvw;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.AtrHealthWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var ahw))
+                    opts.AtrHealthWeight = ahw;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.BandWidthWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var bww))
+                    opts.BandWidthWeight = bww;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.SignalProximityWeight)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var spw))
+                    opts.SignalProximityWeight = spw;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.MinCyclesInTopK)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var mci))
+                    opts.MinCyclesInTopK = mci;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.MinCyclesOutOfTopK)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var mco))
+                    opts.MinCyclesOutOfTopK = mco;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.MinTimeInTopKBeforeEntrySeconds)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var mte))
+                    opts.MinTimeInTopKBeforeEntrySeconds = mte;
+                if (int.TryParse(poolSection[nameof(SymbolPoolConfig.IdleTimeoutMinutes)],
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out var itm))
+                    opts.IdleTimeoutMinutes = itm;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.ZombieScoreThreshold)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var zst))
+                    opts.ZombieScoreThreshold = zst;
+                if (decimal.TryParse(poolSection[nameof(SymbolPoolConfig.MinTradabilityScore)],
+                        NumberStyles.Number, CultureInfo.InvariantCulture, out var mts))
+                    opts.MinTradabilityScore = mts;
+            });
+        }
+        else
+        {
+            services.Configure<SymbolPoolConfig>(_ => { });
+        }
+
+        services.AddSingleton<SymbolPoolManager>();
+        services.AddSingleton<ISymbolPool>(sp => sp.GetRequiredService<SymbolPoolManager>());
+        services.AddHostedService(sp => sp.GetRequiredService<SymbolPoolManager>());
+
+        services.AddSingleton<IDefaultPoolTemplateFactory, DefaultPoolTemplateFactory>();
+
         return services;
     }
 }

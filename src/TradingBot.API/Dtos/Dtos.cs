@@ -52,7 +52,8 @@ public sealed record StrategyDto(
     IReadOnlyList<SavedParameterRangeDto> SavedOptimizationRanges,
     DateTimeOffset                CreatedAt,
     DateTimeOffset                UpdatedAt,
-    DateTimeOffset?               LastActivatedAt)
+    DateTimeOffset?               LastActivatedAt,
+    string                        Origin)
 {
     public static StrategyDto FromDomain(TradingStrategy s) => new(
         s.Id, s.Name, s.Description, s.Symbol.Value,
@@ -61,7 +62,8 @@ public sealed record StrategyDto(
         s.Indicators.Select(IndicatorDto.FromDomain).ToList(),
         s.Rules.Select(RuleDto.FromDomain).ToList(),
         s.SavedOptimizationRanges.Select(r => new SavedParameterRangeDto(r.Name, r.Min, r.Max, r.Step)).ToList(),
-        s.CreatedAt, s.UpdatedAt, s.LastActivatedAt);
+        s.CreatedAt, s.UpdatedAt, s.LastActivatedAt,
+        s.Origin.ToString());
 }
 
 public sealed record SavedParameterRangeDto(

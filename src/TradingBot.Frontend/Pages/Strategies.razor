@@ -137,6 +137,10 @@ else
                     <tr>
                         <td>
                             <a href="/strategies/@s.Id"><strong>@s.Name</strong></a>
+                            @if (s.Origin is "Pool" or "AutoPilotV1")
+                            {
+                                <span class="badge bg-warning text-dark ms-1">@s.Origin</span>
+                            }
                             @if (!string.IsNullOrEmpty(s.Description))
                             {
                                 <br /><small class="text-muted">@s.Description</small>
@@ -160,10 +164,13 @@ else
                             }
                             else
                             {
-                                <button class="btn btn-sm btn-outline-success" @onclick="() => ActivateAsync(s.Id)">
-                                    ▶ Activar
-                                </button>
-                                <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => DeleteAsync(s.Id)">
+                                @if (s.Origin is not "Pool")
+                                {
+                                    <button class="btn btn-sm btn-outline-success" @onclick="() => ActivateAsync(s.Id)">
+                                        ▶ Activar
+                                    </button>
+                                }
+                                <button class="btn btn-sm btn-outline-danger ms-1" @onclick="() => ConfirmDeleteAsync(s)">
                                     🗑
                                 </button>
                             }
@@ -290,6 +297,23 @@ else
         {
             errorMessage = $"Error al eliminar: {ex.Message}";
         }
+    }
+
+    private async Task ConfirmDeleteAsync(StrategyDto strategy)
+    {
+        if (strategy.Origin is "Pool")
+        {
+            try
+            {
+                await Api.ExcludePoolSymbolAsync(strategy.Symbol);
+            }
+            catch
+            {
+                // Blacklist es best-effort
+            }
+        }
+
+        await DeleteAsync(strategy.Id);
     }
 
     private async Task ApplyTemplateAsync(StrategyTemplateDto tpl)

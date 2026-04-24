@@ -66,4 +66,25 @@ public sealed class OrdersController(ISender mediator) : ControllerBase
         var result = await mediator.Send(new CancelOrderCommand(id), ct);
         return result.ToHttpResult(OrderDto.FromDomain);
     }
+
+    /// <summary>Obtiene órdenes de un símbolo para marcadores en gráficas.</summary>
+    [HttpGet("by-symbol/{symbol}")]
+    public async Task<IResult> GetBySymbol(
+        string symbol,
+        [FromQuery] DateTimeOffset? from,
+        [FromQuery] DateTimeOffset? to,
+        CancellationToken ct = default)
+    {
+        var fromDate = from ?? DateTimeOffset.UtcNow.AddDays(-7);
+        var toDate = to ?? DateTimeOffset.UtcNow;
+
+        var orders = await mediator.Send(
+            new GetOrdersByDateRangeQuery(fromDate, toDate), ct);
+
+        var filtered = orders
+            .Where(o => o.Symbol.Value.Equals(symbol, StringComparison.OrdinalIgnoreCase))
+            .Select(OrderDto.FromDomain);
+
+        return Results.Ok(filtered);
+    }
 }
